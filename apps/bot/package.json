@@ -12,7 +12,8 @@
     "dotenv": "^16.6.1",
     "@brawlhub/logging": "*",
     "@brawlhub/database": "*",
-    "@brawlhub/shared": "*"
+    "@brawlhub/shared": "*",
+    "@brawlhub/sync": "*"
   },
   "devDependencies": {
     "tsx": "^4.23.15",

@@ -6,6 +6,7 @@ const nextConfig: NextConfig = {
     '@brawlhub/logging',
     '@brawlhub/database',
     '@brawlhub/brawl-stars',
+    '@brawlhub/sync',
   ],
   reactStrictMode: true,
 };

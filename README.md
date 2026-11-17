@@ -15,6 +15,7 @@ The repository is an npm workspaces monorepo:
 | `packages/shared` | Shared types, constants, and pure helpers. |
 | `packages/database` | Postgres/Supabase access and query helpers. |
 | `packages/brawl-stars` | Planned: official Brawl Stars API client (Bearer key, no token cache). |
+| `packages/sync` | Sync engine: club registration, snapshots, membership events, and notifications. |
 | `packages/logging` | Shared structured logger. |
 | `supabase/migrations` | SQL migrations (RLS policies, tables, constraints). |
 | `scripts/migrate.mjs` | Migration runner used by `npm run db:migrate`. |
@@ -41,6 +42,8 @@ Access is split by trust: browsers talk to Supabase with the anon key under row-
 7. Build for production: `npm run build`
 8. Run tests: `npm test`
 9. Typecheck: `npm run typecheck`
+10. Register your real club tags: `npm run clubs:register -- '#TAG1' '#TAG2'` (replace the placeholders with your actual tags).
+11. Run a one-off sync: `npm run sync:run`
 
 Full step-by-step instructions are in [docs/setup.md](docs/setup.md).
 
@@ -61,6 +64,39 @@ Commands defined at the repository root (`package.json`):
 | `npm run test:watch` | Run Vitest in watch mode. |
 | `npm run db:migrate` | Apply migrations via `scripts/migrate.mjs`. |
 | `npm run db:status` | Show migration status (`scripts/migrate.mjs --status`). |
+| `npm run clubs:register -- '#TAG'` | Register real club tags before the first sync. |
+| `npm run sync:run` | Run a single sync from the root `.env`. |
+
+## Phase 2: sync
+
+Phase 1 remains the foundation; Phase 2 adds the sync engine and its wiring.
+
+### New environment variables
+
+- `SYNC_SECRET` (server-only): shared secret for `/api/sync`. Send it as `Authorization: Bearer <SYNC_SECRET>`. When unset, the endpoint returns `503`.
+- `DISCORD_NOTIFICATION_CHANNEL_ID` (optional): channel for concise membership-change notifications. Blank disables notifications.
+- `BRAWL_STARS_MIN_INTERVAL_MS` (optional): minimum delay between Brawl Stars API calls (default `250`).
+- `SYNC_INTERVAL_MINUTES` (optional): bot sync cadence in minutes (default `15`, clamped to `1`–`1440`).
+
+### One-off commands and schedule
+
+```sh
+npm run clubs:register -- '#TAG1' '#TAG2'
+npm run sync:run
+```
+
+The Discord bot starts a sync about 5 seconds after login and then every `SYNC_INTERVAL_MINUTES`. Overlapping runs are skipped. Each run writes a `sync_runs` row; `npm run sync:run` exits non-zero when the result status is `failed`.
+
+### Cron / scheduled webhook
+
+`POST` (or `GET`) `/api/sync` runs the same sync. Configure an external cron job to call it with the shared secret:
+
+```sh
+curl -X POST http://localhost:3000/api/sync \
+  -H "Authorization: Bearer $SYNC_SECRET"
+```
+
+Responses are JSON with `Cache-Control: no-store`: `200` for `completed`/`skipped`, `401` for an invalid or missing bearer token, `503` when `SYNC_SECRET` is not configured, and `500` for `failed`. The secret is never returned or logged.
 
 ## Security notes
 

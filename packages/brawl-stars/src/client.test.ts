@@ -41,6 +41,28 @@ describe('createBrawlStarsClient', () => {
     expect(seen[0]?.url).toBe(`${BASE_URL}/clubs/%23G2P9`);
   });
 
+  it('spaces consecutive requests by the configured minimum interval', async () => {
+    const delays: number[] = [];
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => jsonResponse(clubBody));
+    const client = createBrawlStarsClient({
+      apiKey: API_KEY,
+      baseUrl: BASE_URL,
+      fetchFn,
+      minIntervalMs: 250,
+      throttleSleepFn: async (delayMs) => {
+        delays.push(delayMs);
+      },
+    });
+
+    await client.getClub('#G2P9');
+    await client.getClub('#G2P9');
+
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(delays).toHaveLength(1);
+    expect(delays[0] ?? 0).toBeGreaterThan(0);
+    expect(delays[0] ?? 0).toBeLessThanOrEqual(250);
+  });
+
   it('retries a 429 response once and returns the successful response', async () => {
     const fetchFn = vi
       .fn<typeof fetch>()

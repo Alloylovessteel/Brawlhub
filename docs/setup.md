@@ -34,12 +34,15 @@ Variables (from `.env.example`):
 | Supabase | `DATABASE_URL` | Direct Postgres connection used by `npm run db:migrate`. |
 | Brawl Stars | `BRAWL_STARS_API_KEY` | Official developer key, sent as `Authorization: Bearer <key>`; no token endpoint or caching. |
 | Brawl Stars | `BRAWL_STARS_BASE_URL` | API base URL (default `https://api.brawlstars.com/v1`). |
-| Brawl Stars | `SYNC_INTERVAL_MINUTES` | Sync cadence. |
+| Brawl Stars | `SYNC_INTERVAL_MINUTES` | Sync cadence in minutes (default `15`, clamped to `1`–`1440`). |
+| Brawl Stars | `BRAWL_STARS_MIN_INTERVAL_MS` | Minimum delay between Brawl Stars API requests in ms (default `250`). |
+| Sync | `SYNC_SECRET` | Server-only bearer secret for `/api/sync`; blank makes the endpoint return `503`. |
 | Discord | `DISCORD_TOKEN` | Bot token (server-side only). |
 | Discord | `DISCORD_CLIENT_ID` | Discord application ID. |
 | Discord | `DISCORD_CLIENT_SECRET` | Discord OAuth client secret (server-side only). |
 | Discord | `DISCORD_GUILD_ID` | Target Discord server (guild) ID. |
 | Discord | `DISCORD_CALLBACK_URL` | OAuth callback, `http://localhost:3000/api/auth/callback` locally. |
+| Discord | `DISCORD_NOTIFICATION_CHANNEL_ID` | Optional channel for membership-change notifications; blank disables them. |
 
 Only `NEXT_PUBLIC_*` is exposed to browsers. Keep every other value server-side.
 
@@ -112,6 +115,32 @@ npm run typecheck
 npm test
 npm run test:watch
 ```
+
+## Phase 2: register clubs and sync
+
+Apply migrations first (`npm run db:migrate`), then register your real club tags and run a sync:
+
+```sh
+npm run clubs:register -- '#TAG1' '#TAG2'
+npm run sync:run
+```
+
+Replace the `#TAG` placeholders with your actual Brawl Stars club tags. The register script reports `registered` and `rejected` counts and exits non-zero if any tag was rejected; it does not enforce a minimum club count. `npm run sync:run` loads the root `.env`, prints the JSON result, and exits non-zero when the status is `failed`.
+
+### Scheduled sync
+
+The bot runs its first sync about 5 seconds after Discord login and then every `SYNC_INTERVAL_MINUTES` (default `15`, clamped to `1`–`1440`). A boolean guard skips a tick if the previous run is still in progress, and timers are cleared on shutdown. Notifications are posted to `DISCORD_NOTIFICATION_CHANNEL_ID` when configured; otherwise the notifier is a no-op so sync can clear its claim. No secrets are logged.
+
+### Cron route
+
+The web app exposes `POST /api/sync` (and `GET /api/sync`) with the same sync path. Set `SYNC_SECRET` and have your scheduler send it as a bearer token:
+
+```sh
+curl -X POST http://localhost:3000/api/sync \
+  -H "Authorization: Bearer $SYNC_SECRET"
+```
+
+Responses are JSON with `Cache-Control: no-store`: `200` for `completed`/`skipped`, `401` for an invalid or missing token, `503` when `SYNC_SECRET` is unset, and `500` when the sync `failed`. Keep `SYNC_SECRET` server-side; it is never included in responses or logs.
 
 ## Health check
 

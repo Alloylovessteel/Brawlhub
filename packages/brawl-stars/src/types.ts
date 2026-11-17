@@ -33,6 +33,7 @@ export const clubSchema = z.object({
   tag: z.string().min(1),
   name: z.string(),
   description: z.string().optional(),
+  badgeId: z.number().int().nonnegative().optional(),
   trophies: z.number().int().nonnegative(),
   requiredTrophies: z.number().int().nonnegative().optional(),
   members: z.array(clubMemberSchema).optional(),

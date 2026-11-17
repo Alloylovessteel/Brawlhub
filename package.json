@@ -22,13 +22,16 @@
     "test:watch": "vitest",
     "db:migrate": "node scripts/migrate.mjs",
     "db:baseline": "node scripts/migrate.mjs --baseline",
-    "db:status": "node scripts/migrate.mjs --status"
+    "db:status": "node scripts/migrate.mjs --status",
+    "sync:run": "tsx scripts/sync.ts",
+    "clubs:register": "tsx scripts/register-clubs.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
     "@types/pg": "^8.11.11",
     "concurrently": "^9.1.2",
     "pg": "^8.16.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^5.1.0"
   }

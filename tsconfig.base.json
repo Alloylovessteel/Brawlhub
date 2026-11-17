@@ -19,7 +19,8 @@
       "@brawlhub/shared": ["./packages/shared/src/index.ts"],
       "@brawlhub/logging": ["./packages/logging/src/index.ts"],
       "@brawlhub/database": ["./packages/database/src/index.ts"],
-      "@brawlhub/brawl-stars": ["./packages/brawl-stars/src/index.ts"]
+      "@brawlhub/brawl-stars": ["./packages/brawl-stars/src/index.ts"],
+      "@brawlhub/sync": ["./packages/sync/src/index.ts"]
     }
   }
 }
