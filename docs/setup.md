@@ -125,11 +125,13 @@ npm run clubs:register -- '#TAG1' '#TAG2'
 npm run sync:run
 ```
 
-Replace the `#TAG` placeholders with your actual Brawl Stars club tags. The register script reports `registered` and `rejected` counts and exits non-zero if any tag was rejected; it does not enforce a minimum club count. `npm run sync:run` loads the root `.env`, prints the JSON result, and exits non-zero when the status is `failed`.
+Replace the `#TAG` placeholders with your actual Brawl Stars club tags. The register script reports `registered`, `rejected` and an optional `warning`; the warning explains that the target is 11–20 clubs when fewer are registered, and no placeholder clubs are created. `npm run sync:run` loads the root `.env`, prints the JSON result, and exits non-zero when the status is `failed`.
 
 ### Scheduled sync
 
-The bot runs its first sync about 5 seconds after Discord login and then every `SYNC_INTERVAL_MINUTES` (default `15`, clamped to `1`–`1440`). A boolean guard skips a tick if the previous run is still in progress, and timers are cleared on shutdown. Notifications are posted to `DISCORD_NOTIFICATION_CHANNEL_ID` when configured; otherwise the notifier is a no-op so sync can clear its claim. No secrets are logged.
+The bot runs its first sync about 5 seconds after Discord login and then every `SYNC_INTERVAL_MINUTES` (default `15`, clamped to `1`–`1440`). A local guard skips a tick if the previous in-process run is still in progress, and a Postgres-backed `sync_locks` claim prevents the bot, web cron route and separate CLI processes from overlapping. Timers are cleared on shutdown. Notifications are posted to `DISCORD_NOTIFICATION_CHANNEL_ID` when configured; otherwise the notifier is a no-op so sync can clear its claim. No secrets are logged.
+
+`sync_runs.error` describes the current run status. `sync_runs.last_error` preserves the most recent failure even after that run is retried successfully, so recovery remains auditable. To exercise a full repeated sync while keeping all idempotency protections, run with `SYNC_INTERVAL_MINUTES=1`, wait for the next minute boundary, and run it again.
 
 ### Cron route
 

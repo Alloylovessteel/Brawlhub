@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   clubMembersResponseSchema,
   clubSchema,
@@ -21,9 +21,9 @@ export const SYNC_SCOPE = 'all-clubs';
 export const SYNC_INTERVAL_MINUTES = 15;
 
 const STALE_RUN_MS = 30 * 60 * 1000;
+const SYNC_LOCK_TTL_SECONDS = 30 * 60;
 const DEFAULT_API_TIMEOUT_MS = 30_000;
 const DEFAULT_NOTIFIER_TIMEOUT_MS = 10_000;
-const MEMBERSHIP_EVENT_CONFLICT = 'player_id,event_type,from_club_id,to_club_id,source_sync_run_id';
 const MAX_ERROR_LENGTH = 1000;
 
 type EventType = 'join' | 'leave' | 'transfer';
@@ -106,8 +106,9 @@ interface PlayerLookupRow {
   name: string;
 }
 
-interface ExistingEventRow {
+interface RunEventRow {
   id: string;
+  player_id: string;
   event_type: string;
   from_club_id: string | null;
   to_club_id: string | null;
@@ -150,6 +151,12 @@ interface EventInput {
   toClubId: string | undefined;
   detectedAt: string;
   runId: string;
+}
+
+interface MembershipTransitionInput extends EventInput {
+  role: string | undefined;
+  validFrom: string;
+  closeMembershipId: string | undefined;
 }
 
 interface SnapshotWrite {
@@ -566,10 +573,56 @@ async function markFailed(
     .update({
       status: 'failed',
       error: message,
+      last_error: message,
       finished_at: nowIso,
       records_processed: recordsProcessed,
     })
     .eq('id', runId);
+}
+
+// ---------------------------------------------------------------------------
+// Database-level lock and atomic membership transitions
+// ---------------------------------------------------------------------------
+
+/** Claims the global sync lock. Only one process can hold it at a time. */
+async function acquireSyncLock(db: SupabaseClient, token: string): Promise<boolean> {
+  const result = await db.rpc('try_acquire_sync_lock', {
+    p_scope: SYNC_SCOPE,
+    p_token: token,
+    p_ttl_seconds: SYNC_LOCK_TTL_SECONDS,
+  });
+  requireOk(result.error, 'Acquire sync lock');
+  return result.data === token;
+}
+
+async function releaseSyncLock(db: SupabaseClient, token: string): Promise<void> {
+  const result = await db.rpc('release_sync_lock', {
+    p_scope: SYNC_SCOPE,
+    p_token: token,
+  });
+  if (result.error !== null && result.error !== undefined) {
+    log.warn('Could not release sync lock', { reason: sanitizeError(result.error) });
+  }
+}
+
+/** Writes event + membership changes in one Postgres transaction. */
+async function applyMembershipTransition(
+  db: SupabaseClient,
+  input: MembershipTransitionInput,
+): Promise<string | undefined> {
+  const result = await db.rpc('apply_membership_transition', {
+    p_player_id: input.playerId,
+    p_event_type: input.eventType,
+    p_from_club_id: input.fromClubId ?? null,
+    p_to_club_id: input.toClubId ?? null,
+    p_detected_at: input.detectedAt,
+    p_run_id: input.runId,
+    p_role: input.role ?? null,
+    p_valid_from: input.validFrom,
+    p_close_membership_id: input.closeMembershipId ?? null,
+  });
+  requireOk(result.error, `Apply ${input.eventType} transition`);
+  return typeof result.data === 'string' ? result.data : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -645,76 +698,19 @@ async function readAllOpenMemberships(db: SupabaseClient): Promise<OpenMembershi
   return (result.data ?? []) as OpenMembershipRow[];
 }
 
-async function closeMembership(
-  db: SupabaseClient,
-  membershipId: string,
-  nowIso: string,
-): Promise<void> {
-  const result = await db
-    .from('club_memberships')
-    .update({ valid_to: nowIso })
-    .eq('id', membershipId);
-  requireOk(result.error, `Close membership ${membershipId}`);
-}
-
-async function insertMembership(
-  db: SupabaseClient,
-  state: RosterState,
-  nowIso: string,
-): Promise<void> {
-  const result = await db.from('club_memberships').insert({
-    club_id: state.clubId,
-    player_id: state.playerId,
-    role: state.role,
-    valid_from: nowIso,
-    valid_to: null,
-  });
-  requireOk(result.error, `Insert membership for ${state.tag}`);
-}
-
 /**
- * Finds an event already claimed by this run. Used after a partial failure so a
- * retry reuses the original classification instead of writing a different event.
+ * Reads every event owned by this run. Notifications are derived from this list
+ * rather than from the current membership state, so a retry after a partial
+ * failure can still deliver claims for events that were already committed.
  */
-async function readEventByPlayerRun(
-  db: SupabaseClient,
-  playerId: string,
-  runId: string,
-  eventTypes: readonly EventType[],
-): Promise<ExistingEventRow | undefined> {
+async function readRunEvents(db: SupabaseClient, runId: string): Promise<RunEventRow[]> {
   const result = await db
     .from('membership_events')
-    .select('id, event_type, from_club_id, to_club_id')
-    .eq('player_id', playerId)
+    .select('id, player_id, event_type, from_club_id, to_club_id')
     .eq('source_sync_run_id', runId)
-    .in('event_type', [...eventTypes])
-    .order('detected_at', { ascending: false })
-    .limit(1);
-  requireOk(result.error, `Read existing event for player ${playerId}`);
-  return ((result.data ?? []) as ExistingEventRow[])[0];
-}
-
-async function recordEvent(db: SupabaseClient, input: EventInput): Promise<string | undefined> {
-  const payload: Record<string, unknown> = {
-    player_id: input.playerId,
-    event_type: input.eventType,
-    source_sync_run_id: input.runId,
-    detected_at: input.detectedAt,
-  };
-  if (input.fromClubId !== undefined) {
-    payload['from_club_id'] = input.fromClubId;
-  }
-  if (input.toClubId !== undefined) {
-    payload['to_club_id'] = input.toClubId;
-  }
-  const result = await db
-    .from('membership_events')
-    .upsert(payload, { onConflict: MEMBERSHIP_EVENT_CONFLICT })
-    .select('id')
-    .maybeSingle();
-  requireOk(result.error, `Record ${input.eventType} event`);
-  const row = (result.data ?? null) as IdRow | null;
-  return row?.id;
+    .order('detected_at', { ascending: true });
+  requireOk(result.error, 'Read run events');
+  return (result.data ?? []) as RunEventRow[];
 }
 
 async function readPlayerLookup(
@@ -895,9 +891,29 @@ export async function runSync(options?: {
   let runId: string | undefined;
   let affectedColumns = true;
   const counters = emptyCounters();
+  const lockToken = randomUUID();
+  let lockHeld = false;
 
   try {
-    const acquired = await acquireRun(db, periodStartIso, nowIso, nowMs, clubIds, clubTags);
+    try {
+      lockHeld = await acquireSyncLock(db, lockToken);
+    } catch (error) {
+      const message = sanitizeError(error);
+      log.error('Sync lock acquisition failed', { message });
+      return {
+        syncRunId: '',
+        status: 'failed',
+        ...emptyCounters(),
+        error: message,
+        affectedClubIds: clubIds,
+      };
+    }
+    if (!lockHeld) {
+      return skippedResult('', 'Another sync process holds the database lock');
+    }
+
+    try {
+      const acquired = await acquireRun(db, periodStartIso, nowIso, nowMs, clubIds, clubTags);
     if (acquired.kind === 'skip') {
       return acquired.result;
     }
@@ -923,87 +939,72 @@ export async function runSync(options?: {
     }
     const presentPlayerIds = new Set(states.map((state) => state.playerId));
 
-    const pendingNotifications: SyncNotificationInput[] = [];
-
-    // 3. Joins and transfers, computed against the global API roster.
-    //    The event is written BEFORE membership rows are changed so a partial
-    //    failure can be retried without losing or misclassifying the event.
+    // 3. Joins and transfers, computed against the global API roster. Each
+    //    event + membership change is committed atomically by Postgres.
     for (const state of states) {
       const open = await readOpenMembership(db, state.playerId);
-      const alreadyCurrent = open !== undefined && open.club_id === state.clubId;
-      const existingEvent = await readEventByPlayerRun(db, state.playerId, runId, [
-        'join',
-        'transfer',
-      ]);
-      if (alreadyCurrent && existingEvent === undefined) {
+      if (open !== undefined && open.club_id === state.clubId) {
         continue;
       }
-
-      const eventType: EventType =
-        existingEvent?.event_type === 'join' || existingEvent?.event_type === 'transfer'
-          ? existingEvent.event_type
-          : open === undefined
-            ? 'join'
-            : 'transfer';
-      const fromClubId = existingEvent
-        ? existingEvent.from_club_id ?? undefined
-        : open?.club_id;
-      const toClubId = existingEvent ? existingEvent.to_club_id ?? undefined : state.clubId;
-      const eventId =
-        existingEvent?.id ??
-        (await recordEvent(db, {
-          playerId: state.playerId,
-          eventType,
-          fromClubId,
-          toClubId,
-          detectedAt: nowIso,
-          runId,
-        }));
-
-      if (open !== undefined && open.club_id !== state.clubId) {
-        await closeMembership(db, open.id, nowIso);
-      }
-      if (!alreadyCurrent) {
-        await insertMembership(db, state, nowIso);
-      }
-
-      if (eventId !== undefined) {
-        counters.membershipEvents += 1;
-        pendingNotifications.push(
-          buildNotification(eventId, eventType, state, clubNames, fromClubId, toClubId),
-        );
-      }
+      const eventType: EventType = open === undefined ? 'join' : 'transfer';
+      await applyMembershipTransition(db, {
+        playerId: state.playerId,
+        eventType,
+        fromClubId: open?.club_id,
+        toClubId: state.clubId,
+        detectedAt: nowIso,
+        runId,
+        role: state.role,
+        validFrom: nowIso,
+        closeMembershipId: open?.id,
+      });
+      counters.membershipEvents += 1;
     }
 
     // 4. Leaves for open memberships absent from the whole API roster.
-    //    Again the event is recorded first so a retry can reuse it.
     const openMemberships = await readAllOpenMemberships(db);
+    const leavingPlayers = new Map<string, { tag: string; name: string }>();
     for (const open of openMemberships) {
       if (presentPlayerIds.has(open.player_id)) {
         continue;
       }
       const player = await readPlayerLookup(db, open.player_id);
-      const existingEvent = await readEventByPlayerRun(db, open.player_id, runId, ['leave']);
-      const eventId =
-        existingEvent?.id ??
-        (await recordEvent(db, {
-          playerId: open.player_id,
-          eventType: 'leave',
-          fromClubId: open.club_id,
-          toClubId: undefined,
-          detectedAt: nowIso,
-          runId,
-        }));
-
-      await closeMembership(db, open.id, nowIso);
-
-      if (eventId !== undefined) {
-        counters.membershipEvents += 1;
-        pendingNotifications.push(
-          buildNotification(eventId, 'leave', player, clubNames, open.club_id, undefined),
-        );
-      }
+      leavingPlayers.set(open.player_id, player);
+      await applyMembershipTransition(db, {
+        playerId: open.player_id,
+        eventType: 'leave',
+        fromClubId: open.club_id,
+        toClubId: undefined,
+        detectedAt: nowIso,
+        runId,
+        role: open.role ?? undefined,
+        validFrom: nowIso,
+        closeMembershipId: open.id,
+      });
+      counters.membershipEvents += 1;
     }
+
+    // Notifications are derived from persisted events, not from the live
+    // membership state. A retry can therefore deliver an event that was
+    // committed in an earlier failed attempt without creating a new event.
+    const playerLookups = new Map<string, { tag: string; name: string }>();
+    for (const state of states) {
+      playerLookups.set(state.playerId, { tag: state.tag, name: state.name });
+    }
+    for (const [playerId, player] of leavingPlayers) {
+      playerLookups.set(playerId, player);
+    }
+    const pendingNotifications: SyncNotificationInput[] = (await readRunEvents(db, runId)).map(
+      (event) =>
+        buildNotification(
+          event.id,
+          event.event_type as EventType,
+          playerLookups.get(event.player_id) ?? { tag: '', name: '' },
+          clubNames,
+          event.from_club_id ?? undefined,
+          event.to_club_id ?? undefined,
+        ),
+    );
 
     // 5. Snapshots (skipped when the payload digest is unchanged).
     for (const club of fetched) {
@@ -1084,5 +1085,10 @@ export async function runSync(options?: {
       error: message,
       affectedClubIds: clubIds,
     };
+    }
+  } finally {
+    if (lockHeld) {
+      await releaseSyncLock(db, lockToken);
+    }
   }
 }

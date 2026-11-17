@@ -66,6 +66,7 @@ Commands defined at the repository root (`package.json`):
 | `npm run db:status` | Show migration status (`scripts/migrate.mjs --status`). |
 | `npm run clubs:register -- '#TAG'` | Register real club tags before the first sync. |
 | `npm run sync:run` | Run a single sync from the root `.env`. |
+| `npm run phase2:inspect` | Print Supabase record counts, club rosters and sync-run history. |
 
 ## Phase 2: sync
 
@@ -85,7 +86,19 @@ npm run clubs:register -- '#TAG1' '#TAG2'
 npm run sync:run
 ```
 
-The Discord bot starts a sync about 5 seconds after login and then every `SYNC_INTERVAL_MINUTES`. Overlapping runs are skipped. Each run writes a `sync_runs` row; `npm run sync:run` exits non-zero when the result status is `failed`.
+The Discord bot starts a sync about 5 seconds after login and then every `SYNC_INTERVAL_MINUTES`. Overlapping runs are skipped by a Postgres-backed lock (`sync_locks`), so the web cron route, the bot and separate CLI processes cannot run at the same time. Each run writes a `sync_runs` row with status, timestamps, affected clubs and errors; a recovered failure keeps its original message in `last_error`. `npm run sync:run` exits non-zero when the result status is `failed`.
+
+Registration supports gradual growth: running with fewer than 11 clubs still works and returns a `warning` describing the 11–20 club target rather than inventing placeholder clubs.
+
+To exercise a full repeated sync without bypassing idempotency, use a shorter period and wait for the next boundary:
+
+```sh
+SYNC_INTERVAL_MINUTES=1 npm run sync:run
+# wait at least 60 seconds
+SYNC_INTERVAL_MINUTES=1 npm run sync:run
+```
+
+The second run uses a new `(scope, period_start)` but still relies on payload hashes, event deduplication and notification claims, so unchanged data produces no new snapshots, events or notifications.
 
 ### Cron / scheduled webhook
 

@@ -143,6 +143,25 @@ vi.mock('@brawlhub/database', () => {
       from(table: string) {
         return new FakeQuery(fake.state, table, 'select');
       },
+      rpc(name: string, params: unknown): Promise<any> {
+        const call: Call = {
+          table: `rpc:${name}`,
+          op: 'select',
+          payload: params,
+          options: undefined,
+          filters: {},
+          orders: [],
+          limit: undefined,
+          mode: 'array',
+        };
+        fake.state.calls.push(call);
+        const handler =
+          fake.state.handlers[`rpc:${name}`] ?? fake.state.handlers['*'];
+        if (handler === undefined) {
+          throw new Error(`No fake DB handler for rpc:${name}`);
+        }
+        return Promise.resolve(handler(call));
+      },
     }),
   };
 });
@@ -163,6 +182,18 @@ vi.mock('@brawlhub/brawl-stars', async (importOriginal) => {
 function setHandlers(handlers: Record<string, Handler>): void {
   fake.state.handlers = handlers;
   fake.state.calls.length = 0;
+}
+
+/** Supplies the new database-level lock and atomic-transition RPC handlers. */
+function withInfrastructureHandlers(handlers: Record<string, Handler>): Record<string, Handler> {
+  return {
+    'rpc:try_acquire_sync_lock': (call) => ({
+      data: (call.payload as { p_token: string }).p_token,
+    }),
+    'rpc:release_sync_lock': () => ({ data: null }),
+    'rpc:apply_membership_transition': () => ({ data: 'event-rpc-1' }),
+    ...handlers,
+  };
 }
 
 function callsFor(table: string, op: Call['op']): Call[] {
@@ -214,9 +245,10 @@ function setupSuccessfulSync(options: {
     events: new Map<string, string>(),
   };
 
-  setHandlers({
-    'clubs:select': () => ({ data: [CLUB_ROW] }),
-    'sync_runs:select': () => {
+  setHandlers(
+    withInfrastructureHandlers({
+      'clubs:select': () => ({ data: [CLUB_ROW] }),
+      'sync_runs:select': () => {
       state.runSelectCount += 1;
       if (options.earlierRunFailed === true && state.runSelectCount === 2) {
         return {
@@ -274,6 +306,12 @@ function setupSuccessfulSync(options: {
       return { data: [{ id: 'membership-1' }] };
     },
     'club_memberships:update': () => ({ data: [] }),
+    'rpc:apply_membership_transition': (call) => {
+      if ((call.payload as { p_to_club_id: string | null }).p_to_club_id !== null) {
+        state.membershipOpen = true;
+      }
+      return { data: 'event-rpc-1' };
+    },
     'membership_events:select': () => ({ data: [] }),
     'membership_events:upsert': (call) => {
       const key = JSON.stringify([
@@ -302,11 +340,12 @@ function setupSuccessfulSync(options: {
     'player_snapshots:select': () => ({
       data: state.playerHash === undefined ? null : [{ payload_hash: state.playerHash }],
     }),
-    'player_snapshots:upsert': (call) => {
-      state.playerHash = String(call.payload.payload_hash);
-      return { data: [] };
-    },
-  });
+      'player_snapshots:upsert': (call) => {
+        state.playerHash = String(call.payload.payload_hash);
+        return { data: [] };
+      },
+    }),
+  );
 
   return state;
 }
@@ -349,12 +388,14 @@ describe('registerClubs', () => {
 
 describe('runSync', () => {
   it('fails the run when the API returns an empty roster that contradicts club stats', async () => {
-    setHandlers({
-      'clubs:select': () => ({ data: [CLUB_ROW] }),
-      'sync_runs:select': () => ({ data: null }),
-      'sync_runs:upsert': () => ({ data: [{ id: 'run-1' }] }),
-      'sync_runs:update': () => ({ data: [{ id: 'run-1' }] }),
-    });
+    setHandlers(
+      withInfrastructureHandlers({
+        'clubs:select': () => ({ data: [CLUB_ROW] }),
+        'sync_runs:select': () => ({ data: null }),
+        'sync_runs:upsert': () => ({ data: [{ id: 'run-1' }] }),
+        'sync_runs:update': () => ({ data: [{ id: 'run-1' }] }),
+      }),
+    );
     fake.api.current = apiClient({
       getClub: async () => ({
         tag: '#2C0Y',
@@ -370,8 +411,9 @@ describe('runSync', () => {
     expect(result.status).toBe('failed');
     expect(result.error).toMatch(/empty member roster/i);
     expect(result.syncRunId).toBe('run-1');
-    expect(callsFor('membership_events', 'upsert')).toHaveLength(0);
+    expect(callsFor('rpc:apply_membership_transition', 'select')).toHaveLength(0);
     expect(callsFor('sync_runs', 'update')[0]?.payload.status).toBe('failed');
+    expect(callsFor('rpc:release_sync_lock', 'select')).toHaveLength(1);
   });
 
   it('does not write a new snapshot when the API payload is unchanged', async () => {
@@ -389,7 +431,7 @@ describe('runSync', () => {
   });
 
   it('reuses the same run id on a retry without duplicating membership events', async () => {
-    const state = setupSuccessfulSync({
+    setupSuccessfulSync({
       failFirstSnapshot: true,
       earlierRunFailed: true,
       forceOldMembership: true,
@@ -403,13 +445,13 @@ describe('runSync', () => {
     expect(second.status).toBe('completed');
     expect(second.syncRunId).toBe('run-1');
 
-    const eventWrites = callsFor('membership_events', 'upsert');
-    expect(eventWrites.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(eventWrites.map((call) => call.payload.source_sync_run_id))).toEqual(
-      new Set(['run-1']),
-    );
-    // The DB dedup key (mocked here) means both attempts resolve to one event.
-    expect(state.events.size).toBe(1);
+    const transitions = callsFor('rpc:apply_membership_transition', 'select');
+    expect(transitions.length).toBeGreaterThanOrEqual(2);
+    expect(
+      new Set(transitions.map((call) => (call.payload as { p_run_id: string }).p_run_id)),
+    ).toEqual(new Set(['run-1']));
+    // The Postgres dedup constraint makes both attempts resolve to one event.
+    expect(callsFor('rpc:release_sync_lock', 'select')).toHaveLength(2);
   });
 
   it('does not resend a Discord notification when a retried event is already claimed', async () => {
@@ -418,6 +460,7 @@ describe('runSync', () => {
       data: [
         {
           id: 'event-1',
+          player_id: 'player-1',
           event_type: 'transfer',
           from_club_id: 'club-old',
           to_club_id: 'club-1',
@@ -427,6 +470,7 @@ describe('runSync', () => {
 
     let claimAttempts = 0;
     let sends = 0;
+    const delivered: Array<{ clubName: string; toClubName: string | undefined }> = [];
     fake.state.handlers['notifications:insert'] = () => {
       claimAttempts += 1;
       if (claimAttempts > 1) {
@@ -438,8 +482,9 @@ describe('runSync', () => {
 
     const notifier = {
       channelId: 'channel-1',
-      send: async () => {
+      send: async (input: { clubName: string; toClubName: string | undefined }) => {
         sends += 1;
+        delivered.push({ clubName: input.clubName, toClubName: input.toClubName });
         return `message-${sends}`;
       },
     };
@@ -453,5 +498,87 @@ describe('runSync', () => {
     expect(second.notificationsSent).toBe(0);
     expect(sends).toBe(1);
     expect(claimAttempts).toBe(2);
+    expect(delivered[0]?.clubName).toBe('Alpha');
+    expect(delivered[0]?.toClubName).toBe('Alpha');
+  });
+
+  it('skips when another process already holds the database lock', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['rpc:try_acquire_sync_lock'] = () => ({ data: null });
+
+    const result = await runSync({ now: T0 });
+
+    expect(result.status).toBe('skipped');
+    expect(result.error).toMatch(/database lock/i);
+    expect(callsFor('sync_runs', 'upsert')).toHaveLength(0);
+  });
+
+  it('fails the run when an API call times out instead of treating it as an empty roster', async () => {
+    setHandlers(
+      withInfrastructureHandlers({
+        'clubs:select': () => ({ data: [CLUB_ROW] }),
+        'sync_runs:select': () => ({ data: null }),
+        'sync_runs:upsert': () => ({ data: [{ id: 'run-1' }] }),
+        'sync_runs:update': () => ({ data: [{ id: 'run-1' }] }),
+      }),
+    );
+    const previousTimeout = process.env.SYNC_API_TIMEOUT_MS;
+    process.env.SYNC_API_TIMEOUT_MS = '20';
+    fake.api.current = apiClient({
+      getClub: () => new Promise<Club>(() => {}),
+    });
+
+    try {
+      const result = await runSync({ now: T0 });
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/timed out/i);
+      expect(callsFor('rpc:apply_membership_transition', 'select')).toHaveLength(0);
+      expect(callsFor('rpc:release_sync_lock', 'select')).toHaveLength(1);
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.SYNC_API_TIMEOUT_MS;
+      } else {
+        process.env.SYNC_API_TIMEOUT_MS = previousTimeout;
+      }
+    }
+  });
+
+  it('fails the run on malformed member data', async () => {
+    setHandlers(
+      withInfrastructureHandlers({
+        'clubs:select': () => ({ data: [CLUB_ROW] }),
+        'sync_runs:select': () => ({ data: null }),
+        'sync_runs:upsert': () => ({ data: [{ id: 'run-1' }] }),
+        'sync_runs:update': () => ({ data: [{ id: 'run-1' }] }),
+      }),
+    );
+    fake.api.current = apiClient({
+      getClubMembers: async () => [
+        { tag: 'BAD-TAG!', name: 'Broken', trophies: 1, role: 'member' },
+      ],
+    });
+
+    const result = await runSync({ now: T0 });
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/invalid tag|malformed/i);
+    expect(callsFor('rpc:apply_membership_transition', 'select')).toHaveLength(0);
+    expect(callsFor('rpc:release_sync_lock', 'select')).toHaveLength(1);
+  });
+
+  it('writes a new player snapshot when the API payload changes', async () => {
+    const state = setupSuccessfulSync();
+    const first = await runSync({ now: T0 });
+    expect(first.status).toBe('completed');
+
+    fake.api.current = apiClient({
+      getClubMembers: async () => [{ ...defaultMember, trophies: 6_000 }],
+    });
+    const second = await runSync({ now: new Date(T0.getTime() + 16 * 60_000) });
+
+    expect(second.status).toBe('completed');
+    expect(second.snapshotsWritten).toBeGreaterThan(0);
+    expect(callsFor('player_snapshots', 'upsert')).toHaveLength(2);
+    expect(state.playerHash).toBeDefined();
   });
 });
