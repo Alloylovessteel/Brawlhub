@@ -45,7 +45,7 @@ if (token === undefined) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  intents: [GatewayIntentBits.Guilds],
 });
 
 client.on('interactionCreate', (interaction: Interaction) => {
