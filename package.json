@@ -25,7 +25,8 @@
     "db:status": "node scripts/migrate.mjs --status",
     "sync:run": "tsx scripts/sync.ts",
     "clubs:register": "tsx scripts/register-clubs.ts",
-    "phase2:inspect": "node scripts/phase2-inspect.mjs"
+    "phase2:inspect": "node scripts/phase2-inspect.mjs",
+    "typecheck:web": "tsc --noEmit -p apps/web/tsconfig.json"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

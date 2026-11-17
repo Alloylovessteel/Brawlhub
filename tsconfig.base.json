@@ -16,6 +16,7 @@
     "noEmit": true,
     "forceConsistentCasingInFileNames": true,
     "paths": {
+      "@/*": ["./apps/web/src/*"],
       "@brawlhub/shared": ["./packages/shared/src/index.ts"],
       "@brawlhub/logging": ["./packages/logging/src/index.ts"],
       "@brawlhub/database": ["./packages/database/src/index.ts"],
