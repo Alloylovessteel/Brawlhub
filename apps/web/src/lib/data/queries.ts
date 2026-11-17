@@ -1,6 +1,7 @@
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { z } from 'zod';
 import type {
+  ClubPrivateRow,
   ClubRow,
   ClubSnapshotRow,
   MembershipEventRow,
@@ -30,14 +31,16 @@ function firstValue(value: string | string[] | undefined): string | undefined {
 }
 
 export function parsePagination(input: PaginationInput): { page: number; pageSize: number } {
-  return paginationSchema.parse({
+  const parsed = paginationSchema.safeParse({
     page: firstValue(input.page) ?? '1',
     pageSize: firstValue(input.pageSize) ?? '50',
   });
+  return parsed.success ? parsed.data : { page: 1, pageSize: 50 };
 }
 
 export function parseSearch(value: string | string[] | undefined): string {
-  return searchSchema.parse(firstValue(value) ?? '');
+  const parsed = searchSchema.safeParse(firstValue(value) ?? '');
+  return parsed.success ? parsed.data : '';
 }
 
 function parseUuid(value: string): string | null {
@@ -380,6 +383,68 @@ export async function getNotifications(limit = 50): Promise<QueryResult<Notifica
     .order('created_at', { ascending: false })
     .limit(Math.min(Math.max(limit, 1), 100));
   return { rows: (data ?? []) as NotificationRow[], count: data?.length ?? 0, error: errorText(error) };
+}
+
+export async function getClubPrivate(clubId: string): Promise<QueryResult<ClubPrivateRow>> {
+  const validClubId = parseUuid(clubId);
+  if (validClubId === null) return emptyResult('Invalid club id');
+  const supabase = await createServerSupabaseClient();
+  const { data, error } = await supabase
+    .from('club_private')
+    .select('club_id, announcement_channel_id, verified_role_id, notes')
+    .eq('club_id', validClubId)
+    .maybeSingle();
+  return {
+    rows: data === null ? [] : [data as ClubPrivateRow],
+    count: data === null ? 0 : 1,
+    error: errorText(error),
+  };
+}
+
+/** Returns the current club link for each requested player id. */
+export async function getPlayerClubs(playerIds: string[]): Promise<Map<string, MembershipRow>> {
+  const validIds = playerIds.map(parseUuid).filter((id): id is string => id !== null);
+  const result = new Map<string, MembershipRow>();
+  if (validIds.length === 0) return result;
+
+  const supabase = await createServerSupabaseClient();
+  const { data } = await supabase
+    .from('club_memberships')
+    .select(
+      'id, club_id, player_id, role, valid_from, valid_to, club:clubs!club_memberships_club_id_fkey(id, tag, name, badge_id)',
+    )
+    .in('player_id', validIds)
+    .is('valid_to', null);
+  for (const membership of normalizeMemberships(data)) {
+    result.set(membership.player_id, membership);
+  }
+  return result;
+}
+
+export async function getAllClubSnapshots(days?: number): Promise<QueryResult<ClubSnapshotRow>> {
+  const supabase = await createServerSupabaseClient();
+  let query = supabase
+    .from('club_snapshots')
+    .select('id, club_id, sync_run_id, captured_at, trophies, member_count, payload_hash')
+    .order('captured_at', { ascending: true });
+  if (days !== undefined) {
+    query = query.gte('captured_at', new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString());
+  }
+  const { data, count, error } = await query;
+  return { rows: (data ?? []) as ClubSnapshotRow[], count: count ?? 0, error: errorText(error) };
+}
+
+export async function getAllPlayerSnapshots(days?: number): Promise<QueryResult<PlayerSnapshotRow>> {
+  const supabase = await createServerSupabaseClient();
+  let query = supabase
+    .from('player_snapshots')
+    .select('id, player_id, sync_run_id, captured_at, trophies, payload_hash')
+    .order('captured_at', { ascending: true });
+  if (days !== undefined) {
+    query = query.gte('captured_at', new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString());
+  }
+  const { data, count, error } = await query;
+  return { rows: (data ?? []) as PlayerSnapshotRow[], count: count ?? 0, error: errorText(error) };
 }
 
 export interface OverviewData {

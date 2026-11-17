@@ -98,6 +98,13 @@ export interface SyncRunRow {
   club_tags: string[];
 }
 
+export interface ClubPrivateRow {
+  club_id: string;
+  announcement_channel_id: string | null;
+  verified_role_id: string | null;
+  notes: string | null;
+}
+
 export interface NotificationRow {
   id: string;
   event_id: string | null;
