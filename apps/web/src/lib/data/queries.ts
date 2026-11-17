@@ -1,9 +1,12 @@
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { z } from 'zod';
 import type {
+  AdminProfileRow,
+  AuditLogRow,
   ClubPrivateRow,
   ClubRow,
   ClubSnapshotRow,
+  GuildSettingsRow,
   MembershipEventRow,
   MembershipRow,
   NotificationRow,
@@ -11,6 +14,7 @@ import type {
   PlayerSnapshotRow,
   QueryResult,
   SyncRunRow,
+  UserRoleRow,
 } from './types';
 
 const paginationSchema = z.object({
@@ -383,6 +387,45 @@ export async function getNotifications(limit = 50): Promise<QueryResult<Notifica
     .order('created_at', { ascending: false })
     .limit(Math.min(Math.max(limit, 1), 100));
   return { rows: (data ?? []) as NotificationRow[], count: data?.length ?? 0, error: errorText(error) };
+}
+
+export async function getAuditLogs(limit = 50): Promise<QueryResult<AuditLogRow>> {
+  const supabase = await createServerSupabaseClient();
+  const { data, error } = await supabase
+    .from('audit_logs')
+    .select('id, actor_profile_id, action, target_type, target_id, details, created_at')
+    .order('created_at', { ascending: false })
+    .limit(Math.min(Math.max(limit, 1), 100));
+  return { rows: (data ?? []) as AuditLogRow[], count: data?.length ?? 0, error: errorText(error) };
+}
+
+export async function getGuildSettings(): Promise<QueryResult<GuildSettingsRow>> {
+  const supabase = await createServerSupabaseClient();
+  const { data, error } = await supabase
+    .from('guild_settings')
+    .select('guild_id, primary_club_id, announcement_channel_id, verified_role_id, updated_at')
+    .order('guild_id', { ascending: true });
+  return { rows: (data ?? []) as GuildSettingsRow[], count: data?.length ?? 0, error: errorText(error) };
+}
+
+export async function getUserRoles(): Promise<QueryResult<UserRoleRow>> {
+  const supabase = await createServerSupabaseClient();
+  const { data, error } = await supabase
+    .from('user_roles')
+    .select('id, user_id, scope, club_id, role, source, created_at')
+    .order('created_at', { ascending: false })
+    .limit(100);
+  return { rows: (data ?? []) as UserRoleRow[], count: data?.length ?? 0, error: errorText(error) };
+}
+
+export async function getAdminProfiles(): Promise<QueryResult<AdminProfileRow>> {
+  const supabase = await createServerSupabaseClient();
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, discord_user_id, username')
+    .order('discord_user_id', { ascending: true })
+    .limit(100);
+  return { rows: (data ?? []) as AdminProfileRow[], count: data?.length ?? 0, error: errorText(error) };
 }
 
 export async function getClubPrivate(clubId: string): Promise<QueryResult<ClubPrivateRow>> {

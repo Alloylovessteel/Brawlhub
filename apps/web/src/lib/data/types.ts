@@ -105,6 +105,40 @@ export interface ClubPrivateRow {
   notes: string | null;
 }
 
+export interface AuditLogRow {
+  id: string;
+  actor_profile_id: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  details: unknown;
+  created_at: string;
+}
+
+export interface GuildSettingsRow {
+  guild_id: string;
+  primary_club_id: string | null;
+  announcement_channel_id: string | null;
+  verified_role_id: string | null;
+  updated_at: string;
+}
+
+export interface UserRoleRow {
+  id: string;
+  user_id: string;
+  scope: 'global' | 'club';
+  club_id: string | null;
+  role: 'owner' | 'admin' | 'staff' | 'member';
+  source: 'discord' | 'manual';
+  created_at: string;
+}
+
+export interface AdminProfileRow {
+  id: string;
+  discord_user_id: string;
+  username: string | null;
+}
+
 export interface NotificationRow {
   id: string;
   event_id: string | null;

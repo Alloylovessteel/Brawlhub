@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
-import { Input } from '@/components/ui/input';
+import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import {
   hasClubPermission,
@@ -36,6 +36,7 @@ export default async function ClubDashboardPage({
     pageSize?: string | string[];
     saved?: string | string[];
     error?: string | string[];
+    staff?: string | string[];
   }>;
 }>) {
   const { clubId } = await params;
@@ -62,6 +63,7 @@ export default async function ClubDashboardPage({
 
   const club = clubResult.rows[0]!;
   const canManage = hasClubPermission(session, club.id, 'clubs:write');
+  const canManageStaff = hasClubPermission(session, club.id, 'staff:manage');
   const rosterPage = roster.rows.slice((page - 1) * pageSize, page * pageSize);
   const chartData = snapshots.rows
     .filter((snapshot) => snapshot.trophies !== null)
@@ -86,6 +88,16 @@ export default async function ClubDashboardPage({
       {query.error !== undefined && query.error !== '' ? (
         <p className="mb-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
           Club settings could not be saved. Check the values and try again.
+        </p>
+      ) : null}
+      {query.staff === 'success' ? (
+        <p className="mb-4 rounded-lg border border-success/40 bg-success/10 px-4 py-3 text-sm text-success">
+          Club staff role updated.
+        </p>
+      ) : null}
+      {query.staff === 'error' ? (
+        <p className="mb-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
+          Club staff role could not be updated.
         </p>
       ) : null}
 
@@ -133,6 +145,42 @@ export default async function ClubDashboardPage({
               </div>
               <div className="md:col-span-3">
                 <Button type="submit">Save club settings</Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {canManageStaff ? (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Club staff</CardTitle>
+            <CardDescription>
+              Grant or revoke manual club staff roles. The target user must already have a BrawlHub profile.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form action={`/api/clubs/${club.id}/staff`} method="post" className="grid gap-3 md:grid-cols-3">
+              <div>
+                <label htmlFor="staff-discord-id" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Discord user ID</label>
+                <Input id="staff-discord-id" name="discordUserId" inputMode="numeric" pattern="[0-9]{17,20}" required className="font-mono" />
+              </div>
+              <div>
+                <label htmlFor="staff-role" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Role</label>
+                <Select id="staff-role" name="role" className="w-full">
+                  <option value="staff">Club Staff</option>
+                  <option value="member">Member</option>
+                </Select>
+              </div>
+              <div>
+                <label htmlFor="staff-action" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Action</label>
+                <Select id="staff-action" name="action" className="w-full">
+                  <option value="grant">Grant</option>
+                  <option value="revoke">Revoke</option>
+                </Select>
+              </div>
+              <div className="md:col-span-3">
+                <Button type="submit">Apply staff role</Button>
               </div>
             </form>
           </CardContent>

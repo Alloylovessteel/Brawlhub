@@ -37,9 +37,19 @@ export function extractDiscordIdentity(user: User): DiscordIdentity {
   };
 }
 
+interface StoredGrant extends RoleGrant {
+  source: 'discord' | 'manual';
+  grantedBy: string | null;
+}
+
+function grantKey(grant: RoleGrant): string {
+  return `${grant.scope}:${grant.clubId ?? ''}`;
+}
+
 /**
  * Provisions the local profile and refreshes Discord-derived role grants.
- * Manually granted roles (source = 'manual') are left untouched.
+ * Manual grants are preserved and take precedence over roles derived from
+ * Discord for the same scope/club, avoiding the unique role constraint.
  */
 export async function provisionIdentity(input: {
   user: User;
@@ -74,25 +84,45 @@ export async function provisionIdentity(input: {
     throw new Error(`Unable to provision Discord user: ${discordUser.error.message}`);
   }
 
-  const clearDiscordGrants = await db
+  const manualResult = await db
     .from('user_roles')
-    .delete()
+    .select('scope, club_id, role, granted_by')
     .eq('user_id', input.user.id)
-    .eq('source', 'discord');
-  if (clearDiscordGrants.error !== null && clearDiscordGrants.error !== undefined) {
-    throw new Error(`Unable to refresh roles: ${clearDiscordGrants.error.message}`);
+    .eq('source', 'manual');
+  if (manualResult.error !== null && manualResult.error !== undefined) {
+    throw new Error(`Unable to read existing roles: ${manualResult.error.message}`);
+  }
+  const manualGrants: StoredGrant[] = (manualResult.data ?? []).map((row) => ({
+    scope: row.scope as RoleGrant['scope'],
+    clubId: row.club_id as string | null,
+    role: row.role as RoleGrant['role'],
+    source: 'manual',
+    grantedBy: (row.granted_by as string | null) ?? null,
+  }));
+
+  const merged = new Map<string, StoredGrant>();
+  for (const grant of input.grants) {
+    merged.set(grantKey(grant), { ...grant, source: 'discord', grantedBy: null });
+  }
+  for (const grant of manualGrants) {
+    merged.set(grantKey(grant), grant);
   }
 
-  if (input.grants.length > 0) {
-    const insertGrants = await db.from('user_roles').insert(
-      input.grants.map((grant) => ({
-        user_id: input.user.id,
-        scope: grant.scope,
-        club_id: grant.clubId,
-        role: grant.role,
-        source: 'discord',
-      })),
-    );
+  const clearGrants = await db.from('user_roles').delete().eq('user_id', input.user.id);
+  if (clearGrants.error !== null && clearGrants.error !== undefined) {
+    throw new Error(`Unable to refresh roles: ${clearGrants.error.message}`);
+  }
+
+  const rows = [...merged.values()].map((grant) => ({
+    user_id: input.user.id,
+    scope: grant.scope,
+    club_id: grant.clubId,
+    role: grant.role,
+    source: grant.source,
+    ...(grant.grantedBy === null ? {} : { granted_by: grant.grantedBy }),
+  }));
+  if (rows.length > 0) {
+    const insertGrants = await db.from('user_roles').insert(rows);
     if (insertGrants.error !== null && insertGrants.error !== undefined) {
       throw new Error(`Unable to store roles: ${insertGrants.error.message}`);
     }
