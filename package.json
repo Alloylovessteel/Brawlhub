@@ -21,6 +21,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:migrate": "node scripts/migrate.mjs",
+    "db:baseline": "node scripts/migrate.mjs --baseline",
     "db:status": "node scripts/migrate.mjs --status"
   },
   "devDependencies": {

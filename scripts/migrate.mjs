@@ -13,6 +13,7 @@ const { Client } = pg;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MIGRATIONS_DIR = path.join(ROOT, 'supabase', 'migrations');
 const STATUS_ONLY = process.argv.includes('--status');
+const BASELINE = process.argv.includes('--baseline');
 
 /** Minimal .env loader; existing environment variables always win. */
 function loadDotEnv(filePath) {
@@ -131,6 +132,25 @@ async function main() {
   const migrations = readMigrations();
   if (migrations.length === 0) {
     console.log('[db] No migration files found.');
+    return;
+  }
+
+  if (BASELINE) {
+    if (STATUS_ONLY) {
+      throw new Error('--baseline and --status cannot be used together');
+    }
+    await withClient(databaseUrl, async (client) => {
+      await ensureMigrationTable(client);
+      for (const migration of migrations) {
+        await client.query(
+          `INSERT INTO public.schema_migrations (version, checksum)
+           VALUES ($1, $2)
+           ON CONFLICT (version) DO UPDATE SET checksum = EXCLUDED.checksum`,
+          [migration.version, migration.checksum],
+        );
+        console.log(`[db:baseline] Marked ${migration.filename} as applied`);
+      }
+    });
     return;
   }
 
