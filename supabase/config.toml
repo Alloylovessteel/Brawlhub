@@ -1,0 +1,43 @@
+# Supabase local configuration for BrawlHub.
+# Secrets are read from environment variables; never commit real keys.
+
+project_id = "brawlhub"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[inbucket]
+enabled = true
+port = 54324
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/api/auth/callback"]
+jwt_expiry = 3600
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+
+# Discord provider is enabled for local development. The real client id and
+# secret come from the environment (see .env.example); the values below are
+# placeholders resolved by the Supabase CLI via env() substitution.
+[auth.external.discord]
+enabled = true
+client_id = "env(DISCORD_CLIENT_ID)"
+secret = "env(DISCORD_CLIENT_SECRET)"
+redirect_uri = "http://localhost:54321/auth/v1/callback"

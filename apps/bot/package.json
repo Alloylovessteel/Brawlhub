@@ -1,0 +1,22 @@
+{
+  "name": "@brawlhub/bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "discord.js": "^14.28.1",
+    "dotenv": "^16.6.1",
+    "@brawlhub/logging": "*",
+    "@brawlhub/database": "*",
+    "@brawlhub/shared": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "@types/node": "^22.15.0"
+  }
+}
