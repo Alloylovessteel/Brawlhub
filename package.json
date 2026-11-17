@@ -26,6 +26,9 @@
     "sync:run": "tsx scripts/sync.ts",
     "clubs:register": "tsx scripts/register-clubs.ts",
     "phase2:inspect": "node scripts/phase2-inspect.mjs",
+    "verify:secrets": "node scripts/verify-no-secrets.mjs",
+    "verify:rls": "node scripts/verify-rls.mjs",
+    "verify:security": "npm run verify:secrets && npm run verify:rls",
     "typecheck:web": "tsc --noEmit -p apps/web/tsconfig.json"
   },
   "devDependencies": {

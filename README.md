@@ -1,122 +1,304 @@
 # BrawlHub
 
-BrawlHub is a website + Discord bot for running **11–20 clubs in one Discord server**. It reads club and roster data from the **official Brawl Stars API** and stores it in **Supabase**, so club leadership has a single place to review rosters, membership changes, and club-level summaries.
+BrawlHub is a private website and Discord bot for managing **11–20 Brawl Stars clubs from one Discord server**. It reads club and roster data from the official Brawl Stars API, stores it in Supabase, and presents real rosters, membership history, trophy progression and sync health in a Next.js dashboard.
 
-> **Phase 1 is foundation only.** The dashboard, data sync, and Discord auth commands arrive in later phases. See [Phase 1 status](#phase-1-status).
+Current status: **Phase 1, Phase 2 and Phase 3 implemented**. The website uses the real Phase 2 data already collected for Kuromi Melody, Kuromi Brigade and Kuromi Blaze. No placeholder clubs, players or historical records are generated.
 
-## Architecture summary
+## Architecture
 
-The repository is an npm workspaces monorepo:
+This is an npm workspaces monorepo:
 
 | Path | Role |
 | --- | --- |
-| `apps/web` | Next.js 16 web app (foundation: health endpoint; dashboard/auth routes later). |
-| `apps/bot` | discord.js 14 bot (foundation: `ping` command; more commands later). |
-| `packages/shared` | Shared types, constants, and pure helpers. |
-| `packages/database` | Postgres/Supabase access and query helpers. |
-| `packages/brawl-stars` | Planned: official Brawl Stars API client (Bearer key, no token cache). |
-| `packages/sync` | Sync engine: club registration, snapshots, membership events, and notifications. |
-| `packages/logging` | Shared structured logger. |
-| `supabase/migrations` | SQL migrations (RLS policies, tables, constraints). |
-| `scripts/migrate.mjs` | Migration runner used by `npm run db:migrate`. |
+| `apps/web` | Next.js 16 App Router website, Discord OAuth2, RBAC, dashboards and admin APIs. |
+| `apps/bot` | discord.js bot, periodic sync scheduler and optional membership notifications. |
+| `packages/shared` | Roles, permission matrix and validated Brawl Stars/Discord input schemas. |
+| `packages/database` | Supabase anon/client helpers and service-role client for trusted jobs. |
+| `packages/brawl-stars` | Official Brawl Stars API client with Bearer key, retry/backoff and throttling. |
+| `packages/sync` | Club registration, sync lock, snapshots, membership transitions and notification claims. |
+| `packages/logging` | Structured JSON-lines logger with secret redaction. |
+| `supabase/migrations` | Schema, constraints, indexes and RLS policies. |
+| `scripts` | Migration runner, sync/register CLIs, inspection and security verification scripts. |
 
-Access is split by trust: browsers talk to Supabase with the anon key under row-level security (RLS), while trusted server-side jobs use the service-role key. Supabase Auth owns user sessions; this app stores no Discord tokens. See [docs/architecture.md](docs/architecture.md) for the full design.
+Browser reads use the Supabase anonymous key and RLS. Service-role access is restricted to trusted server code: auth provisioning, admin mutations, sync and migrations. No Discord bot token, Discord client secret, Supabase service-role key, Supercell API key or database URL is exposed to the browser.
+
+See [docs/architecture.md](docs/architecture.md), [docs/setup.md](docs/setup.md) and [docs/phase3-foundations.md](docs/phase3-foundations.md) for design details.
 
 ## Prerequisites
 
-- **Node.js >= 20.11** (see `engines` in `package.json`) and npm
-- A **Supabase project** (URL, anon key, service-role key, and a direct Postgres connection string)
-- A **Discord application/bot** (bot token, application ID, client secret, guild ID)
-- A **Brawl Stars developer API key** from <https://developer.brawlstars.com/>
+- Node.js **>= 20.11** and npm
+- A Supabase project with:
+  - Project URL
+  - Anon key
+  - Service-role key
+  - Direct Postgres connection string
+- A Discord application/bot with:
+  - Bot token
+  - Application/client ID
+  - Client secret
+  - Guild/server ID
+  - OAuth redirect URL configured
+- A Brawl Stars developer API key from <https://developer.brawlstars.com/>
 
-## Setup
+## First-time local setup
 
-1. Copy `.env.example` to `.env` and fill in real values:
-   - Windows (PowerShell): `Copy-Item .env.example .env`
-   - macOS/Linux: `cp .env.example .env`
-2. Install dependencies: `npm install`
-3. Apply database migrations: `npm run db:migrate`
-4. In Supabase, enable the **Discord** auth provider and add `http://localhost:3000/api/auth/callback` to the allowed redirect URLs.
-5. Start the web app and bot together: `npm run dev`
-6. Verify the bot with a configuration dry-run: `npm run bot:start` (with no real `DISCORD_TOKEN`, it reports missing values and exits without connecting)
-7. Build for production: `npm run build`
-8. Run tests: `npm test`
-9. Typecheck: `npm run typecheck`
-10. Register your real club tags: `npm run clubs:register -- '#TAG1' '#TAG2'` (replace the placeholders with your actual tags).
-11. Run a one-off sync: `npm run sync:run`
+Follow these steps in order from the repository root.
 
-Full step-by-step instructions are in [docs/setup.md](docs/setup.md).
+### 1. Create the environment file
 
-## Scripts
+Windows PowerShell:
 
-Commands defined at the repository root (`package.json`):
+```powershell
+Copy-Item .env.example .env
+```
 
-| Command | Description |
-| --- | --- |
-| `npm run dev` | Run web and bot together (`concurrently`, labels `web` / `bot`). |
-| `npm run dev:web` | Run the `apps/web` Next.js dev server. |
-| `npm run dev:bot` | Run the `apps/bot` bot in dev mode. |
-| `npm run build` | Production build of `@brawlhub/web`. |
-| `npm start` | Start the built web app. |
-| `npm run bot:start` | Start the bot (configuration/connection dry-run). |
-| `npm run typecheck` | `tsc --noEmit` with the root `tsconfig.json`. |
-| `npm test` | Run the Vitest suite once (`vitest run`). |
-| `npm run test:watch` | Run Vitest in watch mode. |
-| `npm run db:migrate` | Apply migrations via `scripts/migrate.mjs`. |
-| `npm run db:status` | Show migration status (`scripts/migrate.mjs --status`). |
-| `npm run clubs:register -- '#TAG'` | Register real club tags before the first sync. |
-| `npm run sync:run` | Run a single sync from the root `.env`. |
-| `npm run phase2:inspect` | Print Supabase record counts, club rosters and sync-run history. |
-
-## Phase 2: sync
-
-Phase 1 remains the foundation; Phase 2 adds the sync engine and its wiring.
-
-### New environment variables
-
-- `SYNC_SECRET` (server-only): shared secret for `/api/sync`. Send it as `Authorization: Bearer <SYNC_SECRET>`. When unset, the endpoint returns `503`.
-- `DISCORD_NOTIFICATION_CHANNEL_ID` (optional): channel for concise membership-change notifications. Blank disables notifications.
-- `BRAWL_STARS_MIN_INTERVAL_MS` (optional): minimum delay between Brawl Stars API calls (default `250`).
-- `SYNC_INTERVAL_MINUTES` (optional): bot sync cadence in minutes (default `15`, clamped to `1`–`1440`).
-
-### One-off commands and schedule
+macOS/Linux:
 
 ```sh
-npm run clubs:register -- '#TAG1' '#TAG2'
+cp .env.example .env
+```
+
+Open `.env` and fill in the real values. It is gitignored; never commit it.
+
+### 2. Install dependencies
+
+```sh
+npm install
+```
+
+### 3. Configure Supabase Auth for Discord
+
+In your Supabase project:
+
+1. Go to **Authentication → Providers → Discord**.
+2. Enable the provider.
+3. Enter `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`.
+4. Add this redirect URL:
+
+   ```text
+   http://localhost:3000/api/auth/callback
+   ```
+
+5. Make sure `NEXT_PUBLIC_APP_URL=http://localhost:3000` locally.
+
+The application requests Discord scopes `identify email guilds`. Supabase validates the OAuth `state`; the callback additionally verifies that the user is a member of `DISCORD_GUILD_ID`.
+
+### 4. Apply database migrations
+
+```sh
+npm run db:migrate
+npm run db:status
+```
+
+`db:status` should report all migrations applied, including `0005_phase3_rls.sql` and `0006_phase3_rls_hardening.sql`, with zero pending.
+
+### 5. Register clubs and collect real data
+
+If the Phase 2 clubs are not already registered:
+
+```sh
+npm run clubs:register -- '#2UG9UGQJY' '#CGJ89PRY' '#82C0QU9QG'
+```
+
+Run a sync:
+
+```sh
 npm run sync:run
 ```
 
-The Discord bot starts a sync about 5 seconds after login and then every `SYNC_INTERVAL_MINUTES`. Overlapping runs are skipped by a Postgres-backed lock (`sync_locks`), so the web cron route, the bot and separate CLI processes cannot run at the same time. Each run writes a `sync_runs` row with status, timestamps, affected clubs and errors; a recovered failure keeps its original message in `last_error`. `npm run sync:run` exits non-zero when the result status is `failed`.
-
-To exercise a full repeated sync without bypassing idempotency, use a shorter period and wait for the next boundary:
+Inspect the result:
 
 ```sh
-SYNC_INTERVAL_MINUTES=1 npm run sync:run
-# wait at least 60 seconds
-SYNC_INTERVAL_MINUTES=1 npm run sync:run
+npm run phase2:inspect
 ```
 
-The second run uses a new `(scope, period_start)` but still relies on payload hashes, event deduplication and notification claims, so unchanged data produces no new snapshots, events or notifications.
+### 6. Configure Discord role mapping
 
-### Cron / scheduled webhook
+The guild owner always receives global `owner`. Additional grants require explicit configuration in `.env`:
 
-`POST` (or `GET`) `/api/sync` runs the same sync. Configure an external cron job to call it with the shared secret:
+```dotenv
+DISCORD_OWNER_ROLE_IDS=123456789012345678
+DISCORD_ADMIN_ROLE_IDS=123456789012345679
+DISCORD_ROLE_MAP={"2UG9UGQJY":{"presidentRoleIds":["123456789012345680"],"staffRoleIds":["123456789012345681"]}}
+```
+
+Rules:
+
+- Discord role IDs are validated as snowflakes.
+- Unconfigured Discord roles never grant BrawlHub permissions.
+- Verified guild members with no elevated role receive `member` for each registered club.
+- Manual grants made in the admin interface persist across future Discord logins.
+
+### 7. Start the website
+
+Website only:
+
+```sh
+npm run dev:web
+```
+
+Website and Discord bot together:
+
+```sh
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:3000/login
+```
+
+Click **Continue with Discord**. After a successful login you should land on `/dashboard`.
+
+### 8. Stop the app
+
+Press `Ctrl+C` in the terminal running the dev server or `npm run dev`.
+
+## Website walkthrough
+
+| Route | What to verify |
+| --- | --- |
+| `/login` | Discord sign-in, logout message and localized error messages. |
+| `/dashboard` | Real club count, unique players, open memberships, latest successful sync, recent events, club comparison and stale/failure warnings. |
+| `/dashboard/clubs` | All registered clubs with tags, member counts, trophies, required trophies and last updated snapshot time. Search is server-side. |
+| `/dashboard/clubs/[clubId]` | Real roster ranked by trophies, club events, snapshot history and snapshot-only trophy chart. Management forms appear only for authorised users. |
+| `/dashboard/players` | Searchable and club-filterable player directory with current club, role, trophies and unavailable-value handling. |
+| `/dashboard/players/[playerId]` | Real player record, memberships, join/leave/transfer timeline and snapshot-only trophy chart. |
+| `/dashboard/leaderboards` | Club and player rankings calculated from stored records; per-club filter and real club progression. |
+| `/dashboard/history` | Time-range filters and snapshot-only charts for club trophies, member counts and a selected player's trophies. |
+| `/dashboard/admin` | Owner/admin sync trigger, manual role assignment, guild settings, audit log and recent sync runs. Audit log is owner-only. |
+
+If a club has only one snapshot, the chart shows that real point and the history page states when collection began. No values are interpolated.
+
+## Permission model
+
+| Requested role | Stored representation | Access |
+| --- | --- | --- |
+| Server Owner | global `owner` | Full access, all clubs, global roles, system settings and audit log. |
+| Server Administrator | global `admin` | All clubs, club staff and administrative tools. No audit log. |
+| Club President | club `owner` | Their club's roster, settings and authorised club staff. |
+| Club Staff | club `staff` | Their club's permitted information and authorised management functions. |
+| Member | club `member` | Club/player information and server-wide leaderboards/statistics. |
+| Guest | no verified guild membership or grant | No dashboard access. |
+
+Permissions are enforced in two layers:
+
+1. Server-side guards in Next.js route handlers and Server Components.
+2. Supabase RLS policies using `is_global_staff()`, `has_club_access()` and `is_global_owner()`.
+
+Client-provided user IDs, club IDs and permission claims are never trusted. All mutation inputs are validated with Zod, and sensitive POST routes check the request origin and apply in-process rate limits.
+
+## Testing and verification
+
+Run the complete automated suite from the repository root:
+
+```sh
+npm run typecheck
+npm test
+npm run build
+npm run verify:secrets
+npm run verify:rls
+npm run db:status
+npm run phase2:inspect
+```
+
+`npm run verify:secrets` must be run after `npm run build`; it scans built browser assets for private credential values. `npm run verify:rls` checks RLS policy metadata and service-only grants without modifying rows.
+
+### Manual authentication checklist
+
+These require a real Discord account in the configured guild:
+
+- [ ] Successful login redirects to `/dashboard`.
+- [ ] Cancelling the Discord consent screen redirects to `/login?error=oauth_denied`.
+- [ ] Tampering with the OAuth `state` fails before the app callback completes.
+- [ ] A user outside `DISCORD_GUILD_ID` is denied and signed out.
+- [ ] Logout returns to `/login?loggedOut=1` and protected routes redirect to login.
+- [ ] An expired or invalidated session cannot open `/dashboard`.
+- [ ] A guest cannot open any `/dashboard/*` route.
+
+### Manual permission checklist
+
+- [ ] Server Owner sees Admin, can run sync, assign global roles and read the audit log.
+- [ ] Server Administrator sees Admin, can run sync and manage club staff, but not the audit log.
+- [ ] Club President sees management controls only for their assigned club.
+- [ ] Club Staff cannot open club settings or staff forms.
+- [ ] Member cannot open `/dashboard/admin` or another club's restricted management functions.
+- [ ] Changing a club ID in the URL or form does not grant access.
+
+### Data regression checklist
+
+- [ ] `phase2:inspect` still reports 3 clubs, 80 players, 80 open memberships and preserved membership events.
+- [ ] Club dashboard rosters match the registered club member counts.
+- [ ] Player profiles use stored membership events and snapshots only.
+- [ ] Leaderboards match current stored trophy values.
+- [ ] Historical charts contain only stored snapshot points.
+- [ ] Website browsing does not create notifications or modify snapshots.
+
+### Bot and sync regression
+
+```sh
+npm run bot:start
+npm run sync:run
+npm run phase2:inspect
+```
+
+The bot reports missing configuration and exits safely when `DISCORD_TOKEN` is blank. Sync concurrency is still protected by the existing Postgres-backed `sync_locks` table and idempotency checks.
+
+## Scripts
+
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Run web and bot together. |
+| `npm run dev:web` | Run the Next.js dev server on port 3000. |
+| `npm run dev:bot` | Run the Discord bot through `tsx`. |
+| `npm run build` | Production build of `@brawlhub/web`. |
+| `npm start` | Start the built website on port 3000. |
+| `npm run bot:start` | Start the Discord bot. |
+| `npm run typecheck` | Typecheck all TypeScript workspaces. |
+| `npm test` | Run the Vitest suite once. |
+| `npm run test:watch` | Run Vitest in watch mode. |
+| `npm run db:migrate` | Apply pending migrations. |
+| `npm run db:status` | Show applied and pending migrations. |
+| `npm run clubs:register -- '#TAG'` | Register a real club tag. |
+| `npm run sync:run` | Run one sync from the root `.env`. |
+| `npm run phase2:inspect` | Print real database counts and sync history. |
+| `npm run verify:secrets` | Check built browser assets for private credential values. |
+| `npm run verify:rls` | Check Phase 3 RLS policy metadata. |
+| `npm run verify:security` | Run both security verification scripts. |
+
+## Cron / scheduled sync
+
+`GET` or `POST` `/api/sync` still runs the same Phase 2 sync engine with the shared secret:
 
 ```sh
 curl -X POST http://localhost:3000/api/sync \
   -H "Authorization: Bearer $SYNC_SECRET"
 ```
 
-Responses are JSON with `Cache-Control: no-store`: `200` for `completed`/`skipped`, `401` for an invalid or missing bearer token, `503` when `SYNC_SECRET` is not configured, and `500` for `failed`. The secret is never returned or logged.
+Owners and administrators can also run the same engine from `/dashboard/admin`; that route uses the session and RBAC guards instead of a bearer token.
 
-## Security notes
+## Production deployment
 
-- **Secrets stay server-side.** Only `NEXT_PUBLIC_*` variables are exposed to the browser. Never put the service-role key, bot token, or Brawl Stars API key in a `NEXT_PUBLIC_*` variable or client bundle.
-- **User-scoped access.** Private tables are protected by Supabase RLS keyed on `auth.uid()`; users can only read data for clubs they are allowed to see.
-- **Least privilege.** The service-role key (which bypasses RLS) is used only by trusted jobs such as migrations and sync. It is never used from browser code.
-- **No stored Discord tokens.** Supabase Auth owns sessions and the Discord provider link; this application persists no Discord OAuth/refresh tokens. `DISCORD_TOKEN` is the bot's own credential, kept server-side.
-- **No fabricated stats.** Every displayed number is derived from official API data. When data is missing or a sync has not run, show it as unavailable rather than inventing values.
+1. Set all required environment variables in the hosting platform. Keep `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `BRAWL_STARS_API_KEY`, `SYNC_SECRET`, `DISCORD_TOKEN` and `DISCORD_CLIENT_SECRET` server-only.
+2. Add the production OAuth callback URL, for example `https://example.com/api/auth/callback`, to Supabase Auth and Discord.
+3. Set `NEXT_PUBLIC_APP_URL` to the production origin and `NODE_ENV=production` so Supabase session cookies use `Secure`.
+4. Run `npm ci`, then `npm run db:migrate`, then `npm run build`.
+5. Start with `npm start`. Run the bot separately with `npm run bot:start` if automated scheduling/notifications are required.
+6. Run `npm run verify:secrets` and `npm run verify:rls` after deployment where the environment permits.
 
-## Phase 1 status
+The in-process rate limiter is per Node instance. Multi-instance deployments should replace it with a shared store such as Redis.
 
-This is the foundation phase. The root configuration, `.env` template, migration runner, initial RLS schema, workspace skeletons (web health endpoint and bot `ping` command), and the `shared` / `database` / `logging` packages are in place. The dashboard, sync engine, Brawl Stars API client, and Discord auth commands arrive in later phases. Do not read the scaffolding as shipped product features.
+## Data notes
+
+- `clubs.last_synced_at` is not populated by the Phase 2 sync; the UI prefers the latest real snapshot timestamp.
+- Player statistics such as `power_points`, `victories`, `solo_victories` and `team_victories` are often null in the official API data. They are displayed as **Unavailable**, never as zero.
+- `player_snapshots.raw` contains the collected club-member payload, not a full player API response.
+- Discord notifications remain disabled unless `DISCORD_NOTIFICATION_CHANNEL_ID` is set. Viewing the website never sends announcements.
+
+## Known limitations
+
+- Interactive Discord OAuth requires a real configured Discord application, Supabase provider and guild member; it cannot be fully verified by unit tests alone.
+- Manual permission and role tests against real Discord accounts must be performed in the deployed environment.
+- Historical charts are limited by actual collection frequency; currently only a small number of snapshots exist.
+- Rate limiting is process-local rather than distributed.
