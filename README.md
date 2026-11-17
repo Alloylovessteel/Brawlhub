@@ -88,8 +88,6 @@ npm run sync:run
 
 The Discord bot starts a sync about 5 seconds after login and then every `SYNC_INTERVAL_MINUTES`. Overlapping runs are skipped by a Postgres-backed lock (`sync_locks`), so the web cron route, the bot and separate CLI processes cannot run at the same time. Each run writes a `sync_runs` row with status, timestamps, affected clubs and errors; a recovered failure keeps its original message in `last_error`. `npm run sync:run` exits non-zero when the result status is `failed`.
 
-Registration supports gradual growth: running with fewer than 11 clubs still works and returns a `warning` describing the 11–20 club target rather than inventing placeholder clubs.
-
 To exercise a full repeated sync without bypassing idempotency, use a shorter period and wait for the next boundary:
 
 ```sh

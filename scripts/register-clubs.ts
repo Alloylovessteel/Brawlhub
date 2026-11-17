@@ -10,9 +10,6 @@ const tags = process.argv.slice(2);
 const result = await registerClubs(tags);
 console.log(JSON.stringify(result, null, 2));
 
-// The empty-tag entry is an advisory about the supported 11–20 club range,
-// not a failed registration. Only real tag failures are fatal.
-const hardRejections = result.rejected.filter((item) => item.tag !== '');
-if (result.registered === 0 && hardRejections.length > 0) {
+if (result.rejected.length > 0) {
   process.exit(1);
 }

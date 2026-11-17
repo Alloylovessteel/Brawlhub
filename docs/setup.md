@@ -125,7 +125,7 @@ npm run clubs:register -- '#TAG1' '#TAG2'
 npm run sync:run
 ```
 
-Replace the `#TAG` placeholders with your actual Brawl Stars club tags. The register script reports `registered`, `rejected` and an optional `warning`; the warning explains that the target is 11–20 clubs when fewer are registered, and no placeholder clubs are created. `npm run sync:run` loads the root `.env`, prints the JSON result, and exits non-zero when the status is `failed`.
+Replace the `#TAG` placeholders with your actual Brawl Stars club tags. The register script reports `registered` and `rejected` counts and exits non-zero if any tag was rejected; it creates no placeholder clubs. `npm run sync:run` loads the root `.env`, prints the JSON result, and exits non-zero when the status is `failed`.
 
 ### Scheduled sync
 

@@ -9,8 +9,6 @@ const REGISTRATION_API_TIMEOUT_MS = 30_000;
 export interface RegistrationResult {
   registered: number;
   rejected: Array<{ tag: string; reason: string }>;
-  /** Advisory shown while the community is still growing toward 11 clubs. */
-  warning?: string;
 }
 
 interface ClubRow {
@@ -153,17 +151,7 @@ async function registerClubsWith(
     }
   }
 
-  const finalCount = existingCount + registered;
-  const warning =
-    finalCount < SUPPORTED_CLUB_RANGE.min
-      ? `Only ${finalCount} club(s) registered. Target community size is ${SUPPORTED_CLUB_RANGE.min}–${SUPPORTED_CLUB_RANGE.max} clubs; gradual registration is supported and no placeholder clubs were created.`
-      : undefined;
-
-  return {
-    registered,
-    rejected,
-    ...(warning === undefined ? {} : { warning }),
-  };
+  return { registered, rejected };
 }
 
 /** Registers clubs supplied by their (optionally '#'-prefixed) tags. */
