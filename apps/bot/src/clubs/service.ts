@@ -187,7 +187,7 @@ export function parseSyncRunRow(value: unknown): SyncRunRecord | null {
   };
 }
 
-function parseSnapshotRow(value: unknown): ClubSnapshot | null {
+export function parseSnapshotRow(value: unknown): ClubSnapshot | null {
   const row = record(value);
   if (row === null) return null;
   const id = asString(row['id']);

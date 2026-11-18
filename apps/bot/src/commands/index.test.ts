@@ -68,6 +68,7 @@ describe('command registry', () => {
       'player-history',
       'player-clubs',
       'player-compare',
+      'leaderboard',
     ]);
     for (const name of ['club-members', 'club-leaderboard', 'club-history', 'club-compare']) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
@@ -88,6 +89,9 @@ describe('command registry', () => {
         'function',
       );
     }
+    expect(
+      commands.find((command) => command.data.name === 'leaderboard')?.handleComponent,
+    ).toBeTypeOf('function');
   });
 });
 

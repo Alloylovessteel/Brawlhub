@@ -4,6 +4,7 @@ import {
   Routes,
   SlashCommandBuilder,
   type SlashCommandOptionsOnlyBuilder,
+  type SlashCommandSubcommandsOnlyBuilder,
   type AutocompleteInteraction,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
@@ -70,6 +71,11 @@ import {
   handlePlayerCompare,
   handlePlayerCompareAutocomplete,
 } from './player-compare.js';
+import {
+  leaderboardCommandData,
+  handleLeaderboard,
+  handleLeaderboardComponent,
+} from './leaderboard.js';
 import { handlePing } from './ping.js';
 
 const logger = createLogger('bot');
@@ -80,7 +86,10 @@ function errorMessage(error: unknown): string {
 }
 
 export interface CommandDefinition {
-  readonly data: SlashCommandBuilder | SlashCommandOptionsOnlyBuilder;
+  readonly data:
+    | SlashCommandBuilder
+    | SlashCommandOptionsOnlyBuilder
+    | SlashCommandSubcommandsOnlyBuilder;
   readonly handle: (interaction: ChatInputCommandInteraction) => Promise<void>;
   readonly autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
   readonly handleComponent?: (interaction: ButtonInteraction) => Promise<void>;
@@ -147,6 +156,11 @@ export const commands: readonly CommandDefinition[] = [
     data: playerCompareCommandData,
     handle: handlePlayerCompare,
     autocomplete: handlePlayerCompareAutocomplete,
+  },
+  {
+    data: leaderboardCommandData,
+    handle: handleLeaderboard,
+    handleComponent: handleLeaderboardComponent,
   },
 ];
 

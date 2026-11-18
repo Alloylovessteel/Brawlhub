@@ -105,7 +105,7 @@ function isNotFound(error: unknown): boolean {
   return error instanceof BrawlStarsApiError && error.status === 404;
 }
 
-function parsePlayerRow(value: unknown): PlayerIdentity | null {
+export function parsePlayerRow(value: unknown): PlayerIdentity | null {
   const row = record(value);
   if (row === null) return null;
   const id = asString(row['id']);
@@ -141,7 +141,7 @@ function parseClubRef(value: unknown, fallbackTag?: string): PlayerClubRef | nul
   };
 }
 
-function parseMembershipRow(value: unknown, staleAfterMs: number, now: Date, playerSyncedAt: string | null): PlayerMembershipRecord | null {
+export function parseMembershipRow(value: unknown, staleAfterMs: number, now: Date, playerSyncedAt: string | null): PlayerMembershipRecord | null {
   const row = record(value);
   if (row === null) return null;
   const id = asString(row['id']);
