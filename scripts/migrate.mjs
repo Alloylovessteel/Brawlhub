@@ -90,6 +90,29 @@ async function readApplied(client) {
   return new Map(rows.map((row) => [row.version, row.checksum]));
 }
 
+/** Read migration records over Supabase REST when direct PostgreSQL is blocked. */
+async function readAppliedViaRest() {
+  const baseUrl = process.env.SUPABASE_URL?.replace(/\/$/, '');
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (baseUrl === undefined || serviceKey === undefined || serviceKey === '') {
+    throw new Error('Supabase REST fallback requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
+  }
+
+  const response = await fetch(`${baseUrl}/rest/v1/schema_migrations?select=version,checksum`, {
+    headers: {
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Supabase REST migration status failed with status ${response.status}`);
+  }
+
+  const rows = await response.json();
+  return new Map(rows.map((row) => [row.version, row.checksum]));
+}
+
 async function ensureMigrationTable(client) {
   await client.query(`
     CREATE TABLE IF NOT EXISTS public.schema_migrations (
@@ -155,33 +178,40 @@ async function main() {
   }
 
   if (STATUS_ONLY) {
-    await withClient(databaseUrl, async (client) => {
-      const applied = await readApplied(client);
-      const appliedNames = [];
-      const pendingNames = [];
-      const changedNames = [];
+    let applied;
+    try {
+      applied = await withClient(databaseUrl, readApplied);
+    } catch (error) {
+      console.warn(
+        `[db:status] Direct PostgreSQL unavailable (${error instanceof Error ? error.message : 'unknown error'}); trying Supabase REST.`
+      );
+      applied = await readAppliedViaRest();
+    }
 
-      for (const migration of migrations) {
-        const recorded = applied.get(migration.version);
-        if (recorded === undefined) {
-          pendingNames.push(migration.filename);
-        } else if (recorded !== migration.checksum) {
-          changedNames.push(migration.filename);
-        } else {
-          appliedNames.push(migration.filename);
-        }
-      }
+    const appliedNames = [];
+    const pendingNames = [];
+    const changedNames = [];
 
-      console.log(`[db:status] Applied (${appliedNames.length}):`);
-      for (const name of appliedNames) console.log(`  - ${name}`);
-      console.log(`[db:status] Pending (${pendingNames.length}):`);
-      for (const name of pendingNames) console.log(`  - ${name}`);
-      if (changedNames.length > 0) {
-        console.log(`[db:status] Checksum mismatch (${changedNames.length}):`);
-        for (const name of changedNames) console.log(`  - ${name}`);
-        process.exitCode = 1;
+    for (const migration of migrations) {
+      const recorded = applied.get(migration.version);
+      if (recorded === undefined) {
+        pendingNames.push(migration.filename);
+      } else if (recorded !== migration.checksum) {
+        changedNames.push(migration.filename);
+      } else {
+        appliedNames.push(migration.filename);
       }
-    });
+    }
+
+    console.log(`[db:status] Applied (${appliedNames.length}):`);
+    for (const name of appliedNames) console.log(`  - ${name}`);
+    console.log(`[db:status] Pending (${pendingNames.length}):`);
+    for (const name of pendingNames) console.log(`  - ${name}`);
+    if (changedNames.length > 0) {
+      console.log(`[db:status] Checksum mismatch (${changedNames.length}):`);
+      for (const name of changedNames) console.log(`  - ${name}`);
+      process.exitCode = 1;
+    }
     return;
   }
 
