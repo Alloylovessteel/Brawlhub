@@ -32,6 +32,7 @@ CREATE POLICY membership_events_select_authenticated
 
 DROP POLICY IF EXISTS audit_logs_select ON public.audit_logs;
 DROP POLICY IF EXISTS audit_logs_select_global_staff ON public.audit_logs;
+DROP POLICY IF EXISTS audit_logs_select_owner ON public.audit_logs;
 CREATE POLICY audit_logs_select_owner
   ON public.audit_logs FOR SELECT
   TO authenticated

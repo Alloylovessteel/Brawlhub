@@ -90,7 +90,7 @@ npm run db:migrate
 npm run db:status
 ```
 
-`db:status` should report all migrations applied, including `0005_phase3_rls.sql` and `0006_phase3_rls_hardening.sql`, with zero pending.
+`db:status` should report all migrations applied, including `0005_phase3_rls.sql`, `0006_supabase_preview_policy_fix.sql`, and `0007_phase3_rls_hardening.sql`, with zero pending.
 
 ### 5. Register clubs and collect real data
 
