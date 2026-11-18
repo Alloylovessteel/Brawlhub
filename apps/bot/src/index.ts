@@ -2,10 +2,12 @@
 // module (for example @brawlhub/logging) gets a chance to read environment variables.
 import { getBotConfig } from './config.js';
 import { createLogger } from '@brawlhub/logging';
-import { Client, GatewayIntentBits, type Interaction } from 'discord.js';
+import { Client, type Interaction } from 'discord.js';
 import { handleInteraction, registerCommands } from './commands/index.js';
 import { runSync, type SyncNotifier } from '@brawlhub/sync';
 import { createDiscordNotifier } from './notifier.js';
+import { registerDiscordAuthorizationEvents } from './discord/events.js';
+import { getGatewayIntents } from './discord/intents.js';
 
 const logger = createLogger('bot');
 
@@ -117,8 +119,10 @@ if (token === undefined) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: getGatewayIntents(),
 });
+
+registerDiscordAuthorizationEvents(client, config.guildId);
 
 client.on('interactionCreate', (interaction: Interaction) => {
   handleInteraction(interaction).catch((error: unknown) => {
