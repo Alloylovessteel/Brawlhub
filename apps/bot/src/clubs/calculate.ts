@@ -1,14 +1,19 @@
-import type { ClubSnapshot, RosterMember } from './types';
+import type {
+  ClubSnapshot,
+  HistoryChange,
+  HistoryPeriod,
+  HistoryPoint,
+  LeaderboardEntry,
+  MemberDetail,
+  RosterMember,
+  TrophyProgression,
+} from './types';
+
+export type { TrophyProgression } from './types';
 
 export interface TrophyRange {
   readonly low: number;
   readonly high: number;
-}
-
-export interface TrophyProgression {
-  readonly today: number | null;
-  readonly week: number | null;
-  readonly season: number | null;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -117,4 +122,88 @@ export function countRole(
   const rolesAvailable = roster.some((member) => member.role !== null && member.role !== '');
   if (!rolesAvailable) return null;
   return roster.filter((member) => member.role === role).length;
+}
+
+/** Sort roster members by stored trophies, placing incomplete rows last. */
+export function sortMembersByTrophies(
+  members: readonly MemberDetail[],
+): MemberDetail[] {
+  return [...members].sort((a, b) => {
+    const aTrophies = finiteNumber(a.trophies);
+    const bTrophies = finiteNumber(b.trophies);
+    if (aTrophies !== null && bTrophies !== null && aTrophies !== bTrophies) {
+      return bTrophies - aTrophies;
+    }
+    if (aTrophies !== null && bTrophies === null) return -1;
+    if (aTrophies === null && bTrophies !== null) return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/**
+ * Rank members by current trophies. Members without a valid trophy value are
+ * omitted rather than given a fabricated position; equal values share a rank.
+ */
+export function rankByTrophies(members: readonly MemberDetail[]): LeaderboardEntry[] {
+  const ranked = members
+    .map((member) => ({ member, trophies: finiteNumber(member.trophies) }))
+    .filter((entry): entry is { member: MemberDetail; trophies: number } => entry.trophies !== null)
+    .sort((a, b) => b.trophies - a.trophies || a.member.name.localeCompare(b.member.name));
+
+  let currentRank = 0;
+  let previousTrophies: number | null = null;
+
+  return ranked.map((entry, index) => {
+    if (previousTrophies === null || entry.trophies !== previousTrophies) {
+      currentRank = index + 1;
+      previousTrophies = entry.trophies;
+    }
+    return { ...entry.member, rank: currentRank, progression: null };
+  });
+}
+
+export const HISTORY_PERIOD_DAYS: Readonly<Record<HistoryPeriod, number | null>> = {
+  '7d': 7,
+  '30d': 30,
+  '90d': 90,
+  all: null,
+};
+
+/** Filter stored snapshots to a bounded period without creating missing points. */
+export function filterSnapshotsByPeriod(
+  snapshots: readonly ClubSnapshot[],
+  period: HistoryPeriod,
+  now: Date,
+): ClubSnapshot[] {
+  const days = HISTORY_PERIOD_DAYS[period];
+  const sinceMs = days === null ? null : now.getTime() - days * DAY_MS;
+  return snapshots
+    .filter((snapshot) => {
+      const capturedMs = Date.parse(snapshot.capturedAt);
+      if (Number.isNaN(capturedMs)) return false;
+      return sinceMs === null || capturedMs >= sinceMs;
+    })
+    .sort((a, b) => Date.parse(a.capturedAt) - Date.parse(b.capturedAt));
+}
+
+function difference(later: number | null, earlier: number | null): number | null {
+  const laterValue = finiteNumber(later);
+  const earlierValue = finiteNumber(earlier);
+  return laterValue === null || earlierValue === null ? null : laterValue - earlierValue;
+}
+
+/** Change between the first and last stored history points in a period. */
+export function calculateHistoryChange(
+  points: readonly HistoryPoint[],
+): HistoryChange | null {
+  if (points.length < 2) return null;
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (first === undefined || last === undefined) return null;
+
+  return {
+    trophies: difference(last.trophies, first.trophies),
+    averageTrophies: difference(last.averageTrophies, first.averageTrophies),
+    memberCount: difference(last.memberCount, first.memberCount),
+  };
 }

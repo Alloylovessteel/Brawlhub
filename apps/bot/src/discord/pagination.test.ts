@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildPaginationRow,
+  buildPaginationRowWithState,
   paginate,
   paginationCustomId,
+  paginationCustomIdWithState,
   parsePaginationCustomId,
+  parsePaginationCustomIdWithState,
 } from './pagination';
 
 describe('pagination helpers', () => {
@@ -41,5 +44,27 @@ describe('pagination helpers', () => {
     const json = row!.toJSON();
     expect(json.components.map((component) => (component as { custom_id?: string }).custom_id))
       .toEqual(['club-members:page:1', 'club-members:page:3']);
+  });
+
+  it('round-trips opaque state through pagination custom IDs', () => {
+    const customId = paginationCustomIdWithState('club-history', 3, '30d|2C0Y');
+
+    expect(customId).toBe('club-history:page:3:30d|2C0Y');
+    expect(parsePaginationCustomIdWithState(customId, 'club-history')).toEqual({
+      page: 3,
+      state: '30d|2C0Y',
+    });
+    expect(parsePaginationCustomIdWithState(customId, 'club-members')).toBeNull();
+    expect(parsePaginationCustomIdWithState('club-history:page:0:all', 'club-history')).toBeNull();
+    expect(parsePaginationCustomIdWithState('club-history:page:1:', 'club-history')).toBeNull();
+  });
+
+  it('preserves state in generated pagination buttons', () => {
+    const row = buildPaginationRowWithState('club-members', 2, 3, '2C0Y');
+
+    expect(row).not.toBeNull();
+    const json = row!.toJSON();
+    expect(json.components.map((component) => (component as { custom_id?: string }).custom_id))
+      .toEqual(['club-members:page:1:2C0Y', 'club-members:page:3:2C0Y']);
   });
 });

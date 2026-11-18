@@ -54,6 +54,26 @@ describe('command registry', () => {
       'function',
     );
   });
+
+  it('registers all advanced club commands with their handlers', () => {
+    expect(commands.map((command) => command.data.name)).toEqual([
+      'ping',
+      'club',
+      'clubs',
+      'club-members',
+      'club-leaderboard',
+      'club-history',
+      'club-compare',
+    ]);
+    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'club-compare']) {
+      expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
+    }
+    for (const name of ['club-members', 'club-leaderboard', 'club-history']) {
+      expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
+        'function',
+      );
+    }
+  });
 });
 
 describe('dispatchInteraction', () => {

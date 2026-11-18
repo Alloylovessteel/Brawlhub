@@ -18,6 +18,12 @@ export interface RosterMember {
   readonly role: string | null;
 }
 
+export interface TrophyProgression {
+  readonly today: number | null;
+  readonly week: number | null;
+  readonly season: number | null;
+}
+
 export interface ClubSnapshot {
   readonly id: string;
   readonly syncRunId: string;
@@ -67,3 +73,105 @@ export type LoadClubResult =
   | { readonly kind: 'invalid-tag' }
   | { readonly kind: 'no-default' }
   | { readonly kind: 'unregistered'; readonly tag: string };
+
+/** Shared failure cases for commands that resolve a registered club by tag. */
+export type ClubLookupFailure =
+  | { readonly kind: 'invalid-tag' }
+  | { readonly kind: 'no-default' }
+  | { readonly kind: 'unregistered'; readonly tag: string }
+  | { readonly kind: 'same-club' };
+
+export type ResolvedClubResult<T> =
+  | ClubLookupFailure
+  | { readonly kind: 'ok'; readonly value: T };
+
+/** Stored player row. `highest_trophies` is nullable and never inferred. */
+export interface PlayerRecord {
+  readonly id: string;
+  readonly tag: string;
+  readonly name: string;
+  readonly trophies: number | null;
+  readonly highestTrophies: number | null;
+}
+
+export interface MemberDetail extends RosterMember {
+  readonly playerId: string | null;
+  readonly highestTrophies: number | null;
+}
+
+export interface LeaderboardEntry extends MemberDetail {
+  readonly rank: number;
+  readonly progression: TrophyProgression | null;
+}
+
+/** Read-only synced data shared by the advanced club commands. */
+export interface SyncedClubView {
+  readonly club: ClubRecord;
+  readonly snapshots: readonly ClubSnapshot[];
+  readonly completedRunIds: ReadonlySet<string>;
+  readonly latestSnapshot: ClubSnapshot | null;
+  readonly roster: readonly RosterMember[];
+  readonly rosterSource: 'snapshot' | 'memberships' | 'none';
+  readonly latestSyncAt: string | null;
+}
+
+export interface MemberView extends SyncedClubView {
+  readonly members: readonly MemberDetail[];
+}
+
+export interface LeaderboardView extends SyncedClubView {
+  readonly entries: readonly LeaderboardEntry[];
+}
+
+export type HistoryPeriod = '7d' | '30d' | '90d' | 'all';
+
+export interface HistoryPoint {
+  readonly capturedAt: string;
+  readonly syncRunId: string;
+  readonly trophies: number | null;
+  readonly averageTrophies: number | null;
+  readonly memberCount: number | null;
+}
+
+export interface HistoryChange {
+  readonly trophies: number | null;
+  readonly averageTrophies: number | null;
+  readonly memberCount: number | null;
+}
+
+export interface MembershipChange {
+  readonly detectedAt: string;
+  readonly eventType: 'join' | 'leave' | 'transfer';
+  readonly playerName: string | null;
+  readonly playerTag: string | null;
+}
+
+export interface HistoryView extends SyncedClubView {
+  readonly period: HistoryPeriod;
+  readonly points: readonly HistoryPoint[];
+  readonly latestSnapshotAt: string | null;
+  readonly rangeStart: string | null;
+  readonly rangeEnd: string | null;
+  readonly change: HistoryChange | null;
+  readonly progression: TrophyProgression | null;
+  readonly membershipChanges: readonly MembershipChange[];
+}
+
+export interface ComparisonSide {
+  readonly club: ClubRecord;
+  readonly trophies: number | null;
+  readonly averageTrophies: number | null;
+  readonly memberCount: number | null;
+  readonly highestTrophies: number | null;
+  readonly lowestTrophies: number | null;
+  readonly progression: TrophyProgression | null;
+  readonly latestSyncAt: string | null;
+  readonly snapshotAt: string | null;
+  readonly syncRunId: string | null;
+}
+
+export interface ComparisonView {
+  readonly first: ComparisonSide;
+  readonly second: ComparisonSide;
+  readonly aligned: boolean;
+}

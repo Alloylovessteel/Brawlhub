@@ -85,3 +85,75 @@ export function buildPaginationRow(
 export function isPaginationButton(interaction: ButtonInteraction, commandName: string): boolean {
   return parsePaginationCustomId(interaction.customId, commandName) !== null;
 }
+
+export interface StatefulPagination {
+  readonly page: number;
+  readonly state: string;
+}
+
+/**
+ * Custom ID with an opaque suffix so pagination buttons can restore the exact
+ * lookup used for the original response (for example a club tag).
+ */
+export function paginationCustomIdWithState(
+  commandName: string,
+  page: number,
+  state: string,
+): string {
+  return `${commandName}:page:${Math.max(1, Math.floor(page))}:${state}`;
+}
+
+export function parsePaginationCustomIdWithState(
+  customId: string,
+  commandName: string,
+): StatefulPagination | null {
+  const prefix = `${commandName}:page:`;
+  if (!customId.startsWith(prefix) || customId.length <= prefix.length) return null;
+
+  const remainder = customId.slice(prefix.length);
+  const divider = remainder.indexOf(':');
+  if (divider <= 0 || divider === remainder.length - 1) return null;
+
+  const page = Number(remainder.slice(0, divider));
+  if (!Number.isInteger(page) || page < 1) return null;
+
+  return { page, state: remainder.slice(divider + 1) };
+}
+
+/** Build Previous/Next controls that preserve a lookup state suffix. */
+export function buildPaginationRowWithState(
+  commandName: string,
+  page: number,
+  pageCount: number,
+  state: string,
+): ActionRowBuilder<ButtonBuilder> | null {
+  const safePage = Math.min(Math.max(1, Math.floor(page)), Math.max(1, pageCount));
+  const buttons: ButtonBuilder[] = [];
+
+  if (safePage > 1) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(paginationCustomIdWithState(commandName, safePage - 1, state))
+        .setLabel('Previous')
+        .setStyle(ButtonStyle.Secondary),
+    );
+  }
+
+  if (safePage < pageCount) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(paginationCustomIdWithState(commandName, safePage + 1, state))
+        .setLabel('Next')
+        .setStyle(ButtonStyle.Secondary),
+    );
+  }
+
+  return buttons.length === 0 ? null : new ActionRowBuilder<ButtonBuilder>().addComponents(buttons);
+}
+
+export function isPaginationButtonWithState(
+  interaction: ButtonInteraction,
+  commandName: string,
+): boolean {
+  return parsePaginationCustomIdWithState(interaction.customId, commandName) !== null;
+}

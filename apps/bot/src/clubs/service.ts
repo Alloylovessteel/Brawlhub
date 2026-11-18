@@ -5,17 +5,41 @@ import {
 } from '@brawlhub/brawl-stars';
 import { createTrustedClient } from '@brawlhub/database';
 import { brawlTagSchema } from '@brawlhub/shared';
-import { calculateAverage } from './calculate';
+import {
+  calculateAverage,
+  calculateHistoryChange,
+  calculateTrophyProgression,
+  calculateTrophyRange,
+  filterSnapshotsByPeriod,
+  HISTORY_PERIOD_DAYS,
+  rankByTrophies,
+  sortMembersByTrophies,
+} from './calculate';
 import type {
   ApiIssue,
+  ClubLookupFailure,
   ClubRecord,
   ClubSnapshot,
   ClubSummary,
   ClubView,
+  ComparisonSide,
+  ComparisonView,
+  HistoryPeriod,
+  HistoryPoint,
+  HistoryView,
+  LeaderboardEntry,
+  LeaderboardView,
   LoadClubResult,
+  MemberDetail,
+  MemberView,
+  MembershipChange,
+  PlayerRecord,
+  ResolvedClubResult,
   RosterMember,
   RosterSource,
+  SyncedClubView,
   SyncRunRecord,
+  TrophyProgression,
 } from './types';
 
 type DatabaseClient = ReturnType<typeof createTrustedClient>;
@@ -33,6 +57,7 @@ interface LiveClubFetchResult {
 }
 
 const LIVE_CLUB_CACHE_MS = 30_000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const liveClubCache = new Map<string, { expiresAt: number; result: LiveClubFetchResult }>();
 
 /** Clear the in-process live club cache. Useful after API credential changes. */
@@ -95,6 +120,29 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : [];
+}
+
+type NormalizedLookupTag =
+  | { readonly ok: true; readonly tag: string | undefined }
+  | { readonly ok: false };
+
+/** Shared tag validation for every club command. Blank means "use the default". */
+function normalizeLookupTag(tag: string | undefined): NormalizedLookupTag {
+  if (tag === undefined || tag.trim() === '') {
+    return { ok: true, tag: undefined };
+  }
+  const parsed = brawlTagSchema.safeParse(tag);
+  return parsed.success ? { ok: true, tag: parsed.data } : { ok: false };
+}
+
+function clubLookupFailure(
+  club: ClubRecord | null,
+  normalizedTag: string | undefined,
+): ClubLookupFailure | null {
+  if (club !== null) return null;
+  return normalizedTag === undefined
+    ? { kind: 'no-default' }
+    : { kind: 'unregistered', tag: normalizedTag };
 }
 
 function requireOk(error: { message?: string } | null | undefined, context: string): void {
@@ -434,12 +482,9 @@ export async function loadClubView(
   const api = options.api ?? createBrawlStarsClient();
   const now = input.now ?? new Date();
 
-  let normalizedTag: string | undefined;
-  if (input.tag !== undefined && input.tag.trim() !== '') {
-    const parsedTag = brawlTagSchema.safeParse(input.tag);
-    if (!parsedTag.success) return { kind: 'invalid-tag' };
-    normalizedTag = parsedTag.data;
-  }
+  const normalized = normalizeLookupTag(input.tag);
+  if (!normalized.ok) return { kind: 'invalid-tag' };
+  const normalizedTag = normalized.tag;
 
   const club = await resolveClub({ tag: normalizedTag, guildId: input.guildId, db });
   if (club === null) {
@@ -548,4 +593,493 @@ export function filterRegisteredClubs(
       return Number(bStarts) - Number(aStarts) || a.name.localeCompare(b.name);
     })
     .slice(0, Math.max(1, Math.floor(limit)));
+}
+
+function parsePlayerRow(value: unknown): PlayerRecord | null {
+  const row = record(value);
+  if (row === null) return null;
+  const id = asString(row['id']);
+  const parsedTag = brawlTagSchema.safeParse(row['tag'] ?? '');
+  const name = asString(row['name']);
+  if (id === null || !parsedTag.success || name === null) return null;
+
+  return {
+    id,
+    tag: parsedTag.data,
+    name,
+    trophies: asNumber(row['trophies']),
+    highestTrophies: asNumber(row['highest_trophies']),
+  };
+}
+
+async function readPlayersByTags(
+  tags: readonly string[],
+  db: DatabaseClient,
+): Promise<PlayerRecord[]> {
+  const uniqueTags = [...new Set(tags)];
+  if (uniqueTags.length === 0) return [];
+
+  const { data, error } = await db
+    .from('players')
+    .select('id, tag, name, trophies, highest_trophies')
+    .in('tag', uniqueTags);
+  requireOk(error, 'Read player details');
+  return (data ?? [])
+    .map((row: unknown) => parsePlayerRow(row))
+    .filter((row): row is PlayerRecord => row !== null);
+}
+
+interface PlayerSnapshotRow {
+  readonly playerId: string;
+  readonly snapshot: ClubSnapshot;
+}
+
+function playerSnapshotAsClubSnapshot(value: unknown): ClubSnapshot | null {
+  const row = record(value);
+  if (row === null) return null;
+  const id = asString(row['id']);
+  const syncRunId = asString(row['sync_run_id']);
+  const capturedAt = asString(row['captured_at']);
+  if (id === null || syncRunId === null || capturedAt === null) return null;
+
+  return {
+    id,
+    syncRunId,
+    capturedAt,
+    trophies: asNumber(row['trophies']),
+    memberCount: null,
+    raw: null,
+  };
+}
+
+async function readPlayerSnapshots(
+  playerIds: readonly string[],
+  completedRunIds: ReadonlySet<string>,
+  db: DatabaseClient,
+): Promise<PlayerSnapshotRow[]> {
+  if (playerIds.length === 0) return [];
+
+  const { data, error } = await db
+    .from('player_snapshots')
+    .select('id, player_id, sync_run_id, captured_at, trophies')
+    .in('player_id', [...new Set(playerIds)])
+    .order('captured_at', { ascending: true })
+    .limit(2000);
+  requireOk(error, 'Read player history');
+
+  return (data ?? [])
+    .map((row: unknown) => {
+      const source = record(row);
+      const playerId = asString(source?.['player_id']);
+      const snapshot = playerSnapshotAsClubSnapshot(row);
+      if (
+        playerId === null ||
+        snapshot === null ||
+        !completedRunIds.has(snapshot.syncRunId)
+      ) {
+        return null;
+      }
+      return { playerId, snapshot };
+    })
+    .filter((row): row is PlayerSnapshotRow => row !== null);
+}
+
+async function readMembershipEvents(
+  clubId: string,
+  period: HistoryPeriod,
+  now: Date,
+  db: DatabaseClient,
+): Promise<MembershipChange[]> {
+  const { data, error } = await db
+    .from('membership_events')
+    .select('id, event_type, detected_at, player:players!membership_events_player_id_fkey(tag, name)')
+    .or(`from_club_id.eq.${clubId},to_club_id.eq.${clubId}`)
+    .order('detected_at', { ascending: false })
+    .limit(100);
+  requireOk(error, 'Read membership history');
+
+  const days = HISTORY_PERIOD_DAYS[period];
+  const sinceMs = days === null ? null : now.getTime() - days * DAY_MS;
+  const changes: MembershipChange[] = [];
+
+  for (const item of data ?? []) {
+    const row = record(item);
+    if (row === null) continue;
+    const eventType = asString(row['event_type']);
+    const detectedAt = asString(row['detected_at']);
+    if (
+      (eventType !== 'join' && eventType !== 'leave' && eventType !== 'transfer') ||
+      detectedAt === null
+    ) {
+      continue;
+    }
+    const capturedMs = Date.parse(detectedAt);
+    if (Number.isNaN(capturedMs) || (sinceMs !== null && capturedMs < sinceMs)) continue;
+
+    const player = relationRecord(row['player']);
+    const parsedTag = brawlTagSchema.safeParse(player?.['tag'] ?? '');
+    changes.push({
+      detectedAt,
+      eventType,
+      playerName: asString(player?.['name']),
+      playerTag: parsedTag.success ? parsedTag.data : null,
+    });
+  }
+
+  return changes.slice(0, 10);
+}
+
+function historyPointFromSnapshot(snapshot: ClubSnapshot): HistoryPoint | null {
+  if (Number.isNaN(Date.parse(snapshot.capturedAt))) return null;
+  const members = parseApiMembers(record(snapshot.raw)?.['members']);
+  const memberCount = asNumber(snapshot.memberCount) ?? (members.length > 0 ? members.length : null);
+
+  return {
+    capturedAt: snapshot.capturedAt,
+    syncRunId: snapshot.syncRunId,
+    trophies: asNumber(snapshot.trophies),
+    averageTrophies: members.length > 0
+      ? calculateAverage(members.map((member) => member.trophies))
+      : null,
+    memberCount,
+  };
+}
+
+function progressionFor(
+  snapshots: readonly ClubSnapshot[],
+  currentTrophies: number | null,
+  currentAt: string,
+  now: Date,
+  seasonStartIso: string | undefined,
+): TrophyProgression | null {
+  const currentAtMs = Date.parse(currentAt);
+  if (currentTrophies === null || Number.isNaN(currentAtMs)) return null;
+
+  const applicable = snapshots.filter((snapshot) => {
+    const capturedMs = Date.parse(snapshot.capturedAt);
+    return !Number.isNaN(capturedMs) && capturedMs <= currentAtMs;
+  });
+
+  return calculateTrophyProgression({
+    snapshots: applicable,
+    currentTrophies,
+    currentAt,
+    now,
+    seasonStartIso,
+  });
+}
+
+async function readSyncedClubView(
+  club: ClubRecord,
+  db: DatabaseClient,
+): Promise<SyncedClubView> {
+  const [snapshots, runs] = await Promise.all([readSnapshots(club.id, db), readCompletedRuns(db)]);
+  const completedRunIds = new Set(runs.map((run) => run.id));
+  const latestSnapshot = latestCompletedSnapshot(snapshots, completedRunIds);
+  const snapshotRosterResult = snapshotRoster(snapshots, completedRunIds);
+  const roster = snapshotRosterResult?.roster ?? (await readMembershipRoster(club.id, db));
+
+  return {
+    club,
+    snapshots,
+    completedRunIds,
+    latestSnapshot,
+    roster,
+    rosterSource: snapshotRosterResult !== null ? 'snapshot' : (roster.length > 0 ? 'memberships' : 'none'),
+    latestSyncAt: latestSuccessfulSyncAt(club, runs),
+  };
+}
+
+export interface ClubReadOptions {
+  readonly db?: DatabaseClient;
+}
+
+export interface ClubProgressionOptions extends ClubReadOptions {
+  readonly now?: Date;
+  readonly seasonStartIso?: string | undefined;
+}
+
+/** Load stored roster data for a registered club without contacting the API. */
+export async function loadSyncedClub(
+  input: { readonly tag?: string | undefined; readonly guildId?: string | null | undefined },
+  options: ClubReadOptions = {},
+): Promise<ResolvedClubResult<SyncedClubView>> {
+  const db = options.db ?? createTrustedClient();
+  const normalized = normalizeLookupTag(input.tag);
+  if (!normalized.ok) return { kind: 'invalid-tag' };
+
+  const club = await resolveClub({ tag: normalized.tag, guildId: input.guildId, db });
+  const failure = clubLookupFailure(club, normalized.tag);
+  if (failure !== null) return failure;
+  if (club === null) return { kind: 'no-default' };
+
+  return { kind: 'ok', value: await readSyncedClubView(club, db) };
+}
+
+async function enrichRoster(
+  roster: readonly RosterMember[],
+  db: DatabaseClient,
+): Promise<MemberDetail[]> {
+  const players = await readPlayersByTags(roster.map((member) => member.tag), db);
+  const byTag = new Map(players.map((player) => [player.tag, player]));
+
+  return roster.map((member) => ({
+    ...member,
+    playerId: byTag.get(member.tag)?.id ?? null,
+    highestTrophies: byTag.get(member.tag)?.highestTrophies ?? null,
+  }));
+}
+
+/** Load the latest synchronised roster with stored player details. */
+export async function loadMemberView(
+  input: { readonly tag?: string | undefined; readonly guildId?: string | null | undefined },
+  options: ClubReadOptions = {},
+): Promise<ResolvedClubResult<MemberView>> {
+  const db = options.db ?? createTrustedClient();
+  const base = await loadSyncedClub(input, { db });
+  if (base.kind !== 'ok') return base;
+
+  return {
+    kind: 'ok',
+    value: {
+      ...base.value,
+      members: sortMembersByTrophies(await enrichRoster(base.value.roster, db)),
+    },
+  };
+}
+
+/** Load a trophy leaderboard with snapshot-backed player progression. */
+export async function loadLeaderboardView(
+  input: {
+    readonly tag?: string | undefined;
+    readonly guildId?: string | null | undefined;
+    readonly now?: Date;
+    readonly seasonStartIso?: string | undefined;
+  },
+  options: ClubReadOptions = {},
+): Promise<ResolvedClubResult<LeaderboardView>> {
+  const db = options.db ?? createTrustedClient();
+  const members = await loadMemberView(input, { db });
+  if (members.kind !== 'ok') return members;
+
+  const view = members.value;
+  const now = input.now ?? new Date();
+  const currentAt = view.latestSnapshot?.capturedAt ?? '';
+  const entries = rankByTrophies(view.members);
+  const snapshots = await readPlayerSnapshots(
+    entries
+      .map((entry) => entry.playerId)
+      .filter((id): id is string => id !== null),
+    view.completedRunIds,
+    db,
+  );
+  const grouped = new Map<string, ClubSnapshot[]>();
+  for (const row of snapshots) {
+    const list = grouped.get(row.playerId) ?? [];
+    list.push(row.snapshot);
+    grouped.set(row.playerId, list);
+  }
+
+  const ranked: LeaderboardEntry[] = entries.map((entry) => ({
+    ...entry,
+    progression:
+      entry.playerId === null || currentAt === ''
+        ? null
+        : progressionFor(
+            grouped.get(entry.playerId) ?? [],
+            entry.trophies,
+            currentAt,
+            now,
+            input.seasonStartIso,
+          ),
+  }));
+
+  return { kind: 'ok', value: { ...view, entries: ranked } };
+}
+
+/** Load stored club history for one bounded period. */
+export async function loadHistoryView(
+  input: {
+    readonly tag?: string | undefined;
+    readonly guildId?: string | null | undefined;
+    readonly period: HistoryPeriod;
+    readonly now?: Date;
+    readonly seasonStartIso?: string | undefined;
+  },
+  options: ClubReadOptions = {},
+): Promise<ResolvedClubResult<HistoryView>> {
+  const db = options.db ?? createTrustedClient();
+  const base = await loadSyncedClub(input, { db });
+  if (base.kind !== 'ok') return base;
+
+  const view = base.value;
+  const now = input.now ?? new Date();
+  const eligible = filterSnapshotsByPeriod(view.snapshots, input.period, now).filter((snapshot) =>
+    view.completedRunIds.has(snapshot.syncRunId),
+  );
+  const points = eligible
+    .map((snapshot) => historyPointFromSnapshot(snapshot))
+    .filter((point): point is HistoryPoint => point !== null);
+  const latest = points[points.length - 1] ?? null;
+  const membershipChanges = await readMembershipEvents(view.club.id, input.period, now, db);
+
+  return {
+    kind: 'ok',
+    value: {
+      ...view,
+      period: input.period,
+      points,
+      latestSnapshotAt: view.latestSnapshot?.capturedAt ?? null,
+      rangeStart: points[0]?.capturedAt ?? null,
+      rangeEnd: latest?.capturedAt ?? null,
+      change: calculateHistoryChange(points),
+      progression:
+        latest === null
+          ? null
+          : progressionFor(
+              eligible,
+              latest.trophies,
+              latest.capturedAt,
+              now,
+              input.seasonStartIso,
+            ),
+      membershipChanges,
+    },
+  };
+}
+
+function comparisonSnapshot(
+  view: SyncedClubView,
+  preferredRunId: string | null,
+): ClubSnapshot | null {
+  if (preferredRunId !== null) {
+    return (
+      view.snapshots.find(
+        (snapshot) =>
+          snapshot.syncRunId === preferredRunId && view.completedRunIds.has(snapshot.syncRunId),
+      ) ?? null
+    );
+  }
+  return view.latestSnapshot;
+}
+
+function rosterFromComparisonSnapshot(
+  view: SyncedClubView,
+  snapshot: ClubSnapshot | null,
+): readonly RosterMember[] {
+  if (snapshot === null) return view.roster;
+  const roster = parseApiMembers(record(snapshot.raw)?.['members']);
+  return roster.length > 0 ? roster : [];
+}
+
+function buildComparisonSide(
+  view: SyncedClubView,
+  snapshot: ClubSnapshot | null,
+  now: Date,
+  seasonStartIso: string | undefined,
+): ComparisonSide {
+  const roster = rosterFromComparisonSnapshot(view, snapshot);
+  const range = calculateTrophyRange(roster);
+  const currentAt = snapshot?.capturedAt ?? '';
+
+  return {
+    club: view.club,
+    trophies: snapshot?.trophies ?? (snapshot === null ? view.club.trophies : null),
+    averageTrophies: roster.length > 0
+      ? calculateAverage(roster.map((member) => member.trophies))
+      : null,
+    memberCount:
+      asNumber(snapshot?.memberCount) ??
+      (roster.length > 0 ? roster.length : view.club.memberCount),
+    highestTrophies: range?.high ?? null,
+    lowestTrophies: range?.low ?? null,
+    progression:
+      snapshot === null
+        ? null
+        : progressionFor(
+            view.snapshots.filter((candidate) => view.completedRunIds.has(candidate.syncRunId)),
+            snapshot.trophies,
+            currentAt,
+            now,
+            seasonStartIso,
+          ),
+    latestSyncAt: view.latestSyncAt,
+    snapshotAt: currentAt === '' ? null : currentAt,
+    syncRunId: snapshot?.syncRunId ?? null,
+  };
+}
+
+function commonCompletedRunId(
+  first: SyncedClubView,
+  second: SyncedClubView,
+): string | null {
+  const firstRuns = new Set(
+    first.snapshots
+      .filter((snapshot) => first.completedRunIds.has(snapshot.syncRunId))
+      .map((snapshot) => snapshot.syncRunId),
+  );
+  const shared = second.snapshots
+    .filter(
+      (snapshot) =>
+        second.completedRunIds.has(snapshot.syncRunId) && firstRuns.has(snapshot.syncRunId),
+    )
+    .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt));
+
+  return shared[0]?.syncRunId ?? null;
+}
+
+/** Compare two registered clubs using their latest common completed snapshot. */
+export async function loadCompareView(
+  input: {
+    readonly firstTag: string;
+    readonly secondTag: string;
+    readonly now?: Date;
+    readonly seasonStartIso?: string | undefined;
+  },
+  options: ClubReadOptions = {},
+): Promise<ResolvedClubResult<ComparisonView>> {
+  const db = options.db ?? createTrustedClient();
+  const first = normalizeLookupTag(input.firstTag);
+  const second = normalizeLookupTag(input.secondTag);
+  if (!first.ok || !second.ok || first.tag === undefined || second.tag === undefined) {
+    return { kind: 'invalid-tag' };
+  }
+  if (first.tag === second.tag) return { kind: 'same-club' };
+
+  const [firstClub, secondClub] = await Promise.all([
+    findClubByTag(first.tag, db),
+    findClubByTag(second.tag, db),
+  ]);
+  const firstFailure = clubLookupFailure(firstClub, first.tag);
+  if (firstFailure !== null) return firstFailure;
+  const secondFailure = clubLookupFailure(secondClub, second.tag);
+  if (secondFailure !== null) return secondFailure;
+  if (firstClub === null || secondClub === null) return { kind: 'same-club' };
+  if (firstClub.id === secondClub.id) return { kind: 'same-club' };
+
+  const [firstView, secondView] = await Promise.all([
+    readSyncedClubView(firstClub, db),
+    readSyncedClubView(secondClub, db),
+  ]);
+  const sharedRunId = commonCompletedRunId(firstView, secondView);
+  const now = input.now ?? new Date();
+
+  return {
+    kind: 'ok',
+    value: {
+      first: buildComparisonSide(
+        firstView,
+        comparisonSnapshot(firstView, sharedRunId),
+        now,
+        input.seasonStartIso,
+      ),
+      second: buildComparisonSide(
+        secondView,
+        comparisonSnapshot(secondView, sharedRunId),
+        now,
+        input.seasonStartIso,
+      ),
+      aligned: sharedRunId !== null,
+    },
+  };
 }
