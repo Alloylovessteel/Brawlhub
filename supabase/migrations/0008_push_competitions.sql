@@ -152,7 +152,8 @@ CREATE TABLE IF NOT EXISTS public.player_verifications (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   profile_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   player_id uuid NOT NULL REFERENCES public.players(id) ON DELETE CASCADE,
-  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  status text NOT NULL DEFAULT 'active'
+    CONSTRAINT player_verifications_status_values_check CHECK (status IN ('active', 'revoked')),
   method text NOT NULL CHECK (method IN ('manual_staff', 'discord_oauth_tag', 'api_snapshot')),
   verified_at timestamptz NOT NULL DEFAULT now(),
   verified_by_profile_id uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
