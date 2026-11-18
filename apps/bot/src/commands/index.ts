@@ -132,6 +132,13 @@ import {
   handleRemoveClubAutocomplete,
 } from './remove-club.js';
 import { handlePing } from './ping.js';
+import {
+  helpCommandData,
+  handleHelp,
+  handleHelpComponent,
+} from './help.js';
+import { aboutCommandData, handleAbout } from './about.js';
+import { statusCommandData, handleStatus } from './status.js';
 
 const logger = createLogger('bot');
 
@@ -273,6 +280,19 @@ export const commands: readonly CommandDefinition[] = [
     data: auditCommandData,
     handle: handleAudit,
     handleComponent: handleAuditComponent,
+  },
+  {
+    data: helpCommandData,
+    handle: handleHelp,
+    handleComponent: handleHelpComponent,
+  },
+  {
+    data: aboutCommandData,
+    handle: handleAbout,
+  },
+  {
+    data: statusCommandData,
+    handle: handleStatus,
   },
 ];
 

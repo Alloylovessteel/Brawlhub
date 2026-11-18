@@ -80,6 +80,9 @@ describe('command registry', () => {
       'sync-status',
       'settings',
       'audit',
+      'help',
+      'about',
+      'status',
     ]);
     expect(commands.find((command) => command.data.name === 'competition')?.autocomplete).toBeTypeOf(
       'function',
@@ -98,7 +101,7 @@ describe('command registry', () => {
     ]) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
-    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'members', 'member-history', 'member-search', 'staff', 'register-club', 'settings', 'audit']) {
+    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'members', 'member-history', 'member-search', 'staff', 'register-club', 'settings', 'audit', 'help']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );
@@ -154,6 +157,15 @@ describe('dispatchInteraction', () => {
     await dispatchInteraction(
       buttonInteraction('club-members:page:2'),
       [command('club-members', { handleComponent })],
+    );
+    expect(handleComponent).toHaveBeenCalledOnce();
+  });
+
+  it('routes help pagination components to the help handler', async () => {
+    const handleComponent = vi.fn(async () => undefined);
+    await dispatchInteraction(
+      buttonInteraction('help:page:2'),
+      [command('help', { handleComponent })],
     );
     expect(handleComponent).toHaveBeenCalledOnce();
   });

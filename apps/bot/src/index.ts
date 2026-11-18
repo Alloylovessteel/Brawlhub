@@ -9,6 +9,7 @@ import { createDiscordNotifier } from './notifier.js';
 import { runManagedSync } from './sync/guard.js';
 import { registerDiscordAuthorizationEvents } from './discord/events.js';
 import { getGatewayIntents } from './discord/intents.js';
+import { markDiscordDisconnected, markDiscordReady } from './status/runtime.js';
 
 const logger = createLogger('bot');
 
@@ -127,7 +128,12 @@ client.on('interactionCreate', (interaction: Interaction) => {
   });
 });
 
+client.on('shardDisconnect', () => markDiscordDisconnected());
+client.on('shardReconnecting', () => markDiscordDisconnected());
+client.on('shardResume', () => markDiscordReady());
+
 client.once('clientReady', () => {
+  markDiscordReady();
   logger.info(`Logged in as ${client.user?.tag ?? 'unknown'}`);
   registerCommands().catch((error: unknown) => {
     logger.error('Unexpected error while registering commands', { error: safeError(error, token) });
