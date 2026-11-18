@@ -53,7 +53,7 @@ function truncate(value: string, maximum: number): string {
 }
 
 /** Keep every new embed inside Discord's 6,000-character total limit. */
-function fitEmbedToDiscordLimits(embed: EmbedBuilder): EmbedBuilder {
+export function fitEmbedToDiscordLimits(embed: EmbedBuilder): EmbedBuilder {
   const data = embed.toJSON();
   const fields = data.fields ?? [];
   if (fields.length === 0) return embed;

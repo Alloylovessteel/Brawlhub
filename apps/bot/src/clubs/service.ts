@@ -97,22 +97,22 @@ const SNAPSHOT_COLUMNS = [
 const MEMBERSHIP_COLUMNS =
   'player_id, role, valid_to, player:players!club_memberships_player_id_fkey(tag, name, trophies)';
 
-function record(value: unknown): Record<string, unknown> | null {
+export function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
 }
 
-function relationRecord(value: unknown): Record<string, unknown> | null {
+export function relationRecord(value: unknown): Record<string, unknown> | null {
   const candidate = Array.isArray(value) ? value[0] : value;
   return record(candidate);
 }
 
-function asString(value: unknown): string | null {
+export function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function asNumber(value: unknown): number | null {
+export function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
@@ -145,7 +145,7 @@ function clubLookupFailure(
     : { kind: 'unregistered', tag: normalizedTag };
 }
 
-function requireOk(error: { message?: string } | null | undefined, context: string): void {
+export function requireOk(error: { message?: string } | null | undefined, context: string): void {
   if (error !== null && error !== undefined) {
     throw new Error(`${context} failed`);
   }
@@ -171,7 +171,7 @@ function parseClubRow(value: unknown): ClubRecord | null {
   };
 }
 
-function parseSyncRunRow(value: unknown): SyncRunRecord | null {
+export function parseSyncRunRow(value: unknown): SyncRunRecord | null {
   const row = record(value);
   if (row === null || row['status'] !== 'completed') return null;
   const id = asString(row['id']);
@@ -304,7 +304,7 @@ function latestSuccessfulSyncAt(
   return null;
 }
 
-function classifyApiError(error: unknown): ApiIssue {
+export function classifyApiError(error: unknown): ApiIssue {
   if (error instanceof BrawlStarsApiError) {
     if (error.status === 429) return 'rate-limit';
     if (error.status === 401 || error.status === 403) return 'unauthorized';
@@ -387,7 +387,7 @@ async function findClubById(id: string, db: DatabaseClient): Promise<ClubRecord 
   return parseClubRow(data);
 }
 
-async function readCompletedRuns(db: DatabaseClient): Promise<SyncRunRecord[]> {
+export async function readCompletedRuns(db: DatabaseClient): Promise<SyncRunRecord[]> {
   const { data, error } = await db
     .from('sync_runs')
     .select(SYNC_RUN_COLUMNS)
@@ -634,7 +634,7 @@ interface PlayerSnapshotRow {
   readonly snapshot: ClubSnapshot;
 }
 
-function playerSnapshotAsClubSnapshot(value: unknown): ClubSnapshot | null {
+export function playerSnapshotAsClubSnapshot(value: unknown): ClubSnapshot | null {
   const row = record(value);
   if (row === null) return null;
   const id = asString(row['id']);

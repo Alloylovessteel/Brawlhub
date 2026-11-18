@@ -48,6 +48,28 @@ import {
   handleClubCompare,
   handleClubCompareAutocomplete,
 } from './club-compare.js';
+import {
+  playerCommandData,
+  handlePlayer,
+  handlePlayerAutocomplete,
+} from './player.js';
+import {
+  playerHistoryCommandData,
+  handlePlayerHistory,
+  handlePlayerHistoryAutocomplete,
+  handlePlayerHistoryComponent,
+} from './player-history.js';
+import {
+  playerClubsCommandData,
+  handlePlayerClubs,
+  handlePlayerClubsAutocomplete,
+  handlePlayerClubsComponent,
+} from './player-clubs.js';
+import {
+  playerCompareCommandData,
+  handlePlayerCompare,
+  handlePlayerCompareAutocomplete,
+} from './player-compare.js';
 import { handlePing } from './ping.js';
 
 const logger = createLogger('bot');
@@ -103,6 +125,28 @@ export const commands: readonly CommandDefinition[] = [
     data: clubCompareCommandData,
     handle: handleClubCompare,
     autocomplete: handleClubCompareAutocomplete,
+  },
+  {
+    data: playerCommandData,
+    handle: handlePlayer,
+    autocomplete: handlePlayerAutocomplete,
+  },
+  {
+    data: playerHistoryCommandData,
+    handle: handlePlayerHistory,
+    autocomplete: handlePlayerHistoryAutocomplete,
+    handleComponent: handlePlayerHistoryComponent,
+  },
+  {
+    data: playerClubsCommandData,
+    handle: handlePlayerClubs,
+    autocomplete: handlePlayerClubsAutocomplete,
+    handleComponent: handlePlayerClubsComponent,
+  },
+  {
+    data: playerCompareCommandData,
+    handle: handlePlayerCompare,
+    autocomplete: handlePlayerCompareAutocomplete,
   },
 ];
 

@@ -31,6 +31,8 @@ export interface BotConfig {
   readonly emojis: BotEmojiConfig;
   /** Template for Brawl Stars player links. Must contain `{tag}`. */
   readonly playerProfileUrlTemplate: string | undefined;
+  /** Optional template for registered club links. Must contain `{tag}`. */
+  readonly clubProfileUrlTemplate: string | undefined;
   /** Explicit UTC season start used for Season trophy progression. */
   readonly seasonStartIso: string | undefined;
 }
@@ -57,8 +59,8 @@ function readSnowflakeEnv(name: string): string | undefined {
 }
 
 /** Read a URL template that must contain the `{tag}` placeholder. */
-function readProfileTemplateEnv(): string | undefined {
-  const value = readEnv('BRAWL_STARS_PROFILE_URL_TEMPLATE');
+function readProfileTemplateEnv(name: string): string | undefined {
+  const value = readEnv(name);
   if (value === undefined || !value.includes('{tag}')) {
     return undefined;
   }
@@ -92,7 +94,8 @@ export function getBotConfig(): BotConfig {
       progression: readSnowflakeEnv('DISCORD_EMOJI_PROGRESSION'),
       description: readSnowflakeEnv('DISCORD_EMOJI_DESCRIPTION'),
     },
-    playerProfileUrlTemplate: readProfileTemplateEnv(),
+    playerProfileUrlTemplate: readProfileTemplateEnv('BRAWL_STARS_PROFILE_URL_TEMPLATE'),
+    clubProfileUrlTemplate: readProfileTemplateEnv('BRAWL_STARS_CLUB_URL_TEMPLATE'),
     seasonStartIso: readSeasonStartEnv(),
   };
 }

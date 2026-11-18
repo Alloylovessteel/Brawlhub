@@ -27,7 +27,7 @@ export function formatEmoji(id: string | undefined, name = 'brawlhub'): string {
  * Render a player name as a markdown link when a profile URL template is
  * configured. The template must contain `{tag}`.
  */
-export function formatPlayerLink(
+function formatTaggedLink(
   name: string,
   tag: string,
   urlTemplate: string | undefined,
@@ -39,4 +39,21 @@ export function formatPlayerLink(
 
   const encodedTag = encodeURIComponent(cleanTag(tag));
   return `[${safeName}](${urlTemplate.replaceAll('{tag}', encodedTag)})`;
+}
+
+export function formatPlayerLink(
+  name: string,
+  tag: string,
+  urlTemplate: string | undefined,
+): string {
+  return formatTaggedLink(name, tag, urlTemplate);
+}
+
+/** Render a club name as a markdown link only when a club URL template is configured. */
+export function formatClubLink(
+  name: string,
+  tag: string,
+  urlTemplate: string | undefined,
+): string {
+  return formatTaggedLink(name, tag, urlTemplate);
 }
