@@ -3,21 +3,31 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  type AutocompleteInteraction,
+  type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Interaction,
 } from 'discord.js';
 import { getBotConfig } from '../config.js';
+import {
+  logAutocompleteError,
+  replyWithSafeError,
+  safeErrorMessage,
+} from '../discord/errors.js';
 import { handlePing } from './ping.js';
 
 const logger = createLogger('bot');
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const { token } = getBotConfig();
+  return safeErrorMessage(error, token === undefined ? [] : [token]);
 }
 
 export interface CommandDefinition {
   readonly data: SlashCommandBuilder;
   readonly handle: (interaction: ChatInputCommandInteraction) => Promise<void>;
+  readonly autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
+  readonly handleComponent?: (interaction: ButtonInteraction) => Promise<void>;
 }
 
 export const commands: readonly CommandDefinition[] = [
@@ -62,13 +72,52 @@ export async function registerCommands(): Promise<void> {
   }
 }
 
-/** Dispatch an incoming interaction to the command that matches its name. */
+/** Dispatch chat-input, autocomplete and component interactions to commands. */
 export async function handleInteraction(interaction: Interaction): Promise<void> {
+  await dispatchInteraction(interaction, commands);
+}
+
+/** Testable dispatcher that accepts an explicit command set. */
+export async function dispatchInteraction(
+  interaction: Interaction,
+  definitions: readonly CommandDefinition[],
+): Promise<void> {
+  if (interaction.isAutocomplete()) {
+    const command = definitions.find((candidate) => candidate.data.name === interaction.commandName);
+    if (command?.autocomplete === undefined) {
+      return;
+    }
+    try {
+      await command.autocomplete(interaction);
+    } catch (error) {
+      logAutocompleteError(logger, interaction.commandName, error);
+    }
+    return;
+  }
+
+  if (interaction.isButton()) {
+    const [commandName] = interaction.customId.split(':');
+    const command = definitions.find((candidate) => candidate.data.name === commandName);
+    if (command?.handleComponent === undefined) {
+      return;
+    }
+    try {
+      await command.handleComponent(interaction);
+    } catch (error) {
+      logger.error('Component handler failed', {
+        command: commandName,
+        error: errorMessage(error),
+      });
+      await replyWithSafeError(interaction).catch(() => undefined);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) {
     return;
   }
 
-  const command = commands.find((candidate) => candidate.data.name === interaction.commandName);
+  const command = definitions.find((candidate) => candidate.data.name === interaction.commandName);
   if (command === undefined) {
     logger.warn('Received an unknown chat-input command', { command: interaction.commandName });
     return;
@@ -81,5 +130,6 @@ export async function handleInteraction(interaction: Interaction): Promise<void>
       command: interaction.commandName,
       error: errorMessage(error),
     });
+    await replyWithSafeError(interaction).catch(() => undefined);
   }
 }
