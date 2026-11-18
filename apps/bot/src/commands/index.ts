@@ -76,6 +76,12 @@ import {
   handleLeaderboard,
   handleLeaderboardComponent,
 } from './leaderboard.js';
+import {
+  handlePush,
+  handlePushAutocomplete,
+  handlePushComponent,
+  pushCommandData,
+} from './push.js';
 import { handlePing } from './ping.js';
 
 const logger = createLogger('bot');
@@ -161,6 +167,12 @@ export const commands: readonly CommandDefinition[] = [
     data: leaderboardCommandData,
     handle: handleLeaderboard,
     handleComponent: handleLeaderboardComponent,
+  },
+  {
+    data: pushCommandData,
+    handle: handlePush,
+    autocomplete: handlePushAutocomplete,
+    handleComponent: handlePushComponent,
   },
 ];
 
