@@ -24,6 +24,72 @@ ALTER TABLE public.blacklists
 CREATE INDEX IF NOT EXISTS idx_blacklists_status_created
   ON public.blacklists (status, created_at DESC);
 
+-- ---------------------------------------------------------------------------
+-- Preflight uniqueness checks.
+--
+-- Existing rows are never modified. If duplicates are found, RAISE EXCEPTION
+-- aborts the migration before the partial unique indexes are created. Each
+-- conflict reports the duplicate target ID and every affected blacklist ID.
+-- ---------------------------------------------------------------------------
+
+DO $$
+DECLARE
+  v_conflicts jsonb;
+BEGIN
+  SELECT jsonb_agg(
+           jsonb_build_object(
+             'playerId', player_id,
+             'blacklistIds', ids,
+             'count', cnt
+           ) ORDER BY player_id
+         )
+    INTO v_conflicts
+    FROM (
+      SELECT player_id,
+             array_agg(id::text ORDER BY created_at, id) AS ids,
+             count(*) AS cnt
+      FROM public.blacklists
+      WHERE status = 'active' AND player_id IS NOT NULL
+      GROUP BY player_id
+      HAVING count(*) > 1
+    ) AS duplicates;
+
+  IF v_conflicts IS NOT NULL THEN
+    RAISE EXCEPTION
+      'Cannot create uq_blacklists_active_player: duplicate active player_id records exist: %',
+      v_conflicts;
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  v_conflicts jsonb;
+BEGIN
+  SELECT jsonb_agg(
+           jsonb_build_object(
+             'discordUserId', discord_user_id,
+             'blacklistIds', ids,
+             'count', cnt
+           ) ORDER BY discord_user_id
+         )
+    INTO v_conflicts
+    FROM (
+      SELECT discord_user_id,
+             array_agg(id::text ORDER BY created_at, id) AS ids,
+             count(*) AS cnt
+      FROM public.blacklists
+      WHERE status = 'active' AND discord_user_id IS NOT NULL
+      GROUP BY discord_user_id
+      HAVING count(*) > 1
+    ) AS duplicates;
+
+  IF v_conflicts IS NOT NULL THEN
+    RAISE EXCEPTION
+      'Cannot create uq_blacklists_active_discord: duplicate active discord_user_id records exist: %',
+      v_conflicts;
+  END IF;
+END $$;
+
 -- At most one active entry per target. Blacklists are global-only, so these
 -- indexes are intentionally not scoped by club.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_blacklists_active_player
@@ -42,9 +108,10 @@ CREATE TRIGGER trg_blacklists_updated_at
 -- ---------------------------------------------------------------------------
 -- Authorization helpers.
 --
--- is_global_admin is granted to authenticated so it can be used by the tightened
--- blacklists RLS policy. can_manage_blacklists remains service-role-only and is
--- used by the trusted bot RPCs.
+-- is_global_admin(uuid) and can_manage_blacklists(uuid) are service-role-only
+-- internal helpers. is_current_user_global_admin() is the identity-bound helper
+-- for authenticated RLS checks: it derives the profile exclusively from
+-- auth.uid() and accepts no caller-supplied profile ID.
 -- ---------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION public.is_global_admin(p_profile_id uuid)
@@ -63,6 +130,22 @@ AS $$
   );
 $$;
 
+CREATE OR REPLACE FUNCTION public.is_current_user_global_admin()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.user_roles
+    WHERE user_id = auth.uid()
+      AND scope = 'global'
+      AND role IN ('owner', 'admin')
+  );
+$$;
+
 CREATE OR REPLACE FUNCTION public.can_manage_blacklists(p_profile_id uuid)
 RETURNS boolean
 LANGUAGE sql
@@ -75,21 +158,25 @@ $$;
 
 REVOKE ALL ON FUNCTION public.is_global_admin(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.can_manage_blacklists(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_current_user_global_admin() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.is_global_admin(uuid) FROM anon, authenticated;
 REVOKE ALL ON FUNCTION public.can_manage_blacklists(uuid) FROM anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.is_global_admin(uuid) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.is_current_user_global_admin() FROM anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.is_global_admin(uuid) TO service_role;
 GRANT EXECUTE ON FUNCTION public.can_manage_blacklists(uuid) TO service_role;
+GRANT EXECUTE ON FUNCTION public.is_current_user_global_admin() TO authenticated;
 
 -- Align database reads with the app permission matrix: global staff do not have
--- blacklists:manage, so only global owner/admin may read the table directly.
+-- blacklists:manage, so only the current global owner/admin may read the table.
 DROP POLICY IF EXISTS blacklists_select ON public.blacklists;
 CREATE POLICY blacklists_select
   ON public.blacklists FOR SELECT TO authenticated
-  USING (public.is_global_admin(auth.uid()));
+  USING (public.is_current_user_global_admin());
 
 -- ---------------------------------------------------------------------------
 -- Atomic, service-role-only mutations. Each RPC rechecks permission and writes
--- its audit row in the same transaction as the domain change.
+-- its audit row in the same transaction as the domain change. The supplied
+-- actor identity is validated against the profile's stored Discord identity.
 -- ---------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION public.moderation_blacklist_add(
@@ -107,9 +194,24 @@ AS $$
 DECLARE
   v_reason text := btrim(p_reason);
   v_actor_discord_id text := nullif(btrim(p_actor_discord_id), '');
+  v_profile_discord_id text;
   v_player_tag text;
   v_id uuid;
 BEGIN
+  IF p_actor_profile_id IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'invalid_actor');
+  END IF;
+
+  SELECT discord_user_id INTO v_profile_discord_id
+  FROM public.profiles
+  WHERE id = p_actor_profile_id;
+
+  IF NOT FOUND OR v_actor_discord_id IS NULL OR v_actor_discord_id <> v_profile_discord_id THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'invalid_actor');
+  END IF;
+  -- Use the canonical profile identity in audit details, not the caller's string.
+  v_actor_discord_id := v_profile_discord_id;
+
   IF NOT public.can_manage_blacklists(p_actor_profile_id) THEN
     RETURN jsonb_build_object('ok', false, 'code', 'forbidden');
   END IF;
@@ -176,10 +278,25 @@ AS $$
 DECLARE
   v_removal_reason text := nullif(btrim(p_removal_reason), '');
   v_actor_discord_id text := nullif(btrim(p_actor_discord_id), '');
+  v_profile_discord_id text;
   v_blacklist public.blacklists%ROWTYPE;
   v_player_tag text;
   v_removed_at timestamptz := now();
 BEGIN
+  IF p_actor_profile_id IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'invalid_actor');
+  END IF;
+
+  SELECT discord_user_id INTO v_profile_discord_id
+  FROM public.profiles
+  WHERE id = p_actor_profile_id;
+
+  IF NOT FOUND OR v_actor_discord_id IS NULL OR v_actor_discord_id <> v_profile_discord_id THEN
+    RETURN jsonb_build_object('ok', false, 'code', 'invalid_actor');
+  END IF;
+  -- Use the canonical profile identity in audit details, not the caller's string.
+  v_actor_discord_id := v_profile_discord_id;
+
   IF NOT public.can_manage_blacklists(p_actor_profile_id) THEN
     RETURN jsonb_build_object('ok', false, 'code', 'forbidden');
   END IF;
