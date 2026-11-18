@@ -1,6 +1,6 @@
 import { SlashCommandBuilder, type Interaction } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
-import { dispatchInteraction, type CommandDefinition } from './index';
+import { commands, dispatchInteraction, type CommandDefinition } from './index';
 
 function command(name: string, overrides: Partial<CommandDefinition> = {}): CommandDefinition {
   return {
@@ -44,6 +44,17 @@ function chatInteraction(commandName: string): Interaction {
     isChatInputCommand: () => true,
   } as unknown as Interaction;
 }
+
+describe('command registry', () => {
+  it('registers club autocomplete and clubs pagination handlers', () => {
+    expect(commands.find((command) => command.data.name === 'club')?.autocomplete).toBeTypeOf(
+      'function',
+    );
+    expect(commands.find((command) => command.data.name === 'clubs')?.handleComponent).toBeTypeOf(
+      'function',
+    );
+  });
+});
 
 describe('dispatchInteraction', () => {
   it('routes autocomplete interactions to the matching handler', async () => {

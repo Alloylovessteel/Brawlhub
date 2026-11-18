@@ -3,6 +3,7 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  type SlashCommandOptionsOnlyBuilder,
   type AutocompleteInteraction,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
@@ -14,6 +15,16 @@ import {
   replyWithSafeError,
   safeErrorMessage,
 } from '../discord/errors.js';
+import {
+  clubCommandData,
+  handleClub,
+  handleClubAutocomplete,
+} from './club.js';
+import {
+  clubsCommandData,
+  handleClubs,
+  handleClubsComponent,
+} from './clubs.js';
 import { handlePing } from './ping.js';
 
 const logger = createLogger('bot');
@@ -24,7 +35,7 @@ function errorMessage(error: unknown): string {
 }
 
 export interface CommandDefinition {
-  readonly data: SlashCommandBuilder;
+  readonly data: SlashCommandBuilder | SlashCommandOptionsOnlyBuilder;
   readonly handle: (interaction: ChatInputCommandInteraction) => Promise<void>;
   readonly autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
   readonly handleComponent?: (interaction: ButtonInteraction) => Promise<void>;
@@ -36,6 +47,16 @@ export const commands: readonly CommandDefinition[] = [
       .setName('ping')
       .setDescription('Check that BrawlHub bot is online'),
     handle: handlePing,
+  },
+  {
+    data: clubCommandData,
+    handle: handleClub,
+    autocomplete: handleClubAutocomplete,
+  },
+  {
+    data: clubsCommandData,
+    handle: handleClubs,
+    handleComponent: handleClubsComponent,
   },
 ];
 

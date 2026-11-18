@@ -31,6 +31,8 @@ export interface BotConfig {
   readonly emojis: BotEmojiConfig;
   /** Template for Brawl Stars player links. Must contain `{tag}`. */
   readonly playerProfileUrlTemplate: string | undefined;
+  /** Explicit UTC season start used for Season trophy progression. */
+  readonly seasonStartIso: string | undefined;
 }
 
 /** Treat blank values and `.env.example` placeholders as not configured. */
@@ -63,6 +65,15 @@ function readProfileTemplateEnv(): string | undefined {
   return value;
 }
 
+/** Read an optional ISO timestamp without inventing a season boundary. */
+function readSeasonStartEnv(): string | undefined {
+  const value = readEnv('BRAWL_SEASON_START_ISO');
+  if (value === undefined || Number.isNaN(Date.parse(value))) {
+    return undefined;
+  }
+  return new Date(value).toISOString();
+}
+
 /** Read the environment lazily on every call so current values are always used. */
 export function getBotConfig(): BotConfig {
   return {
@@ -82,6 +93,7 @@ export function getBotConfig(): BotConfig {
       description: readSnowflakeEnv('DISCORD_EMOJI_DESCRIPTION'),
     },
     playerProfileUrlTemplate: readProfileTemplateEnv(),
+    seasonStartIso: readSeasonStartEnv(),
   };
 }
 
