@@ -1,17 +1,17 @@
-/** Pure lifecycle and scoring helpers for push competitions. */
+/** Pure lifecycle and scoring helpers for competitions. */
 
 import type {
-  PushCompetitionRecord,
-  PushCompetitionStatus,
-  PushLeaderboardRow,
-  PushSubmission,
+  CompetitionRecord,
+  CompetitionStatus,
+  CompetitionLeaderboardRow,
+  CompetitionSubmission,
 } from './types';
 
 /** Derive display status from timestamps; never promote a competition early. */
 export function competitionStatus(
-  competition: PushCompetitionRecord,
+  competition: CompetitionRecord,
   now: Date = new Date(),
-): PushCompetitionStatus {
+): CompetitionStatus {
   if (
     competition.endedAt !== null ||
     competition.status === 'ended' ||
@@ -35,9 +35,9 @@ export function calculateGain(latestTrophies: number, baselineTrophies: number |
 
 /** Latest accepted submission per entry, with deterministic time/id ordering. */
 export function latestAcceptedSubmissions(
-  submissions: readonly PushSubmission[],
-): Map<string, PushSubmission> {
-  const latest = new Map<string, PushSubmission>();
+  submissions: readonly CompetitionSubmission[],
+): Map<string, CompetitionSubmission> {
+  const latest = new Map<string, CompetitionSubmission>();
   for (const submission of submissions) {
     if (!submission.accepted) continue;
     const existing = latest.get(submission.entryId);
@@ -48,14 +48,14 @@ export function latestAcceptedSubmissions(
   return latest;
 }
 
-function submissionComesAfter(candidate: PushSubmission, existing: PushSubmission): boolean {
+function submissionComesAfter(candidate: CompetitionSubmission, existing: CompetitionSubmission): boolean {
   const candidateAt = Date.parse(candidate.submittedAt);
   const existingAt = Date.parse(existing.submittedAt);
   if (candidateAt !== existingAt) return candidateAt > existingAt;
   return candidate.id.localeCompare(existing.id) > 0;
 }
 
-type UnrankedRow = Omit<PushLeaderboardRow, 'rank'>;
+type UnrankedRow = Omit<CompetitionLeaderboardRow, 'rank'>;
 
 function compareRows(a: UnrankedRow, b: UnrankedRow): number {
   const aRanked = a.gain !== null;
@@ -84,7 +84,7 @@ function compareRows(a: UnrankedRow, b: UnrankedRow): number {
  * remain unranked and are listed after ranked entries by latest trophies.
  * Equal gains share a position (1, 1, 3).
  */
-export function rankPushRows(rows: readonly UnrankedRow[]): PushLeaderboardRow[] {
+export function rankCompetitionRows(rows: readonly UnrankedRow[]): CompetitionLeaderboardRow[] {
   const sorted = [...rows].sort(compareRows);
   let currentRank = 0;
   let previousGain: number | null | undefined;

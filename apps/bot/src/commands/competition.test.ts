@@ -2,18 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AutocompleteInteraction, ButtonInteraction, ChatInputCommandInteraction } from 'discord.js';
 
 const mocks = vi.hoisted(() => {
-  class MockPushServiceError extends Error {
+  class MockCompetitionServiceError extends Error {
     constructor(
       readonly code: string,
       message: string,
     ) {
       super(message);
-      this.name = 'PushServiceError';
+      this.name = 'CompetitionServiceError';
     }
   }
 
   return {
-    PushServiceError: MockPushServiceError,
+    CompetitionServiceError: MockCompetitionServiceError,
     config: {
       token: undefined,
       clientId: undefined,
@@ -26,17 +26,17 @@ const mocks = vi.hoisted(() => {
       seasonStartIso: undefined,
     },
     service: {
-      canManagePushCompetition: vi.fn(),
-      createPushCompetition: vi.fn(),
-      endPushCompetition: vi.fn(),
-      joinPushCompetition: vi.fn(),
-      listPushCompetitions: vi.fn(),
+      canManageCompetition: vi.fn(),
+      createCompetition: vi.fn(),
+      endCompetition: vi.fn(),
+      joinCompetition: vi.fn(),
+      listCompetitions: vi.fn(),
       listVerifiedPlayers: vi.fn(),
-      loadPushCompetition: vi.fn(),
-      loadPushLeaderboard: vi.fn(),
-      loadPushPlayer: vi.fn(),
-      resolvePushActor: vi.fn(),
-      submitPushResult: vi.fn(),
+      loadCompetitionRecord: vi.fn(),
+      loadCompetitionLeaderboard: vi.fn(),
+      loadCompetitionPlayer: vi.fn(),
+      resolveCompetitionActor: vi.fn(),
+      submitCompetitionResult: vi.fn(),
     },
     clubs: {
       getRegisteredClubs: vi.fn(),
@@ -46,18 +46,18 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
-vi.mock('../push/service', () => ({
+vi.mock('../competition/service', () => ({
   ...mocks.service,
-  PushServiceError: mocks.PushServiceError,
+  CompetitionServiceError: mocks.CompetitionServiceError,
 }));
 vi.mock('../clubs/service', () => mocks.clubs);
 
 import {
-  handlePush,
-  handlePushAutocomplete,
-  handlePushComponent,
-  pushCommandData,
-} from './push';
+  handleCompetition,
+  handleCompetitionAutocomplete,
+  handleCompetitionComponent,
+  competitionCommandData,
+} from './competition';
 
 const COMPETITION_ID = '11111111-1111-4111-8111-111111111111';
 const PLAYER_ID = '22222222-2222-4222-8222-222222222222';
@@ -66,7 +66,7 @@ const DISCORD_ID = '111111111111111111';
 function competition(overrides: Record<string, unknown> = {}) {
   return {
     id: COMPETITION_ID,
-    name: 'Midseason Push',
+    name: 'Midseason Climb',
     description: 'No camping',
     clubId: null,
     club: null,
@@ -185,14 +185,14 @@ beforeEach(() => {
   for (const fn of Object.values(mocks.service)) fn.mockReset();
   mocks.clubs.getRegisteredClubs.mockReset();
   mocks.clubs.filterRegisteredClubs.mockReset();
-  mocks.service.loadPushCompetition.mockResolvedValue(competition());
-  mocks.service.loadPushPlayer.mockResolvedValue(player());
+  mocks.service.loadCompetitionRecord.mockResolvedValue(competition());
+  mocks.service.loadCompetitionPlayer.mockResolvedValue(player());
 });
 
-describe('/push command registration', () => {
+describe('/competition command registration', () => {
   it('registers all six subcommands with required options', () => {
-    const json = pushCommandData.toJSON() as any;
-    expect(json.name).toBe('push');
+    const json = competitionCommandData.toJSON() as any;
+    expect(json.name).toBe('competition');
     expect(json.options?.map((option: any) => option.name)).toEqual([
       'create', 'join', 'submit', 'leaderboard', 'end', 'list',
     ]);
@@ -206,28 +206,28 @@ describe('/push command registration', () => {
   });
 });
 
-describe('/push command handlers', () => {
+describe('/competition command handlers', () => {
   it('creates and displays a competition for authorised staff', async () => {
-    mocks.service.createPushCompetition.mockResolvedValue(competition());
+    mocks.service.createCompetition.mockResolvedValue(competition());
     const interaction = chatInteraction('create', {
-      name: 'Midseason Push',
+      name: 'Midseason Climb',
       description: 'No camping',
       start: '2026-11-20T00:00Z',
       end: '2026-11-22T00:00Z',
       goal: 10_000,
     });
 
-    await handlePush(interaction);
+    await handleCompetition(interaction);
 
-    expect(mocks.service.createPushCompetition).toHaveBeenCalledWith(
-      expect.objectContaining({ discordUserId: DISCORD_ID, name: 'Midseason Push' }),
+    expect(mocks.service.createCompetition).toHaveBeenCalledWith(
+      expect.objectContaining({ discordUserId: DISCORD_ID, name: 'Midseason Climb' }),
     );
     expect(embedText(payload(interaction, 'reply').embeds[0])).toContain('No camping');
   });
 
   it('replies ephemerally when staff permission is missing', async () => {
-    mocks.service.createPushCompetition.mockRejectedValue(
-      new mocks.PushServiceError('forbidden', 'You do not have permission to manage push competitions.'),
+    mocks.service.createCompetition.mockRejectedValue(
+      new mocks.CompetitionServiceError('forbidden', 'You do not have permission to manage competitions.'),
     );
     const interaction = chatInteraction('create', {
       name: 'Nope',
@@ -235,29 +235,29 @@ describe('/push command handlers', () => {
       end: '2026-11-22T00:00Z',
     });
 
-    await handlePush(interaction);
+    await handleCompetition(interaction);
 
     expect(payload(interaction, 'reply')).toMatchObject({ ephemeral: true });
     expect(payload(interaction, 'reply').content).toContain('permission');
   });
 
   it('keeps join and submit tied to the interacting user', async () => {
-    mocks.service.joinPushCompetition.mockResolvedValue({
+    mocks.service.joinCompetition.mockResolvedValue({
       entryId: 'entry-1',
       baselineTrophies: 4_000,
       baselineSource: 'player_snapshot',
       baselineCapturedAt: null,
     });
     const join = chatInteraction('join', { competition: COMPETITION_ID, account: PLAYER_ID });
-    await handlePush(join);
+    await handleCompetition(join);
 
-    expect(mocks.service.joinPushCompetition).toHaveBeenCalledWith({
+    expect(mocks.service.joinCompetition).toHaveBeenCalledWith({
       discordUserId: DISCORD_ID,
       competitionId: COMPETITION_ID,
       playerId: PLAYER_ID,
     });
 
-    mocks.service.submitPushResult.mockResolvedValue({
+    mocks.service.submitCompetitionResult.mockResolvedValue({
       submissionId: 'submission-1',
       submittedAt: '2026-11-21T10:00:00.000Z',
       trophies: 5_000,
@@ -268,9 +268,9 @@ describe('/push command handlers', () => {
       account: PLAYER_ID,
       trophies: 5_000,
     });
-    await handlePush(submit);
+    await handleCompetition(submit);
 
-    expect(mocks.service.submitPushResult).toHaveBeenCalledWith({
+    expect(mocks.service.submitCompetitionResult).toHaveBeenCalledWith({
       discordUserId: DISCORD_ID,
       competitionId: COMPETITION_ID,
       playerId: PLAYER_ID,
@@ -280,14 +280,14 @@ describe('/push command handlers', () => {
   });
 
   it('ends a competition and shows who ended it', async () => {
-    mocks.service.endPushCompetition.mockResolvedValue(
+    mocks.service.endCompetition.mockResolvedValue(
       competition({ status: 'ended', endedAt: '2026-11-21T12:00:00.000Z', endedBy: 'profile-1' }),
     );
     const interaction = chatInteraction('end', { competition: COMPETITION_ID });
 
-    await handlePush(interaction);
+    await handleCompetition(interaction);
 
-    expect(mocks.service.endPushCompetition).toHaveBeenCalledWith({
+    expect(mocks.service.endCompetition).toHaveBeenCalledWith({
       discordUserId: DISCORD_ID,
       competitionId: COMPETITION_ID,
     });
@@ -295,9 +295,9 @@ describe('/push command handlers', () => {
   });
 
   it('paginates leaderboards and preserves the competition state', async () => {
-    mocks.service.loadPushLeaderboard.mockResolvedValue(leaderboardView(12));
+    mocks.service.loadCompetitionLeaderboard.mockResolvedValue(leaderboardView(12));
     const initial = chatInteraction('leaderboard', { competition: COMPETITION_ID });
-    await handlePush(initial);
+    await handleCompetition(initial);
 
     const first = payload(initial, 'reply');
     expect(embedText(first.embeds[0])).toContain('Player 1');
@@ -305,27 +305,27 @@ describe('/push command handlers', () => {
       `leaderboard|${COMPETITION_ID}`,
     );
 
-    const button = buttonInteraction(`push:page:2:leaderboard|${COMPETITION_ID}`);
-    await handlePushComponent(button);
+    const button = buttonInteraction(`competition:page:2:leaderboard|${COMPETITION_ID}`);
+    await handleCompetitionComponent(button);
 
-    expect(mocks.service.loadPushLeaderboard).toHaveBeenCalledTimes(2);
+    expect(mocks.service.loadCompetitionLeaderboard).toHaveBeenCalledTimes(2);
     expect(embedText(payload(button, 'editReply').embeds[0])).toContain('Player 11');
   });
 
   it('lists competitions and handles an empty list', async () => {
-    mocks.service.listPushCompetitions.mockResolvedValue([
+    mocks.service.listCompetitions.mockResolvedValue([
       competition(),
       competition({ id: 'another-id', name: 'Season Climb' }),
     ]);
     const list = chatInteraction('list');
-    await handlePush(list);
-    expect(embedText(payload(list, 'reply').embeds[0])).toContain('Midseason Push');
+    await handleCompetition(list);
+    expect(embedText(payload(list, 'reply').embeds[0])).toContain('Midseason Climb');
 
-    mocks.service.listPushCompetitions.mockResolvedValue([]);
+    mocks.service.listCompetitions.mockResolvedValue([]);
     const empty = chatInteraction('list');
-    await handlePush(empty);
+    await handleCompetition(empty);
     expect(embedText(payload(empty, 'reply').embeds[0])).toContain(
-      'No push competitions have been created yet.',
+      'No competitions have been created yet.',
     );
   });
 
@@ -336,33 +336,33 @@ describe('/push command handlers', () => {
     mocks.clubs.filterRegisteredClubs.mockReturnValue([
       { id: 'club-1', tag: '2C0Y', name: 'Alpha', description: null, trophies: null, requiredTrophies: null, memberCount: null, lastSyncedAt: null },
     ]);
-    mocks.service.listPushCompetitions.mockResolvedValue([competition()]);
-    mocks.service.resolvePushActor.mockResolvedValue({
+    mocks.service.listCompetitions.mockResolvedValue([competition()]);
+    mocks.service.resolveCompetitionActor.mockResolvedValue({
       profileId: 'profile-1',
       discordUserId: DISCORD_ID,
       globalRole: 'staff',
       clubRoles: new Map(),
     });
-    mocks.service.canManagePushCompetition.mockReturnValue(true);
+    mocks.service.canManageCompetition.mockReturnValue(true);
     mocks.service.listVerifiedPlayers.mockResolvedValue([
       { id: PLAYER_ID, tag: '2C0Y', name: 'Alpha', verifiedAt: '2026-11-17T00:00:00.000Z', method: 'manual_staff' },
     ]);
 
     const club = autocompleteInteraction('create', 'club', '2C0Y');
-    await handlePushAutocomplete(club);
+    await handleCompetitionAutocomplete(club);
     expect((club.respond as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual([
       { name: 'Alpha (#2C0Y)', value: 'club-1' },
     ]);
 
     const competitions = autocompleteInteraction('end', 'competition', 'mid');
-    await handlePushAutocomplete(competitions);
+    await handleCompetitionAutocomplete(competitions);
     expect((competitions.respond as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual([
-      { name: 'Midseason Push', value: COMPETITION_ID },
+      { name: 'Midseason Climb', value: COMPETITION_ID },
     ]);
-    expect(mocks.service.canManagePushCompetition).toHaveBeenCalled();
+    expect(mocks.service.canManageCompetition).toHaveBeenCalled();
 
     const accounts = autocompleteInteraction('join', 'account', 'alpha');
-    await handlePushAutocomplete(accounts);
+    await handleCompetitionAutocomplete(accounts);
     expect((accounts.respond as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual([
       { name: 'Alpha (#2C0Y)', value: PLAYER_ID },
     ]);

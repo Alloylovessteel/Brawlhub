@@ -24,35 +24,35 @@ import {
 } from '../discord/pagination';
 import type { PlayerIdentity } from '../players/types';
 import {
-  buildPushCreatedEmbed,
-  buildPushEndedEmbed,
-  buildPushJoinedEmbed,
-  buildPushLeaderboardEmbed,
-  buildPushListEmbed,
-  buildPushSubmittedEmbed,
-} from '../push/embed';
+  buildCompetitionCreatedEmbed,
+  buildCompetitionEndedEmbed,
+  buildCompetitionJoinedEmbed,
+  buildCompetitionLeaderboardEmbed,
+  buildCompetitionListEmbed,
+  buildCompetitionSubmittedEmbed,
+} from '../competition/embed';
 import {
-  canManagePushCompetition,
-  createPushCompetition,
-  endPushCompetition,
-  joinPushCompetition,
-  listPushCompetitions,
+  canManageCompetition,
+  createCompetition,
+  endCompetition,
+  joinCompetition,
+  listCompetitions,
   listVerifiedPlayers,
-  loadPushCompetition,
-  loadPushLeaderboard,
-  loadPushPlayer,
-  PushServiceError,
-  resolvePushActor,
-  submitPushResult,
-} from '../push/service';
-import type { PushLeaderboardView } from '../push/types';
+  loadCompetitionRecord,
+  loadCompetitionLeaderboard,
+  loadCompetitionPlayer,
+  CompetitionServiceError,
+  resolveCompetitionActor,
+  submitCompetitionResult,
+} from '../competition/service';
+import type { CompetitionLeaderboardView } from '../competition/types';
 
 const logger = createLogger('bot');
-const COMMAND_NAME = 'push';
+const COMMAND_NAME = 'competition';
 const LEADERBOARD_PAGE_SIZE = 10;
 const LIST_PAGE_SIZE = 5;
 
-type PushPageState =
+type CompetitionPageState =
   | { readonly kind: 'leaderboard'; readonly competitionId: string }
   | { readonly kind: 'list' };
 
@@ -61,13 +61,13 @@ interface PagePayload {
   readonly components: ActionRowBuilder<ButtonBuilder>[];
 }
 
-export const pushCommandData = new SlashCommandBuilder()
+export const competitionCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
-  .setDescription('Create, join and follow Brawl Stars push competitions')
+  .setDescription('Create, join and follow Brawl Stars competitions')
   .addSubcommand((subcommand) =>
     subcommand
       .setName('create')
-      .setDescription('Create a push competition (authorised staff only)')
+      .setDescription('Create a competition (authorised staff only)')
       .addStringOption((option) =>
         option.setName('name').setDescription('Competition name').setRequired(true).setMaxLength(100),
       )
@@ -182,11 +182,11 @@ export const pushCommandData = new SlashCommandBuilder()
     subcommand.setName('list').setDescription('List upcoming, active and completed competitions'),
   );
 
-function encodeState(state: PushPageState): string {
+function encodeState(state: CompetitionPageState): string {
   return state.kind === 'list' ? 'list' : `leaderboard|${state.competitionId}`;
 }
 
-function decodeState(raw: string): PushPageState | null {
+function decodeState(raw: string): CompetitionPageState | null {
   if (raw === 'list') return { kind: 'list' };
   const [kind, competitionId] = raw.split('|');
   if (kind === 'leaderboard' && competitionId !== undefined && competitionId.length > 0) {
@@ -195,7 +195,7 @@ function decodeState(raw: string): PushPageState | null {
   return null;
 }
 
-function paginationFor(state: PushPageState, page: Page<unknown>): ActionRowBuilder<ButtonBuilder>[] {
+function paginationFor(state: CompetitionPageState, page: Page<unknown>): ActionRowBuilder<ButtonBuilder>[] {
   const row = buildPaginationRowWithState(
     COMMAND_NAME,
     page.page,
@@ -213,11 +213,11 @@ function optionInteger(interaction: ChatInputCommandInteraction, name: string): 
   return interaction.options.getInteger(name, false);
 }
 
-async function replyPushError(
+async function replyCompetitionError(
   interaction: ChatInputCommandInteraction | ButtonInteraction,
   error: unknown,
 ): Promise<void> {
-  if (error instanceof PushServiceError) {
+  if (error instanceof CompetitionServiceError) {
     if (interaction.replied || interaction.deferred) {
       await interaction.followUp({ content: error.message, ephemeral: true });
     } else {
@@ -231,41 +231,41 @@ async function replyPushError(
 async function loadLeaderboardPage(
   competitionId: string,
   pageNumber: number,
-): Promise<{ view: PushLeaderboardView; payload: PagePayload }> {
-  const view = await loadPushLeaderboard(competitionId);
+): Promise<{ view: CompetitionLeaderboardView; payload: PagePayload }> {
+  const view = await loadCompetitionLeaderboard(competitionId);
   const page = paginate(view.rows, pageNumber, LEADERBOARD_PAGE_SIZE);
-  const state: PushPageState = { kind: 'leaderboard', competitionId };
+  const state: CompetitionPageState = { kind: 'leaderboard', competitionId };
   return {
     view,
     payload: {
-      embeds: [buildPushLeaderboardEmbed(view, page, getBotConfig())],
+      embeds: [buildCompetitionLeaderboardEmbed(view, page, getBotConfig())],
       components: paginationFor(state, page),
     },
   };
 }
 
 async function loadListPage(pageNumber: number): Promise<PagePayload> {
-  const competitions = await listPushCompetitions();
+  const competitions = await listCompetitions();
   const page = paginate(competitions, pageNumber, LIST_PAGE_SIZE);
   return {
-    embeds: [buildPushListEmbed(competitions, page)],
+    embeds: [buildCompetitionListEmbed(competitions, page)],
     components: paginationFor({ kind: 'list' }, page),
   };
 }
 
 async function requirePlayer(playerId: string): Promise<PlayerIdentity> {
-  const player = await loadPushPlayer(playerId);
+  const player = await loadCompetitionPlayer(playerId);
   if (player === null) {
-    throw new PushServiceError('invalid_selection', 'That Brawl Stars account could not be found.');
+    throw new CompetitionServiceError('invalid_selection', 'That Brawl Stars account could not be found.');
   }
   return player;
 }
 
-export async function handlePush(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function handleCompetition(interaction: ChatInputCommandInteraction): Promise<void> {
   const subcommand = interaction.options.getSubcommand(false);
   try {
     if (subcommand === 'create') {
-      const competition = await createPushCompetition({
+      const competition = await createCompetition({
         discordUserId: interaction.user.id,
         name: optionString(interaction, 'name'),
         description: optionString(interaction, 'description') || null,
@@ -275,7 +275,7 @@ export async function handlePush(interaction: ChatInputCommandInteraction): Prom
         goal: optionInteger(interaction, 'goal'),
       });
       await interaction.reply({
-        embeds: [buildPushCreatedEmbed(competition)],
+        embeds: [buildCompetitionCreatedEmbed(competition)],
         allowedMentions: { parse: [] },
       });
       return;
@@ -284,20 +284,20 @@ export async function handlePush(interaction: ChatInputCommandInteraction): Prom
     if (subcommand === 'join') {
       const competitionId = optionString(interaction, 'competition');
       const playerId = optionString(interaction, 'account');
-      const result = await joinPushCompetition({
+      const result = await joinCompetition({
         discordUserId: interaction.user.id,
         competitionId,
         playerId,
       });
       const [competition, player] = await Promise.all([
-        loadPushCompetition(competitionId),
+        loadCompetitionRecord(competitionId),
         requirePlayer(playerId),
       ]);
       if (competition === null) {
-        throw new PushServiceError('not_found', 'That competition could not be found.');
+        throw new CompetitionServiceError('not_found', 'That competition could not be found.');
       }
       await interaction.reply({
-        embeds: [buildPushJoinedEmbed(competition, player, result, getBotConfig())],
+        embeds: [buildCompetitionJoinedEmbed(competition, player, result, getBotConfig())],
         allowedMentions: { parse: [] },
       });
       return;
@@ -308,23 +308,23 @@ export async function handlePush(interaction: ChatInputCommandInteraction): Prom
       const playerId = optionString(interaction, 'account');
       const trophies = optionInteger(interaction, 'trophies');
       if (trophies === null) {
-        throw new PushServiceError('invalid_trophies', 'Enter a trophy count of 0 or more.');
+        throw new CompetitionServiceError('invalid_trophies', 'Enter a trophy count of 0 or more.');
       }
-      const result = await submitPushResult({
+      const result = await submitCompetitionResult({
         discordUserId: interaction.user.id,
         competitionId,
         playerId,
         trophies,
       });
       const [competition, player] = await Promise.all([
-        loadPushCompetition(competitionId),
+        loadCompetitionRecord(competitionId),
         requirePlayer(playerId),
       ]);
       if (competition === null) {
-        throw new PushServiceError('not_found', 'That competition could not be found.');
+        throw new CompetitionServiceError('not_found', 'That competition could not be found.');
       }
       await interaction.reply({
-        embeds: [buildPushSubmittedEmbed(competition, player, result, getBotConfig())],
+        embeds: [buildCompetitionSubmittedEmbed(competition, player, result, getBotConfig())],
         allowedMentions: { parse: [] },
       });
       return;
@@ -337,12 +337,12 @@ export async function handlePush(interaction: ChatInputCommandInteraction): Prom
     }
 
     if (subcommand === 'end') {
-      const competition = await endPushCompetition({
+      const competition = await endCompetition({
         discordUserId: interaction.user.id,
         competitionId: optionString(interaction, 'competition'),
       });
       await interaction.reply({
-        embeds: [buildPushEndedEmbed(competition, interaction.user.id)],
+        embeds: [buildCompetitionEndedEmbed(competition, interaction.user.id)],
         allowedMentions: { parse: [] },
       });
       return;
@@ -353,13 +353,13 @@ export async function handlePush(interaction: ChatInputCommandInteraction): Prom
       return;
     }
 
-    await interaction.reply({ content: 'Choose a push subcommand.', ephemeral: true });
+    await interaction.reply({ content: 'Choose a competition subcommand.', ephemeral: true });
   } catch (error) {
     try {
-      await replyPushError(interaction, error);
+      await replyCompetitionError(interaction, error);
     } catch (unexpected) {
       const { token } = getBotConfig();
-      logger.error('Push command failed', {
+      logger.error('Competition command failed', {
         subcommand: subcommand ?? 'unknown',
         error: safeErrorMessage(unexpected, token === undefined ? [] : [token]),
       });
@@ -368,7 +368,7 @@ export async function handlePush(interaction: ChatInputCommandInteraction): Prom
   }
 }
 
-export async function handlePushComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleCompetitionComponent(interaction: ButtonInteraction): Promise<void> {
   if (!isPaginationButtonWithState(interaction, COMMAND_NAME)) return;
   const parsed = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   if (parsed === null) return;
@@ -384,10 +384,10 @@ export async function handlePushComponent(interaction: ButtonInteraction): Promi
     await interaction.editReply({ ...payload, content: null, allowedMentions: { parse: [] } });
   } catch (error) {
     try {
-      await replyPushError(interaction, error);
+      await replyCompetitionError(interaction, error);
     } catch (unexpected) {
       const { token } = getBotConfig();
-      logger.error('Push pagination failed', {
+      logger.error('Competition pagination failed', {
         error: safeErrorMessage(unexpected, token === undefined ? [] : [token]),
       });
       await replyWithSafeError(interaction);
@@ -400,13 +400,13 @@ async function competitionChoices(
   focusedValue: string,
 ): Promise<{ name: string; value: string }[]> {
   const query = focusedValue.trim().toLowerCase();
-  let competitions = await listPushCompetitions();
+  let competitions = await listCompetitions();
 
   const subcommand = interaction.options.getSubcommand(false);
   if (subcommand === 'end') {
-    const actor = await resolvePushActor(interaction.user.id);
+    const actor = await resolveCompetitionActor(interaction.user.id);
     competitions = competitions.filter((competition) =>
-      canManagePushCompetition(actor, competition.clubId),
+      canManageCompetition(actor, competition.clubId),
     );
   }
 
@@ -429,7 +429,7 @@ async function accountChoices(
   interaction: AutocompleteInteraction,
   focusedValue: string,
 ): Promise<{ name: string; value: string }[]> {
-  const actor = await resolvePushActor(interaction.user.id);
+  const actor = await resolveCompetitionActor(interaction.user.id);
   const players = await listVerifiedPlayers(actor.profileId);
   const query = focusedValue.trim().toLowerCase();
   return players
@@ -456,7 +456,7 @@ async function clubChoices(
   }));
 }
 
-export async function handlePushAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+export async function handleCompetitionAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   try {
     const focused = interaction.options.getFocused(true);
     const choices =

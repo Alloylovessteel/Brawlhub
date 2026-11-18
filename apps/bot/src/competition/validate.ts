@@ -1,4 +1,4 @@
-/** Server-side validation for `/push` option values. */
+/** Server-side validation for `/competition` option values. */
 
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 const UTC_MINUTE = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))$/;
@@ -30,7 +30,7 @@ function validCalendarDate(year: number, month: number, day: number): boolean {
 }
 
 /** Parse a date string without accepting invented or normalised calendar values. */
-export function parsePushDate(input: string): string | null {
+export function parseCompetitionDate(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed.length === 0) return null;
 
@@ -83,15 +83,15 @@ export function parsePushDate(input: string): string | null {
   return null;
 }
 
-export interface PushPeriod {
+export interface CompetitionPeriod {
   readonly startsAt: string;
   readonly endsAt: string;
 }
 
 /** Validate both dates, their order, and that the competition is not backdated. */
-export function parsePushPeriod(start: string, end: string, now: Date): ValidationResult<PushPeriod> {
-  const startsAt = parsePushDate(start);
-  const endsAt = parsePushDate(end);
+export function parseCompetitionPeriod(start: string, end: string, now: Date): ValidationResult<CompetitionPeriod> {
+  const startsAt = parseCompetitionDate(start);
+  const endsAt = parseCompetitionDate(end);
   if (startsAt === null || endsAt === null) {
     return { ok: false, message: `That date is not valid. ${DATE_HINT}` };
   }
@@ -108,7 +108,7 @@ export function parsePushPeriod(start: string, end: string, now: Date): Validati
   return { ok: true, value: { startsAt, endsAt } };
 }
 
-export function normalizePushName(value: string): ValidationResult<string> {
+export function normalizeCompetitionName(value: string): ValidationResult<string> {
   const normalized = value.trim().replace(/\s+/g, ' ');
   if (normalized.length < 1 || normalized.length > 100) {
     return { ok: false, message: 'Competition names must be between 1 and 100 characters.' };
@@ -116,7 +116,7 @@ export function normalizePushName(value: string): ValidationResult<string> {
   return { ok: true, value: normalized };
 }
 
-export function normalizePushDescription(value: string | null): ValidationResult<string | null> {
+export function normalizeCompetitionDescription(value: string | null): ValidationResult<string | null> {
   if (value === null) return { ok: true, value: null };
   const normalized = value.trim();
   if (normalized.length > 1000) {
@@ -125,7 +125,7 @@ export function normalizePushDescription(value: string | null): ValidationResult
   return { ok: true, value: normalized === '' ? null : normalized };
 }
 
-export function parsePushGoal(value: number | null): ValidationResult<number | null> {
+export function parseCompetitionGoal(value: number | null): ValidationResult<number | null> {
   if (value === null) return { ok: true, value: null };
   if (!Number.isInteger(value) || value <= 0 || value > MAX_INT) {
     return { ok: false, message: 'Goal must be a positive whole number.' };
@@ -133,7 +133,7 @@ export function parsePushGoal(value: number | null): ValidationResult<number | n
   return { ok: true, value };
 }
 
-export function parsePushTrophies(value: number): ValidationResult<number> {
+export function parseCompetitionTrophies(value: number): ValidationResult<number> {
   if (!Number.isInteger(value) || value < 0 || value > MAX_INT) {
     return { ok: false, message: 'Trophies must be a whole number of 0 or more.' };
   }

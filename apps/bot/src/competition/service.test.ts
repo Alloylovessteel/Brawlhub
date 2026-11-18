@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  canManagePushCompetition,
-  createPushCompetition,
-  endPushCompetition,
-  joinPushCompetition,
-  listPushCompetitions,
-  loadPushLeaderboard,
-  PushServiceError,
-  resolvePushActor,
-  submitPushResult,
+  canManageCompetition,
+  createCompetition,
+  endCompetition,
+  joinCompetition,
+  listCompetitions,
+  loadCompetitionLeaderboard,
+  CompetitionServiceError,
+  resolveCompetitionActor,
+  submitCompetitionResult,
 } from './service';
 
 type Row = Record<string, unknown>;
@@ -113,7 +113,7 @@ function baseTables(): Tables {
 function competitionRow(overrides: Row = {}): Row {
   return {
     id: COMPETITION_ID,
-    name: 'Midseason Push',
+    name: 'Midseason Climb',
     rules: 'No camping',
     club_id: null,
     club: null,
@@ -204,37 +204,37 @@ function createRpcHandler() {
   });
 }
 
-async function expectPushError(promise: Promise<unknown>, code: string): Promise<void> {
+async function expectCompetitionError(promise: Promise<unknown>, code: string): Promise<void> {
   try {
     await promise;
-    throw new Error(`Expected PushServiceError ${code}`);
+    throw new Error(`Expected CompetitionServiceError ${code}`);
   } catch (error) {
-    expect(error).toBeInstanceOf(PushServiceError);
-    expect((error as PushServiceError).code).toBe(code);
+    expect(error).toBeInstanceOf(CompetitionServiceError);
+    expect((error as CompetitionServiceError).code).toBe(code);
   }
 }
 
-describe('push actor authorization', () => {
+describe('competition actor authorization', () => {
   it('derives staff and club roles from stored user_roles', async () => {
     const db: any = createFakeDb(baseTables(), () => rpcOk({}));
-    const staff = await resolvePushActor('111111111111111111', { db });
-    const member = await resolvePushActor('222222222222222222', { db });
+    const staff = await resolveCompetitionActor('111111111111111111', { db });
+    const member = await resolveCompetitionActor('222222222222222222', { db });
 
     expect(staff.profileId).toBe(STAFF_PROFILE);
     expect(staff.globalRole).toBe('staff');
-    expect(canManagePushCompetition(staff, null)).toBe(true);
+    expect(canManageCompetition(staff, null)).toBe(true);
     expect(member.clubRoles.get(CLUB_ID)).toBe('member');
-    expect(canManagePushCompetition(member, CLUB_ID)).toBe(false);
-    expect(canManagePushCompetition(member, null)).toBe(false);
+    expect(canManageCompetition(member, CLUB_ID)).toBe(false);
+    expect(canManageCompetition(member, null)).toBe(false);
   });
 
   it('rejects Discord users without a BrawlHub profile', async () => {
     const db: any = createFakeDb(baseTables(), () => rpcOk({}));
-    await expectPushError(resolvePushActor('999999999999999999', { db }), 'profile_not_linked');
+    await expectCompetitionError(resolveCompetitionActor('999999999999999999', { db }), 'profile_not_linked');
   });
 });
 
-describe('push competition service', () => {
+describe('competition service', () => {
   let tables: Tables;
   let rpcHandler: ReturnType<typeof createRpcHandler>;
   let db: any;
@@ -246,10 +246,10 @@ describe('push competition service', () => {
   });
 
   it('creates a competition with parsed dates and an audit-backed RPC', async () => {
-    const competition = await createPushCompetition(
+    const competition = await createCompetition(
       {
         discordUserId: '111111111111111111',
-        name: '  Midseason   Push ',
+        name: '  Midseason   Climb ',
         description: '  No camping ',
         start: '2026-11-20T00:00Z',
         end: '2026-11-22T00:00Z',
@@ -259,11 +259,11 @@ describe('push competition service', () => {
       { db, now: NOW },
     );
 
-    expect(competition.name).toBe('Midseason Push');
+    expect(competition.name).toBe('Midseason Climb');
     expect(rpcHandler).toHaveBeenCalledWith(
       'push_create_competition',
       expect.objectContaining({
-        p_name: 'Midseason Push',
+        p_name: 'Midseason Climb',
         p_description: 'No camping',
         p_starts_at: '2026-11-20T00:00:00.000Z',
         p_ends_at: '2026-11-22T00:00:00.000Z',
@@ -273,8 +273,8 @@ describe('push competition service', () => {
   });
 
   it('rejects invalid date ranges before writing', async () => {
-    await expectPushError(
-      createPushCompetition(
+    await expectCompetitionError(
+      createCompetition(
         {
           discordUserId: '111111111111111111',
           name: 'Bad period',
@@ -292,11 +292,11 @@ describe('push competition service', () => {
   });
 
   it('does not expose creation to ordinary members or duplicate configurations', async () => {
-    await expectPushError(
-      createPushCompetition(
+    await expectCompetitionError(
+      createCompetition(
         {
           discordUserId: '222222222222222222',
-          name: 'Member push',
+          name: 'Member competition',
           description: null,
           start: '2026-11-20T00:00Z',
           end: '2026-11-22T00:00Z',
@@ -310,11 +310,11 @@ describe('push competition service', () => {
     expect(rpcHandler).not.toHaveBeenCalled();
 
     rpcHandler.mockImplementation(() => rpcCode('duplicate'));
-    await expectPushError(
-      createPushCompetition(
+    await expectCompetitionError(
+      createCompetition(
         {
           discordUserId: '111111111111111111',
-          name: 'Midseason Push',
+          name: 'Midseason Climb',
           description: null,
           start: '2026-11-20T00:00Z',
           end: '2026-11-22T00:00Z',
@@ -328,7 +328,7 @@ describe('push competition service', () => {
   });
 
   it('joins only with a verified account and preserves the returned baseline', async () => {
-    const result = await joinPushCompetition(
+    const result = await joinCompetition(
       { discordUserId: '111111111111111111', competitionId: COMPETITION_ID, playerId: PLAYER_ID },
       { db },
     );
@@ -340,8 +340,8 @@ describe('push competition service', () => {
     });
 
     tables['player_verifications'] = [];
-    await expectPushError(
-      joinPushCompetition(
+    await expectCompetitionError(
+      joinCompetition(
         { discordUserId: '111111111111111111', competitionId: COMPETITION_ID, playerId: PLAYER_ID },
         { db },
       ),
@@ -353,8 +353,8 @@ describe('push competition service', () => {
   it('maps duplicate, ended and club-restriction failures from the database', async () => {
     for (const code of ['already_joined', 'ended', 'wrong_club'] as const) {
       rpcHandler.mockImplementationOnce(() => rpcCode(code));
-      await expectPushError(
-        joinPushCompetition(
+      await expectCompetitionError(
+        joinCompetition(
           { discordUserId: '111111111111111111', competitionId: COMPETITION_ID, playerId: PLAYER_ID },
           { db },
         ),
@@ -364,7 +364,7 @@ describe('push competition service', () => {
   });
 
   it('records repeated submissions as unverified user values', async () => {
-    const result = await submitPushResult(
+    const result = await submitCompetitionResult(
       {
         discordUserId: '111111111111111111',
         competitionId: COMPETITION_ID,
@@ -387,8 +387,8 @@ describe('push competition service', () => {
   });
 
   it('rejects negative trophies and outside-period submissions without writing', async () => {
-    await expectPushError(
-      submitPushResult(
+    await expectCompetitionError(
+      submitCompetitionResult(
         {
           discordUserId: '111111111111111111',
           competitionId: COMPETITION_ID,
@@ -402,8 +402,8 @@ describe('push competition service', () => {
     expect(rpcHandler).not.toHaveBeenCalled();
 
     rpcHandler.mockImplementation(() => rpcCode('outside_period'));
-    await expectPushError(
-      submitPushResult(
+    await expectCompetitionError(
+      submitCompetitionResult(
         {
           discordUserId: '111111111111111111',
           competitionId: COMPETITION_ID,
@@ -429,8 +429,8 @@ describe('push competition service', () => {
       },
     ];
 
-    await expectPushError(
-      submitPushResult(
+    await expectCompetitionError(
+      submitCompetitionResult(
         {
           discordUserId: '111111111111111111',
           competitionId: COMPETITION_ID,
@@ -445,15 +445,15 @@ describe('push competition service', () => {
   });
 
   it('ends a competition once and reports repeated end attempts', async () => {
-    const ended = await endPushCompetition(
+    const ended = await endCompetition(
       { discordUserId: '111111111111111111', competitionId: COMPETITION_ID },
       { db },
     );
-    expect(ended.name).toBe('Midseason Push');
+    expect(ended.name).toBe('Midseason Climb');
 
     rpcHandler.mockImplementation(() => rpcCode('already_ended'));
-    await expectPushError(
-      endPushCompetition(
+    await expectCompetitionError(
+      endCompetition(
         { discordUserId: '111111111111111111', competitionId: COMPETITION_ID },
         { db },
       ),
@@ -463,7 +463,7 @@ describe('push competition service', () => {
 
   it('lists competitions with entry counts', async () => {
     tables['competition_entries'] = [entryRow(), entryRow({ id: 'entry-2' })];
-    const competitions = await listPushCompetitions({ db });
+    const competitions = await listCompetitions({ db });
     expect(competitions).toHaveLength(1);
     expect(competitions[0]?.entryCount).toBe(2);
   });
@@ -497,7 +497,7 @@ describe('push competition service', () => {
       }),
     ];
 
-    const view = await loadPushLeaderboard(COMPETITION_ID, { db, now: NOW });
+    const view = await loadCompetitionLeaderboard(COMPETITION_ID, { db, now: NOW });
 
     expect(view.rows).toHaveLength(2);
     expect(view.rows[0]?.entry.player.name).toBe('Alpha');
@@ -510,7 +510,7 @@ describe('push competition service', () => {
   });
 
   it('handles an empty competition without inventing rows', async () => {
-    const view = await loadPushLeaderboard(COMPETITION_ID, { db, now: NOW });
+    const view = await loadCompetitionLeaderboard(COMPETITION_ID, { db, now: NOW });
     expect(view.rows).toEqual([]);
   });
 });

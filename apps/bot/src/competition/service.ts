@@ -9,26 +9,26 @@ import {
 } from '../clubs/service';
 import { parsePlayerRow } from '../players/service';
 import type { PlayerIdentity } from '../players/types';
-import { calculateGain, latestAcceptedSubmissions, rankPushRows } from './calculate';
+import { calculateGain, latestAcceptedSubmissions, rankCompetitionRows } from './calculate';
 import type {
-  PushActorContext,
-  PushClubRef,
-  PushCompetitionRecord,
-  PushEntry,
-  PushJoinResult,
-  PushLeaderboardRow,
-  PushLeaderboardView,
-  PushSubmitResult,
-  PushSubmission,
-  PushVerifiedPlayer,
+  CompetitionActorContext,
+  CompetitionClubRef,
+  CompetitionRecord,
+  CompetitionEntry,
+  CompetitionJoinResult,
+  CompetitionLeaderboardRow,
+  CompetitionLeaderboardView,
+  CompetitionSubmitResult,
+  CompetitionSubmission,
+  CompetitionVerifiedPlayer,
 } from './types';
 import {
   isUuid,
-  normalizePushDescription,
-  normalizePushName,
-  parsePushGoal,
-  parsePushPeriod,
-  parsePushTrophies,
+  normalizeCompetitionDescription,
+  normalizeCompetitionName,
+  parseCompetitionGoal,
+  parseCompetitionPeriod,
+  parseCompetitionTrophies,
   type ValidationResult,
 } from './validate';
 
@@ -56,7 +56,7 @@ const SUBMISSION_COLUMNS = [
 const ROLES: readonly Role[] = ['owner', 'admin', 'staff', 'member'];
 
 const ERROR_MESSAGES: Readonly<Record<string, string>> = {
-  forbidden: 'You do not have permission to manage push competitions.',
+  forbidden: 'You do not have permission to manage competitions.',
   duplicate: 'A competition with that name, club and time period already exists.',
   invalid_name: 'Competition names must be between 1 and 100 characters.',
   invalid_period: 'The competition end must be after the start, and the start cannot be in the past.',
@@ -75,18 +75,18 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   invalid_selection: 'That selection is not valid.',
 };
 
-/** Expected, user-facing push failures; raw database errors remain hidden. */
-export class PushServiceError extends Error {
+/** Expected, user-facing competition failures; raw database errors remain hidden. */
+export class CompetitionServiceError extends Error {
   constructor(
     readonly code: string,
     message: string,
   ) {
     super(message);
-    this.name = 'PushServiceError';
+    this.name = 'CompetitionServiceError';
   }
 }
 
-export interface PushServiceOptions {
+export interface CompetitionServiceOptions {
   readonly db?: DatabaseClient;
   readonly now?: Date;
 }
@@ -101,14 +101,14 @@ function isRole(value: unknown): value is Role {
 }
 
 function errorMessage(code: string): string {
-  return ERROR_MESSAGES[code] ?? 'That push competition action could not be completed.';
+  return ERROR_MESSAGES[code] ?? 'That competition action could not be completed.';
 }
 
 function asBoolean(value: unknown): boolean {
   return value === true;
 }
 
-function parseClubRef(value: unknown): PushClubRef | null {
+function parseClubRef(value: unknown): CompetitionClubRef | null {
   const row = relationRecord(value);
   if (row === null) return null;
   const id = asString(row['id']);
@@ -118,7 +118,7 @@ function parseClubRef(value: unknown): PushClubRef | null {
   return { id, tag, name };
 }
 
-function parseCompetitionRow(value: unknown, entryCount: number): PushCompetitionRecord | null {
+function parseCompetitionRow(value: unknown, entryCount: number): CompetitionRecord | null {
   const row = record(value);
   if (row === null) return null;
   const id = asString(row['id']);
@@ -152,7 +152,7 @@ function parseCompetitionRow(value: unknown, entryCount: number): PushCompetitio
   };
 }
 
-function parseVerifiedPlayerRow(value: unknown): PushVerifiedPlayer | null {
+function parseVerifiedPlayerRow(value: unknown): CompetitionVerifiedPlayer | null {
   const row = record(value);
   if (row === null) return null;
   const player = parsePlayerRow(relationRecord(row['player']) ?? row['player']);
@@ -170,7 +170,7 @@ function parseVerifiedPlayerRow(value: unknown): PushVerifiedPlayer | null {
   };
 }
 
-function parseEntryRow(value: unknown): PushEntry | null {
+function parseEntryRow(value: unknown): CompetitionEntry | null {
   const row = record(value);
   if (row === null) return null;
   const id = asString(row['id']);
@@ -192,7 +192,7 @@ function parseEntryRow(value: unknown): PushEntry | null {
   };
 }
 
-function parseSubmissionRow(value: unknown): PushSubmission | null {
+function parseSubmissionRow(value: unknown): CompetitionSubmission | null {
   const row = record(value);
   if (row === null) return null;
   const id = asString(row['id']);
@@ -228,11 +228,11 @@ function parseSubmissionRow(value: unknown): PushSubmission | null {
 
 function failValidation(result: ValidationResult<unknown>): never {
   if (result.ok) throw new Error('Expected a failed validation result');
-  throw new PushServiceError('invalid_input', result.message);
+  throw new CompetitionServiceError('invalid_input', result.message);
 }
 
 function requireUuid(value: string): void {
-  if (!isUuid(value)) throw new PushServiceError('invalid_selection', errorMessage('invalid_selection'));
+  if (!isUuid(value)) throw new CompetitionServiceError('invalid_selection', errorMessage('invalid_selection'));
 }
 
 async function runRpc(
@@ -248,15 +248,15 @@ async function runRpc(
 function expectOk(result: RpcResult): void {
   if (result['ok'] !== true) {
     const code = asString(result['code']) ?? 'unknown';
-    throw new PushServiceError(code, errorMessage(code));
+    throw new CompetitionServiceError(code, errorMessage(code));
   }
 }
 
 /** Resolve a Discord snowflake to the BrawlHub profile and its stored roles. */
-export async function resolvePushActor(
+export async function resolveCompetitionActor(
   discordUserId: string,
-  options: PushServiceOptions = {},
-): Promise<PushActorContext> {
+  options: CompetitionServiceOptions = {},
+): Promise<CompetitionActorContext> {
   const db = options.db ?? createTrustedClient();
   const { data: profile, error: profileError } = await db
     .from('profiles')
@@ -268,7 +268,7 @@ export async function resolvePushActor(
   const profileRow = record(profile);
   const profileId = asString(profileRow?.['id']);
   if (profileRow === null || profileId === null) {
-    throw new PushServiceError('profile_not_linked', errorMessage('profile_not_linked'));
+    throw new CompetitionServiceError('profile_not_linked', errorMessage('profile_not_linked'));
   }
 
   const { data: roleRows, error: roleError } = await db
@@ -301,8 +301,8 @@ export async function resolvePushActor(
 }
 
 /** Staff authorization uses stored roles and the shared permission matrix. */
-export function canManagePushCompetition(
-  actor: PushActorContext,
+export function canManageCompetition(
+  actor: CompetitionActorContext,
   clubId: string | null,
 ): boolean {
   if (actor.globalRole !== null && hasPermission(actor.globalRole, 'competitions:manage')) {
@@ -314,9 +314,9 @@ export function canManagePushCompetition(
 }
 
 /** Load a stored Brawl Stars player for confirmation embeds. */
-export async function loadPushPlayer(
+export async function loadCompetitionPlayer(
   playerId: string,
-  options: PushServiceOptions = {},
+  options: CompetitionServiceOptions = {},
 ): Promise<PlayerIdentity | null> {
   if (!isUuid(playerId)) return null;
   const db = options.db ?? createTrustedClient();
@@ -332,8 +332,8 @@ export async function loadPushPlayer(
 /** Verified accounts owned by the interacting Discord profile. */
 export async function listVerifiedPlayers(
   profileId: string,
-  options: PushServiceOptions = {},
-): Promise<PushVerifiedPlayer[]> {
+  options: CompetitionServiceOptions = {},
+): Promise<CompetitionVerifiedPlayer[]> {
   const db = options.db ?? createTrustedClient();
   const { data, error } = await db
     .from('player_verifications')
@@ -349,13 +349,13 @@ export async function listVerifiedPlayers(
 
   return (data ?? [])
     .map((value: unknown) => parseVerifiedPlayerRow(value))
-    .filter((player): player is PushVerifiedPlayer => player !== null);
+    .filter((player): player is CompetitionVerifiedPlayer => player !== null);
 }
 
 export async function hasVerifiedPlayerLink(
   profileId: string,
   playerId: string,
-  options: PushServiceOptions = {},
+  options: CompetitionServiceOptions = {},
 ): Promise<boolean> {
   const db = options.db ?? createTrustedClient();
   const { data, error } = await db
@@ -379,10 +379,10 @@ async function readEntryCount(db: DatabaseClient, competitionId: string): Promis
 }
 
 /** Load one competition with its club restriction and entry count. */
-export async function loadPushCompetition(
+export async function loadCompetitionRecord(
   competitionId: string,
-  options: PushServiceOptions = {},
-): Promise<PushCompetitionRecord | null> {
+  options: CompetitionServiceOptions = {},
+): Promise<CompetitionRecord | null> {
   if (!isUuid(competitionId)) return null;
   const db = options.db ?? createTrustedClient();
   const { data, error } = await db
@@ -395,10 +395,10 @@ export async function loadPushCompetition(
   return parseCompetitionRow(data, await readEntryCount(db, competitionId));
 }
 
-/** List all competitions for the paginated `/push list` view. */
-export async function listPushCompetitions(
-  options: PushServiceOptions = {},
-): Promise<PushCompetitionRecord[]> {
+/** List all competitions for the paginated `/competition list` view. */
+export async function listCompetitions(
+  options: CompetitionServiceOptions = {},
+): Promise<CompetitionRecord[]> {
   const db = options.db ?? createTrustedClient();
   const [competitionsResult, entriesResult] = await Promise.all([
     db
@@ -421,30 +421,30 @@ export async function listPushCompetitions(
 
   return (competitionsResult.data ?? [])
     .map((value: unknown) => parseCompetitionRow(value, 0))
-    .filter((competition): competition is PushCompetitionRecord => competition !== null)
+    .filter((competition): competition is CompetitionRecord => competition !== null)
     .map((competition) => ({
       ...competition,
       entryCount: counts.get(competition.id) ?? 0,
     }));
 }
 
-export async function createPushCompetition(
-  input: PushCreateInputLike,
-  options: PushServiceOptions = {},
-): Promise<PushCompetitionRecord> {
-  const name = normalizePushName(input.name);
+export async function createCompetition(
+  input: CompetitionCreateInputLike,
+  options: CompetitionServiceOptions = {},
+): Promise<CompetitionRecord> {
+  const name = normalizeCompetitionName(input.name);
   if (!name.ok) failValidation(name);
-  const description = normalizePushDescription(input.description);
+  const description = normalizeCompetitionDescription(input.description);
   if (!description.ok) failValidation(description);
-  const period = parsePushPeriod(input.start, input.end, options.now ?? new Date());
+  const period = parseCompetitionPeriod(input.start, input.end, options.now ?? new Date());
   if (!period.ok) failValidation(period);
-  const goal = parsePushGoal(input.goal);
+  const goal = parseCompetitionGoal(input.goal);
   if (!goal.ok) failValidation(goal);
   if (input.clubId !== null) requireUuid(input.clubId);
 
-  const actor = await resolvePushActor(input.discordUserId, options);
-  if (!canManagePushCompetition(actor, input.clubId)) {
-    throw new PushServiceError('forbidden', errorMessage('forbidden'));
+  const actor = await resolveCompetitionActor(input.discordUserId, options);
+  if (!canManageCompetition(actor, input.clubId)) {
+    throw new CompetitionServiceError('forbidden', errorMessage('forbidden'));
   }
 
   const result = await runRpc(
@@ -463,21 +463,21 @@ export async function createPushCompetition(
   expectOk(result);
 
   const competitionId = asString(result['id']);
-  if (competitionId === null) throw new PushServiceError('unknown', errorMessage('not_found'));
-  const competition = await loadPushCompetition(competitionId, options);
-  if (competition === null) throw new PushServiceError('not_found', errorMessage('not_found'));
+  if (competitionId === null) throw new CompetitionServiceError('unknown', errorMessage('not_found'));
+  const competition = await loadCompetitionRecord(competitionId, options);
+  if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
   return competition;
 }
 
-export async function joinPushCompetition(
-  input: PushJoinInputLike,
-  options: PushServiceOptions = {},
-): Promise<PushJoinResult> {
+export async function joinCompetition(
+  input: CompetitionJoinInputLike,
+  options: CompetitionServiceOptions = {},
+): Promise<CompetitionJoinResult> {
   requireUuid(input.competitionId);
   requireUuid(input.playerId);
-  const actor = await resolvePushActor(input.discordUserId, options);
+  const actor = await resolveCompetitionActor(input.discordUserId, options);
   if (!(await hasVerifiedPlayerLink(actor.profileId, input.playerId, options))) {
-    throw new PushServiceError('not_verified', errorMessage('not_verified'));
+    throw new CompetitionServiceError('not_verified', errorMessage('not_verified'));
   }
 
   const result = await runRpc(
@@ -492,7 +492,7 @@ export async function joinPushCompetition(
   expectOk(result);
 
   const entryId = asString(result['id']);
-  if (entryId === null) throw new PushServiceError('unknown', errorMessage('not_found'));
+  if (entryId === null) throw new CompetitionServiceError('unknown', errorMessage('not_found'));
   const source = asString(result['baselineSource']) ?? 'none';
   return {
     entryId,
@@ -502,18 +502,18 @@ export async function joinPushCompetition(
   };
 }
 
-export async function submitPushResult(
-  input: PushSubmitInputLike,
-  options: PushServiceOptions = {},
-): Promise<PushSubmitResult> {
+export async function submitCompetitionResult(
+  input: CompetitionSubmitInputLike,
+  options: CompetitionServiceOptions = {},
+): Promise<CompetitionSubmitResult> {
   requireUuid(input.competitionId);
   requireUuid(input.playerId);
-  const trophies = parsePushTrophies(input.trophies);
+  const trophies = parseCompetitionTrophies(input.trophies);
   if (!trophies.ok) failValidation(trophies);
 
-  const actor = await resolvePushActor(input.discordUserId, options);
+  const actor = await resolveCompetitionActor(input.discordUserId, options);
   if (!(await hasVerifiedPlayerLink(actor.profileId, input.playerId, options))) {
-    throw new PushServiceError('not_verified', errorMessage('not_verified'));
+    throw new CompetitionServiceError('not_verified', errorMessage('not_verified'));
   }
 
   const result = await runRpc(
@@ -532,7 +532,7 @@ export async function submitPushResult(
   const submittedAt = asString(result['submittedAt']);
   const recordedTrophies = asNumber(result['trophies']);
   if (submissionId === null || submittedAt === null || recordedTrophies === null) {
-    throw new PushServiceError('unknown', 'The result could not be recorded.');
+    throw new CompetitionServiceError('unknown', 'The result could not be recorded.');
   }
   return {
     submissionId,
@@ -542,16 +542,16 @@ export async function submitPushResult(
   };
 }
 
-export async function endPushCompetition(
-  input: PushEndInputLike,
-  options: PushServiceOptions = {},
-): Promise<PushCompetitionRecord> {
+export async function endCompetition(
+  input: CompetitionEndInputLike,
+  options: CompetitionServiceOptions = {},
+): Promise<CompetitionRecord> {
   requireUuid(input.competitionId);
-  const actor = await resolvePushActor(input.discordUserId, options);
-  const competition = await loadPushCompetition(input.competitionId, options);
-  if (competition === null) throw new PushServiceError('not_found', errorMessage('not_found'));
-  if (!canManagePushCompetition(actor, competition.clubId)) {
-    throw new PushServiceError('forbidden', errorMessage('forbidden'));
+  const actor = await resolveCompetitionActor(input.discordUserId, options);
+  const competition = await loadCompetitionRecord(input.competitionId, options);
+  if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
+  if (!canManageCompetition(actor, competition.clubId)) {
+    throw new CompetitionServiceError('forbidden', errorMessage('forbidden'));
   }
 
   const result = await runRpc(
@@ -564,19 +564,19 @@ export async function endPushCompetition(
   );
   expectOk(result);
 
-  const ended = await loadPushCompetition(input.competitionId, options);
-  if (ended === null) throw new PushServiceError('not_found', errorMessage('not_found'));
+  const ended = await loadCompetitionRecord(input.competitionId, options);
+  if (ended === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
   return ended;
 }
 
 /** Load entries and accepted submissions, then apply deterministic scoring. */
-export async function loadPushLeaderboard(
+export async function loadCompetitionLeaderboard(
   competitionId: string,
-  options: PushServiceOptions = {},
-): Promise<PushLeaderboardView> {
+  options: CompetitionServiceOptions = {},
+): Promise<CompetitionLeaderboardView> {
   const db = options.db ?? createTrustedClient();
-  const competition = await loadPushCompetition(competitionId, options);
-  if (competition === null) throw new PushServiceError('not_found', errorMessage('not_found'));
+  const competition = await loadCompetitionRecord(competitionId, options);
+  if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
 
   const [entriesResult, submissionsResult] = await Promise.all([
     db
@@ -597,13 +597,13 @@ export async function loadPushLeaderboard(
 
   const entries = (entriesResult.data ?? [])
     .map((value: unknown) => parseEntryRow(value))
-    .filter((entry): entry is PushEntry => entry !== null);
+    .filter((entry): entry is CompetitionEntry => entry !== null);
   const submissions = (submissionsResult.data ?? [])
     .map((value: unknown) => parseSubmissionRow(value))
-    .filter((submission): submission is PushSubmission => submission !== null);
+    .filter((submission): submission is CompetitionSubmission => submission !== null);
   const latest = latestAcceptedSubmissions(submissions);
 
-  const unranked: Omit<PushLeaderboardRow, 'rank'>[] = entries.map((entry) => {
+  const unranked: Omit<CompetitionLeaderboardRow, 'rank'>[] = entries.map((entry) => {
     const submission = latest.get(entry.id) ?? null;
     const trophies = submission?.trophies ?? null;
     return {
@@ -617,13 +617,13 @@ export async function loadPushLeaderboard(
 
   return {
     competition,
-    rows: rankPushRows(unranked),
+    rows: rankCompetitionRows(unranked),
     generatedAt: (options.now ?? new Date()).toISOString(),
   };
 }
 
 // Local aliases keep the exported input types in types.ts free of service details.
-type PushCreateInputLike = import('./types').PushCreateInput;
-type PushJoinInputLike = import('./types').PushJoinInput;
-type PushSubmitInputLike = import('./types').PushSubmitInput;
-type PushEndInputLike = import('./types').PushEndInput;
+type CompetitionCreateInputLike = import('./types').CompetitionCreateInput;
+type CompetitionJoinInputLike = import('./types').CompetitionJoinInput;
+type CompetitionSubmitInputLike = import('./types').CompetitionSubmitInput;
+type CompetitionEndInputLike = import('./types').CompetitionEndInput;

@@ -1,22 +1,22 @@
-/** View models and service inputs for the `/push` competition commands. */
+/** View models and service inputs for the `/competition` competition commands. */
 
 import type { Role } from '@brawlhub/shared';
 import type { PlayerIdentity } from '../players/types';
 
-export type PushCompetitionStatus = 'upcoming' | 'active' | 'completed';
+export type CompetitionStatus = 'upcoming' | 'active' | 'completed';
 
-export interface PushClubRef {
+export interface CompetitionClubRef {
   readonly id: string;
   readonly tag: string;
   readonly name: string;
 }
 
-export interface PushCompetitionRecord {
+export interface CompetitionRecord {
   readonly id: string;
   readonly name: string;
   readonly description: string | null;
   readonly clubId: string | null;
-  readonly club: PushClubRef | null;
+  readonly club: CompetitionClubRef | null;
   readonly startsAt: string;
   readonly endsAt: string;
   readonly goal: number | null;
@@ -28,14 +28,14 @@ export interface PushCompetitionRecord {
   readonly entryCount: number;
 }
 
-export interface PushActorContext {
+export interface CompetitionActorContext {
   readonly profileId: string;
   readonly discordUserId: string;
   readonly globalRole: Role | null;
   readonly clubRoles: ReadonlyMap<string, Role>;
 }
 
-export interface PushVerifiedPlayer {
+export interface CompetitionVerifiedPlayer {
   readonly id: string;
   readonly tag: string;
   readonly name: string;
@@ -43,30 +43,30 @@ export interface PushVerifiedPlayer {
   readonly method: string;
 }
 
-export interface PushJoinResult {
+export interface CompetitionJoinResult {
   readonly entryId: string;
   readonly baselineTrophies: number | null;
   readonly baselineSource: 'none' | 'player_snapshot' | 'manual_verified';
   readonly baselineCapturedAt: string | null;
 }
 
-export interface PushSubmitResult {
+export interface CompetitionSubmitResult {
   readonly submissionId: string;
   readonly submittedAt: string;
   readonly trophies: number;
   readonly verificationStatus: 'unverified';
 }
 
-export type PushSubmissionSource = 'user' | 'api';
-export type PushVerificationStatus = 'unverified' | 'verified';
+export type CompetitionSubmissionSource = 'user' | 'api';
+export type CompetitionVerificationStatus = 'unverified' | 'verified';
 
-export interface PushSubmission {
+export interface CompetitionSubmission {
   readonly id: string;
   readonly competitionId: string;
   readonly entryId: string;
   readonly trophies: number;
-  readonly source: PushSubmissionSource;
-  readonly verificationStatus: PushVerificationStatus;
+  readonly source: CompetitionSubmissionSource;
+  readonly verificationStatus: CompetitionVerificationStatus;
   readonly accepted: boolean;
   readonly submittedByProfileId: string | null;
   readonly submittedAt: string;
@@ -74,7 +74,7 @@ export interface PushSubmission {
   readonly verifiedByProfileId: string | null;
 }
 
-export interface PushEntry {
+export interface CompetitionEntry {
   readonly id: string;
   readonly competitionId: string;
   readonly player: PlayerIdentity;
@@ -84,23 +84,23 @@ export interface PushEntry {
   readonly baselineCapturedAt: string | null;
 }
 
-export interface PushLeaderboardRow {
+export interface CompetitionLeaderboardRow {
   /** Null for entries with no accepted submission or no usable baseline. */
   readonly rank: number | null;
-  readonly entry: PushEntry;
+  readonly entry: CompetitionEntry;
   readonly trophies: number | null;
   readonly gain: number | null;
   readonly latestSubmissionAt: string | null;
-  readonly verificationStatus: PushVerificationStatus | null;
+  readonly verificationStatus: CompetitionVerificationStatus | null;
 }
 
-export interface PushLeaderboardView {
-  readonly competition: PushCompetitionRecord;
-  readonly rows: readonly PushLeaderboardRow[];
+export interface CompetitionLeaderboardView {
+  readonly competition: CompetitionRecord;
+  readonly rows: readonly CompetitionLeaderboardRow[];
   readonly generatedAt: string;
 }
 
-export interface PushCreateInput {
+export interface CompetitionCreateInput {
   readonly discordUserId: string;
   readonly name: string;
   readonly description: string | null;
@@ -110,20 +110,20 @@ export interface PushCreateInput {
   readonly goal: number | null;
 }
 
-export interface PushJoinInput {
+export interface CompetitionJoinInput {
   readonly discordUserId: string;
   readonly competitionId: string;
   readonly playerId: string;
 }
 
-export interface PushSubmitInput {
+export interface CompetitionSubmitInput {
   readonly discordUserId: string;
   readonly competitionId: string;
   readonly playerId: string;
   readonly trophies: number;
 }
 
-export interface PushEndInput {
+export interface CompetitionEndInput {
   readonly discordUserId: string;
   readonly competitionId: string;
 }

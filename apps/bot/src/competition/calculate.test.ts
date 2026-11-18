@@ -3,19 +3,19 @@ import {
   calculateGain,
   competitionStatus,
   latestAcceptedSubmissions,
-  rankPushRows,
+  rankCompetitionRows,
 } from './calculate';
 import type {
-  PushCompetitionRecord,
-  PushEntry,
-  PushLeaderboardRow,
-  PushSubmission,
+  CompetitionRecord,
+  CompetitionEntry,
+  CompetitionLeaderboardRow,
+  CompetitionSubmission,
 } from './types';
 
-function competition(overrides: Partial<PushCompetitionRecord> = {}): PushCompetitionRecord {
+function competition(overrides: Partial<CompetitionRecord> = {}): CompetitionRecord {
   return {
     id: '11111111-1111-4111-8111-111111111111',
-    name: 'Push',
+    name: 'Test Competition',
     description: null,
     clubId: null,
     club: null,
@@ -32,7 +32,7 @@ function competition(overrides: Partial<PushCompetitionRecord> = {}): PushCompet
   };
 }
 
-function entry(id: string, name: string, baseline: number | null): PushEntry {
+function entry(id: string, name: string, baseline: number | null): CompetitionEntry {
   return {
     id,
     competitionId: competition().id,
@@ -58,7 +58,7 @@ function submission(
   trophies: number,
   submittedAt: string,
   accepted = true,
-): PushSubmission {
+): CompetitionSubmission {
   return {
     id,
     competitionId: competition().id,
@@ -75,10 +75,10 @@ function submission(
 }
 
 function unranked(
-  entryValue: PushEntry,
+  entryValue: CompetitionEntry,
   trophies: number | null,
   gain: number | null,
-): Omit<PushLeaderboardRow, 'rank'> {
+): Omit<CompetitionLeaderboardRow, 'rank'> {
   return {
     entry: entryValue,
     trophies,
@@ -88,7 +88,7 @@ function unranked(
   };
 }
 
-describe('push lifecycle helpers', () => {
+describe('competition lifecycle helpers', () => {
   it('derives upcoming, active and completed statuses without starting early', () => {
     expect(competitionStatus(competition(), new Date('2026-11-19T23:59:59.000Z'))).toBe('upcoming');
     expect(competitionStatus(competition(), new Date('2026-11-20T00:00:00.000Z'))).toBe('active');
@@ -120,7 +120,7 @@ describe('push lifecycle helpers', () => {
   });
 
   it('shares positions for equal gains and separates negative gains from missing baselines', () => {
-    const ranked = rankPushRows([
+    const ranked = rankCompetitionRows([
       unranked(entry('e1', 'Alpha', 4_000), 5_000, 1_000),
       unranked(entry('e2', 'Bravo', 3_000), 4_000, 1_000),
       unranked(entry('e3', 'Charlie', 5_000), 4_500, -500),

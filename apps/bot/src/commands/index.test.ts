@@ -69,12 +69,12 @@ describe('command registry', () => {
       'player-clubs',
       'player-compare',
       'leaderboard',
-      'push',
+      'competition',
     ]);
-    expect(commands.find((command) => command.data.name === 'push')?.autocomplete).toBeTypeOf(
+    expect(commands.find((command) => command.data.name === 'competition')?.autocomplete).toBeTypeOf(
       'function',
     );
-    expect(commands.find((command) => command.data.name === 'push')?.handleComponent).toBeTypeOf(
+    expect(commands.find((command) => command.data.name === 'competition')?.handleComponent).toBeTypeOf(
       'function',
     );
     for (const name of ['club-members', 'club-leaderboard', 'club-history', 'club-compare']) {

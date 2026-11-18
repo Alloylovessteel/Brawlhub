@@ -2,26 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { paginate } from '../discord/pagination';
 import type { PlayerIdentity } from '../players/types';
 import {
-  buildPushCreatedEmbed,
-  buildPushLeaderboardEmbed,
-  buildPushListEmbed,
-  buildPushSubmittedEmbed,
-  formatPushTimestamp,
+  buildCompetitionCreatedEmbed,
+  buildCompetitionLeaderboardEmbed,
+  buildCompetitionListEmbed,
+  buildCompetitionSubmittedEmbed,
+  formatCompetitionTimestamp,
 } from './embed';
 import type {
-  PushCompetitionRecord,
-  PushLeaderboardRow,
-  PushLeaderboardView,
-  PushSubmitResult,
+  CompetitionRecord,
+  CompetitionLeaderboardRow,
+  CompetitionLeaderboardView,
+  CompetitionSubmitResult,
 } from './types';
 
 const CONFIG = { playerProfileUrlTemplate: 'https://example.test/player/{tag}' };
 const NOW = new Date('2026-11-21T12:00:00.000Z');
 
-function competition(overrides: Partial<PushCompetitionRecord> = {}): PushCompetitionRecord {
+function competition(overrides: Partial<CompetitionRecord> = {}): CompetitionRecord {
   return {
     id: '11111111-1111-4111-8111-111111111111',
-    name: 'Midseason Push',
+    name: 'Midseason Climb',
     description: 'No camping and no account sharing.',
     clubId: null,
     club: null,
@@ -55,7 +55,7 @@ function row(
   name: string,
   trophies: number | null,
   gain: number | null,
-): PushLeaderboardRow {
+): CompetitionLeaderboardRow {
   return {
     rank,
     entry: {
@@ -74,11 +74,11 @@ function row(
   };
 }
 
-function view(rows: PushLeaderboardRow[]): PushLeaderboardView {
+function view(rows: CompetitionLeaderboardRow[]): CompetitionLeaderboardView {
   return { competition: competition(), rows, generatedAt: NOW.toISOString() };
 }
 
-function text(embed: ReturnType<typeof buildPushCreatedEmbed>): string {
+function text(embed: ReturnType<typeof buildCompetitionCreatedEmbed>): string {
   const json = embed.toJSON();
   return [
     json.title ?? '',
@@ -88,14 +88,14 @@ function text(embed: ReturnType<typeof buildPushCreatedEmbed>): string {
   ].join('\n');
 }
 
-describe('push embeds', () => {
+describe('competition embeds', () => {
   it('renders Discord timestamps and gracefully handles missing values', () => {
-    expect(formatPushTimestamp('2026-11-20T00:00:00.000Z', 'F')).toBe('<t:1795132800:F>');
-    expect(formatPushTimestamp(null, 'R')).toBe('—');
+    expect(formatCompetitionTimestamp('2026-11-20T00:00:00.000Z', 'F')).toBe('<t:1795132800:F>');
+    expect(formatCompetitionTimestamp(null, 'R')).toBe('—');
   });
 
   it('shows rules, period, goal and thousands separators on creation', () => {
-    const embed = buildPushCreatedEmbed(competition(), NOW);
+    const embed = buildCompetitionCreatedEmbed(competition(), NOW);
     const body = text(embed);
     expect(body).toContain('No camping and no account sharing.');
     expect(body).toContain('12,500 trophies');
@@ -104,13 +104,13 @@ describe('push embeds', () => {
   });
 
   it('clearly labels unverified submissions', () => {
-    const result: PushSubmitResult = {
+    const result: CompetitionSubmitResult = {
       submissionId: 'submission-1',
       submittedAt: '2026-11-21T10:00:00.000Z',
       trophies: 12_345,
       verificationStatus: 'unverified',
     };
-    const body = text(buildPushSubmittedEmbed(competition(), player('Alpha'), result, CONFIG, NOW));
+    const body = text(buildCompetitionSubmittedEmbed(competition(), player('Alpha'), result, CONFIG, NOW));
     expect(body).toContain('12,345');
     expect(body).toContain('Unverified user submission');
     expect(body).not.toContain('verified API data');
@@ -124,7 +124,7 @@ describe('push embeds', () => {
       row(null, 'Delta', 9_000, null),
     ]);
     const page = paginate(leaderboard.rows, 1, 10);
-    const body = text(buildPushLeaderboardEmbed(leaderboard, page, CONFIG, NOW));
+    const body = text(buildCompetitionLeaderboardEmbed(leaderboard, page, CONFIG, NOW));
 
     expect(body).toContain('#1 [Alpha]');
     expect(body).toContain('#1 [Bravo]');
@@ -136,13 +136,13 @@ describe('push embeds', () => {
   it('handles empty leaderboards and empty competition lists', () => {
     const leaderboard = view([]);
     const leaderboardBody = text(
-      buildPushLeaderboardEmbed(leaderboard, paginate(leaderboard.rows, 1, 10), CONFIG, NOW),
+      buildCompetitionLeaderboardEmbed(leaderboard, paginate(leaderboard.rows, 1, 10), CONFIG, NOW),
     );
     expect(leaderboardBody).toContain('No one has joined this competition yet.');
 
     const emptyPage = paginate([], 1, 5);
     expect(emptyPage.items).toEqual([]);
-    const listBody = text(buildPushListEmbed([], emptyPage, NOW));
-    expect(listBody).toContain('No push competitions have been created yet.');
+    const listBody = text(buildCompetitionListEmbed([], emptyPage, NOW));
+    expect(listBody).toContain('No competitions have been created yet.');
   });
 });

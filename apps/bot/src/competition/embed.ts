@@ -6,10 +6,10 @@ import type { Page } from '../discord/pagination';
 import type { PlayerIdentity } from '../players/types';
 import { competitionStatus } from './calculate';
 import type {
-  PushCompetitionRecord,
-  PushJoinResult,
-  PushLeaderboardView,
-  PushSubmitResult,
+  CompetitionRecord,
+  CompetitionJoinResult,
+  CompetitionLeaderboardView,
+  CompetitionSubmitResult,
 } from './types';
 
 const EMBED_COLOR = 0x5865_f2;
@@ -30,31 +30,31 @@ function delta(value: number): string {
 }
 
 /** Discord timestamp with a style, or a graceful placeholder for bad data. */
-export function formatPushTimestamp(value: string | null | undefined, style: 'F' | 'R'): string {
+export function formatCompetitionTimestamp(value: string | null | undefined, style: 'F' | 'R'): string {
   if (value === undefined || value === null) return '—';
   const milliseconds = Date.parse(value);
   if (Number.isNaN(milliseconds)) return '—';
   return `<t:${Math.floor(milliseconds / 1000)}:${style}>`;
 }
 
-function statusLabel(competition: PushCompetitionRecord, now: Date): string {
+function statusLabel(competition: CompetitionRecord, now: Date): string {
   const status = competitionStatus(competition, now);
   return status === 'upcoming' ? 'Upcoming' : status === 'active' ? 'Active' : 'Completed';
 }
 
-function periodLines(competition: PushCompetitionRecord): string {
-  const start = formatPushTimestamp(competition.startsAt, 'F');
-  const end = formatPushTimestamp(competition.endsAt, 'F');
-  const relative = formatPushTimestamp(competition.endsAt, 'R');
+function periodLines(competition: CompetitionRecord): string {
+  const start = formatCompetitionTimestamp(competition.startsAt, 'F');
+  const end = formatCompetitionTimestamp(competition.endsAt, 'F');
+  const relative = formatCompetitionTimestamp(competition.endsAt, 'R');
   return `Start: ${start}\nEnd: ${end} (${relative})`;
 }
 
-function scopeLine(competition: PushCompetitionRecord): string {
+function scopeLine(competition: CompetitionRecord): string {
   if (competition.club === null) return 'Club restriction: none';
   return `Club restriction: ${escapeMarkdown(competition.club.name)} (#${competition.club.tag})`;
 }
 
-function rulesValue(competition: PushCompetitionRecord): string {
+function rulesValue(competition: CompetitionRecord): string {
   return truncate(
     competition.description ?? 'No additional rules were provided.',
     1024,
@@ -65,13 +65,13 @@ function playerLabel(player: PlayerIdentity, config: EmbedConfig): string {
   return formatPlayerLink(player.name, player.tag, config.playerProfileUrlTemplate);
 }
 
-export function buildPushCreatedEmbed(
-  competition: PushCompetitionRecord,
+export function buildCompetitionCreatedEmbed(
+  competition: CompetitionRecord,
   now: Date = new Date(),
 ): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
-    .setTitle(truncate(`Push created: ${competition.name}`, 256))
+    .setTitle(truncate(`Competition created: ${competition.name}`, 256))
     .setTimestamp(now)
     .addFields(
       { name: 'Status', value: statusLabel(competition, now) },
@@ -90,10 +90,10 @@ export function buildPushCreatedEmbed(
   return fitEmbedToDiscordLimits(embed);
 }
 
-export function buildPushJoinedEmbed(
-  competition: PushCompetitionRecord,
+export function buildCompetitionJoinedEmbed(
+  competition: CompetitionRecord,
   player: PlayerIdentity,
-  result: PushJoinResult,
+  result: CompetitionJoinResult,
   config: EmbedConfig,
   now: Date = new Date(),
 ): EmbedBuilder {
@@ -103,7 +103,7 @@ export function buildPushJoinedEmbed(
       : `${integer(result.baselineTrophies)} trophies` +
         (result.baselineCapturedAt === null
           ? ''
-          : ` (synced ${formatPushTimestamp(result.baselineCapturedAt, 'R')})`);
+          : ` (synced ${formatCompetitionTimestamp(result.baselineCapturedAt, 'R')})`);
 
   return fitEmbedToDiscordLimits(
     new EmbedBuilder()
@@ -119,10 +119,10 @@ export function buildPushJoinedEmbed(
   );
 }
 
-export function buildPushSubmittedEmbed(
-  competition: PushCompetitionRecord,
+export function buildCompetitionSubmittedEmbed(
+  competition: CompetitionRecord,
   player: PlayerIdentity,
-  result: PushSubmitResult,
+  result: CompetitionSubmitResult,
   config: EmbedConfig,
   now: Date = new Date(),
 ): EmbedBuilder {
@@ -133,7 +133,7 @@ export function buildPushSubmittedEmbed(
       .setDescription(`Submitted by ${playerLabel(player, config)}.`)
       .addFields(
         { name: 'Trophies', value: integer(result.trophies) },
-        { name: 'Recorded', value: formatPushTimestamp(result.submittedAt, 'F') },
+        { name: 'Recorded', value: formatCompetitionTimestamp(result.submittedAt, 'F') },
         {
           name: 'Verification',
           value: 'Unverified user submission — not checked against the Brawl Stars API.',
@@ -143,28 +143,28 @@ export function buildPushSubmittedEmbed(
   );
 }
 
-export function buildPushEndedEmbed(
-  competition: PushCompetitionRecord,
+export function buildCompetitionEndedEmbed(
+  competition: CompetitionRecord,
   discordUserId: string,
   now: Date = new Date(),
 ): EmbedBuilder {
   return fitEmbedToDiscordLimits(
     new EmbedBuilder()
       .setColor(EMBED_COLOR)
-      .setTitle(truncate(`Push ended: ${competition.name}`, 256))
+      .setTitle(truncate(`Competition ended: ${competition.name}`, 256))
       .addFields(
         { name: 'Status', value: 'Completed' },
         { name: 'Period', value: periodLines(competition) },
         { name: 'Ended by', value: `<@${discordUserId}>` },
-        { name: 'Ended at', value: formatPushTimestamp(competition.endedAt ?? now.toISOString(), 'F') },
+        { name: 'Ended at', value: formatCompetitionTimestamp(competition.endedAt ?? now.toISOString(), 'F') },
         { name: 'Entries preserved', value: `${integer(competition.entryCount)} entries and all submission history retained.` },
       )
       .setTimestamp(now),
   );
 }
 
-export function buildPushLeaderboardEmbed(
-  view: PushLeaderboardView,
+export function buildCompetitionLeaderboardEmbed(
+  view: CompetitionLeaderboardView,
   page: Page<(typeof view.rows)[number]>,
   config: EmbedConfig,
   now: Date = new Date(),
@@ -186,7 +186,7 @@ export function buildPushLeaderboardEmbed(
           ? 'verified API data'
           : 'unverified user submission';
     const submitted =
-      row.latestSubmissionAt === null ? '—' : formatPushTimestamp(row.latestSubmissionAt, 'R');
+      row.latestSubmissionAt === null ? '—' : formatCompetitionTimestamp(row.latestSubmissionAt, 'R');
     return `${rank} ${player}\nTrophies: ${trophies} • Gain: ${gain}\n${verification} • ${submitted}`;
   });
 
@@ -197,7 +197,7 @@ export function buildPushLeaderboardEmbed(
 
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
-    .setTitle(truncate(`Push leaderboard: ${view.competition.name}`, 256))
+    .setTitle(truncate(`Competition leaderboard: ${view.competition.name}`, 256))
     .setDescription(truncate(description, 4000))
     .addFields(
       { name: 'Status', value: statusLabel(view.competition, now) },
@@ -211,27 +211,27 @@ export function buildPushLeaderboardEmbed(
   return fitEmbedToDiscordLimits(embed);
 }
 
-export function buildPushListEmbed(
-  competitions: readonly PushCompetitionRecord[],
-  page: Page<PushCompetitionRecord>,
+export function buildCompetitionListEmbed(
+  competitions: readonly CompetitionRecord[],
+  page: Page<CompetitionRecord>,
   now: Date = new Date(),
 ): EmbedBuilder {
   const lines = page.items.map((competition) => {
     const status = statusLabel(competition, now);
     const club = competition.club === null ? 'Open to all clubs' : `#${competition.club.tag} ${escapeMarkdown(competition.club.name)}`;
-    const period = `${formatPushTimestamp(competition.startsAt, 'R')} → ${formatPushTimestamp(competition.endsAt, 'R')}`;
+    const period = `${formatCompetitionTimestamp(competition.startsAt, 'R')} → ${formatCompetitionTimestamp(competition.endsAt, 'R')}`;
     return `**${escapeMarkdown(competition.name)}** — ${status}\n${club} • ${period} • ${integer(competition.entryCount)} entries`;
   });
 
   const description =
     lines.length === 0
-      ? 'No push competitions have been created yet.'
+      ? 'No competitions have been created yet.'
       : lines.join('\n\n');
 
   return fitEmbedToDiscordLimits(
     new EmbedBuilder()
       .setColor(EMBED_COLOR)
-      .setTitle('Push competitions')
+      .setTitle('Competitions')
       .setDescription(truncate(description, 4000))
       .addFields({
         name: 'Page',
