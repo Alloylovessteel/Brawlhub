@@ -79,7 +79,21 @@ function readHiddenValue(prompt) {
 }
 
 async function main() {
-  const value = await readHiddenValue(`New value for ${key} (input hidden): `);
+  let value;
+  let source = 'prompt';
+
+  if (process.env.NEW_VALUE !== undefined) {
+    value = process.env.NEW_VALUE;
+    source = 'NEW_VALUE';
+  } else if (process.env.NEW_VALUE_FILE !== undefined) {
+    const secretPath = path.resolve(process.env.NEW_VALUE_FILE);
+    value = fs.readFileSync(secretPath, 'utf8').replace(/\r?\n$/, '');
+    fs.unlinkSync(secretPath);
+    source = 'NEW_VALUE_FILE';
+  } else {
+    value = await readHiddenValue(`New value for ${key} (input hidden): `);
+  }
+
   if (value.trim() === '') {
     throw new Error('Refusing to write an empty value');
   }
@@ -108,7 +122,7 @@ async function main() {
 
   const newline = original.includes('\r\n') ? '\r\n' : '\n';
   fs.writeFileSync(envPath, lines.join(newline), { encoding: 'utf8', mode: 0o600 });
-  console.log(`Updated ${key} in ${path.relative(ROOT, envPath)} (value hidden).`);
+  console.log(`Updated ${key} in ${path.relative(ROOT, envPath)} from ${source} (value hidden).`);
 }
 
 main().catch((error) => {
