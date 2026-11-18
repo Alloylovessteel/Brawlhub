@@ -4,8 +4,9 @@ import { getBotConfig } from './config.js';
 import { createLogger } from '@brawlhub/logging';
 import { Client, type Interaction } from 'discord.js';
 import { handleInteraction, registerCommands } from './commands/index.js';
-import { runSync, type SyncNotifier } from '@brawlhub/sync';
+import type { SyncNotifier } from '@brawlhub/sync';
 import { createDiscordNotifier } from './notifier.js';
+import { runManagedSync } from './sync/guard.js';
 import { registerDiscordAuthorizationEvents } from './discord/events.js';
 import { getGatewayIntents } from './discord/intents.js';
 
@@ -36,21 +37,19 @@ function readSyncIntervalMinutes(): number {
 const SYNC_INTERVAL_MS = readSyncIntervalMinutes() * 60_000;
 const INITIAL_SYNC_DELAY_MS = 5_000;
 
-let syncInFlight = false;
 let initialSyncTimer: ReturnType<typeof setTimeout> | undefined;
 let syncTimer: ReturnType<typeof setInterval> | undefined;
 
 /** Run one sync, skipping it if a previous run is still in progress. */
 async function executeSync(): Promise<void> {
-  if (syncInFlight) {
-    logger.warn('Scheduled sync skipped: a sync run is already in progress');
-    return;
-  }
-
-  syncInFlight = true;
   try {
     const notifier: SyncNotifier = createDiscordNotifier();
-    const result = await runSync({ notifier });
+    const outcome = await runManagedSync({ notifier });
+    if (outcome.kind === 'overlap') {
+      logger.warn('Scheduled sync skipped: a sync run is already in progress');
+      return;
+    }
+    const result = outcome.result;
     logger.info('Scheduled sync finished', {
       syncRunId: result.syncRunId,
       status: result.status,
@@ -63,8 +62,6 @@ async function executeSync(): Promise<void> {
     });
   } catch (error: unknown) {
     logger.error('Scheduled sync failed', { error: safeError(error, token) });
-  } finally {
-    syncInFlight = false;
   }
 }
 

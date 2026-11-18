@@ -1,5 +1,5 @@
-export { registerClubs } from './registration';
-export type { RegistrationResult } from './registration';
+export { previewClubRegistration, registerClubs } from './registration';
+export type { ClubRegistrationPreview, RegistrationResult } from './registration';
 export {
   isUniqueViolation,
   payloadHash,

@@ -11,6 +11,19 @@ export interface RegistrationResult {
   rejected: Array<{ tag: string; reason: string }>;
 }
 
+/** validated official-API data shown to an administrator before registration. */
+export interface ClubRegistrationPreview {
+  readonly tag: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly trophies: number;
+  readonly memberCount: number | null;
+}
+
+export interface RegistrationPreviewOptions {
+  readonly client?: BrawlStarsClient;
+}
+
 interface ClubRow {
   id: string;
   tag: string;
@@ -152,6 +165,36 @@ async function registerClubsWith(
   }
 
   return { registered, rejected };
+}
+
+/**
+ * Fetch and validate a club from the official API without writing anything.
+ * This is used by confirmation flows so an administrator sees real club data
+ * before authorising registration.
+ */
+export async function previewClubRegistration(
+  rawTag: string,
+  options: RegistrationPreviewOptions = {},
+): Promise<ClubRegistrationPreview> {
+  const parsed = brawlTagSchema.safeParse(rawTag);
+  if (!parsed.success) {
+    throw new Error('Invalid Brawl Stars tag');
+  }
+  const tag = parsed.data;
+  const client = options.client ?? createBrawlStarsClient();
+  const rawClub = await withTimeout(
+    client.getClub(tag),
+    readPositiveTimeout(),
+    `getClub(${tag})`,
+  );
+  const profile = profileFromApi(rawClub, tag);
+  return {
+    tag,
+    name: profile.name,
+    description: profile.description,
+    trophies: profile.trophies,
+    memberCount: profile.memberCount,
+  };
 }
 
 /** Registers clubs supplied by their (optionally '#'-prefixed) tags. */

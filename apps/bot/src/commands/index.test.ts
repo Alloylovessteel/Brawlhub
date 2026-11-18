@@ -75,6 +75,11 @@ describe('command registry', () => {
       'member-history',
       'member-search',
       'staff',
+      'register-club',
+      'sync',
+      'sync-status',
+      'settings',
+      'audit',
     ]);
     expect(commands.find((command) => command.data.name === 'competition')?.autocomplete).toBeTypeOf(
       'function',
@@ -93,10 +98,13 @@ describe('command registry', () => {
     ]) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
-    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'members', 'member-history', 'member-search', 'staff']) {
+    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'members', 'member-history', 'member-search', 'staff', 'register-club', 'settings', 'audit']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );
+    }
+    for (const name of ['settings']) {
+      expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
   });
 
@@ -106,6 +114,14 @@ describe('command registry', () => {
     expect(blacklist).toBeDefined();
     expect(blacklist?.autocomplete).toBeTypeOf('function');
     expect(blacklist?.handleComponent).toBeTypeOf('function');
+  });
+
+  it('keeps club removal unregistered because safe archival is unsupported', () => {
+    expect(commands.map((command) => command.data.name)).not.toContain('remove-club');
+    const removeClub = pendingCommands.find((command) => command.data.name === 'remove-club');
+    expect(removeClub).toBeDefined();
+    expect(removeClub?.autocomplete).toBeTypeOf('function');
+    expect(removeClub?.handleComponent).toBeUndefined();
   });
 
   it('registers all player commands with their handlers', () => {

@@ -1,0 +1,73 @@
+import type { ClubRegistrationPreview } from '@brawlhub/sync';
+import type { StaffActor } from '../staff/types';
+
+/** Administration always resolves a Discord-linked profile with a global role. */
+export type AdminActor = StaffActor;
+
+export type { ClubRegistrationPreview };
+
+export interface GuildSettingsView {
+  readonly guildId: string;
+  readonly primaryClubId: string | null;
+  readonly primaryClubTag: string | null;
+  readonly primaryClubName: string | null;
+  readonly announcementChannelId: string | null;
+  readonly verifiedRoleId: string | null;
+  readonly updatedAt: string | null;
+}
+
+export type GuildSettingsField =
+  | 'primaryClubId'
+  | 'announcementChannelId'
+  | 'verifiedRoleId';
+
+export interface GuildSettingsUpdate {
+  readonly actor: AdminActor;
+  readonly guildId: string;
+  readonly field: GuildSettingsField;
+  /** Null clears the field. */
+  readonly value: string | null;
+}
+
+export interface SyncRunSummary {
+  readonly id: string;
+  readonly status: string;
+  readonly periodStart: string | null;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly error: string | null;
+  readonly lastError: string | null;
+  readonly recordsProcessed: number;
+  readonly affectedClubIds: readonly string[];
+  readonly clubTags: readonly string[];
+}
+
+export interface SyncLockSummary {
+  readonly scope: string;
+  readonly lockedBy: string | null;
+  readonly lockedAt: string | null;
+  readonly lockedUntil: string | null;
+  readonly active: boolean;
+}
+
+export interface SyncStatusView {
+  readonly latestRun: SyncRunSummary | null;
+  readonly lock: SyncLockSummary;
+  readonly generatedAt: Date;
+}
+
+export interface AuditLogEntry {
+  readonly id: string;
+  readonly actorProfileId: string | null;
+  readonly actorLabel: string;
+  readonly action: string;
+  readonly targetType: string | null;
+  readonly targetId: string | null;
+  readonly details: Record<string, unknown> | null;
+  readonly createdAt: string | null;
+}
+
+export interface AuditLogView {
+  readonly entries: readonly AuditLogEntry[];
+  readonly generatedAt: Date;
+}

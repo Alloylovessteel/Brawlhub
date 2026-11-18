@@ -112,6 +112,25 @@ import {
   handleStaff,
   handleStaffComponent,
 } from './staff.js';
+import {
+  registerClubCommandData,
+  handleRegisterClub,
+  handleRegisterClubComponent,
+} from './register-club.js';
+import { syncCommandData, handleSync } from './sync.js';
+import { syncStatusCommandData, handleSyncStatus } from './sync-status.js';
+import {
+  settingsCommandData,
+  handleSettings,
+  handleSettingsAutocomplete,
+  handleSettingsComponent,
+} from './settings.js';
+import { auditCommandData, handleAudit, handleAuditComponent } from './audit.js';
+import {
+  removeClubCommandData,
+  handleRemoveClub,
+  handleRemoveClubAutocomplete,
+} from './remove-club.js';
 import { handlePing } from './ping.js';
 
 const logger = createLogger('bot');
@@ -231,13 +250,39 @@ export const commands: readonly CommandDefinition[] = [
     handle: handleStaff,
     handleComponent: handleStaffComponent,
   },
+  {
+    data: registerClubCommandData,
+    handle: handleRegisterClub,
+    handleComponent: handleRegisterClubComponent,
+  },
+  {
+    data: syncCommandData,
+    handle: handleSync,
+  },
+  {
+    data: syncStatusCommandData,
+    handle: handleSyncStatus,
+  },
+  {
+    data: settingsCommandData,
+    handle: handleSettings,
+    autocomplete: handleSettingsAutocomplete,
+    handleComponent: handleSettingsComponent,
+  },
+  {
+    data: auditCommandData,
+    handle: handleAudit,
+    handleComponent: handleAuditComponent,
+  },
 ];
 
 /**
- * Implemented but intentionally not registered. These commands call RPCs added
- * by 0009_moderation_blacklists.sql, so they must stay disabled until that
- * migration has been applied. registerCommands() and handleInteraction() only
- * use `commands`, so these definitions are never deployed or dispatched.
+ * Implemented but intentionally not registered. `blacklist` calls RPCs added by
+ * 0009_moderation_blacklists.sql, which remains unapplied. `remove-club` has no
+ * safe archival mechanism in the current schema and would cascade-delete
+ * historical data, so destructive removal is intentionally disabled.
+ * registerCommands() and handleInteraction() only use `commands`, so these
+ * definitions are never deployed or dispatched.
  */
 export const pendingCommands: readonly CommandDefinition[] = [
   {
@@ -245,6 +290,11 @@ export const pendingCommands: readonly CommandDefinition[] = [
     handle: handleBlacklist,
     autocomplete: handleBlacklistAutocomplete,
     handleComponent: handleBlacklistComponent,
+  },
+  {
+    data: removeClubCommandData,
+    handle: handleRemoveClub,
+    autocomplete: handleRemoveClubAutocomplete,
   },
 ];
 
