@@ -60,7 +60,8 @@ function clubName(club: PlayerClubRef, config: PlayerEmbedConfig): string {
   return formatClubLink(club.name, club.tag, config.clubProfileUrlTemplate);
 }
 
-function statusLabel(status: ClubMembershipStatus): string {
+/** Shared, user-facing label for a stored membership status. */
+export function statusLabel(status: ClubMembershipStatus): string {
   switch (status) {
     case 'current':
       return 'Current (verified by latest sync)';

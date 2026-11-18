@@ -90,7 +90,8 @@ function normalizePlayerTag(tag: string): NormalizedTag {
   return parsed.success ? { ok: true, tag: parsed.data } : { ok: false };
 }
 
-function escapeIlike(value: string): string {
+/** Escape ILIKE wildcards before composing a safe stored-player search. */
+export function escapeIlike(value: string): string {
   return value.replace(/[\\%_,]/g, (character) => `\\${character}`);
 }
 

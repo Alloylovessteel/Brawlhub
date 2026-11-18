@@ -70,6 +70,10 @@ describe('command registry', () => {
       'player-compare',
       'leaderboard',
       'competition',
+      'members',
+      'member-verify',
+      'member-history',
+      'member-search',
     ]);
     expect(commands.find((command) => command.data.name === 'competition')?.autocomplete).toBeTypeOf(
       'function',
@@ -77,10 +81,18 @@ describe('command registry', () => {
     expect(commands.find((command) => command.data.name === 'competition')?.handleComponent).toBeTypeOf(
       'function',
     );
-    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'club-compare']) {
+    for (const name of [
+      'club-members',
+      'club-leaderboard',
+      'club-history',
+      'club-compare',
+      'members',
+      'member-history',
+      'member-search',
+    ]) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
-    for (const name of ['club-members', 'club-leaderboard', 'club-history']) {
+    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'members', 'member-history', 'member-search']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );

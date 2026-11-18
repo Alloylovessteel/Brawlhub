@@ -82,6 +82,25 @@ import {
   handleCompetitionComponent,
   competitionCommandData,
 } from './competition.js';
+import {
+  membersCommandData,
+  handleMembers,
+  handleMembersAutocomplete,
+  handleMembersComponent,
+} from './members.js';
+import { memberVerifyCommandData, handleMemberVerify } from './member-verify.js';
+import {
+  memberHistoryCommandData,
+  handleMemberHistory,
+  handleMemberHistoryAutocomplete,
+  handleMemberHistoryComponent,
+} from './member-history.js';
+import {
+  memberSearchCommandData,
+  handleMemberSearch,
+  handleMemberSearchAutocomplete,
+  handleMemberSearchComponent,
+} from './member-search.js';
 import { handlePing } from './ping.js';
 
 const logger = createLogger('bot');
@@ -173,6 +192,28 @@ export const commands: readonly CommandDefinition[] = [
     handle: handleCompetition,
     autocomplete: handleCompetitionAutocomplete,
     handleComponent: handleCompetitionComponent,
+  },
+  {
+    data: membersCommandData,
+    handle: handleMembers,
+    autocomplete: handleMembersAutocomplete,
+    handleComponent: handleMembersComponent,
+  },
+  {
+    data: memberVerifyCommandData,
+    handle: handleMemberVerify,
+  },
+  {
+    data: memberHistoryCommandData,
+    handle: handleMemberHistory,
+    autocomplete: handleMemberHistoryAutocomplete,
+    handleComponent: handleMemberHistoryComponent,
+  },
+  {
+    data: memberSearchCommandData,
+    handle: handleMemberSearch,
+    autocomplete: handleMemberSearchAutocomplete,
+    handleComponent: handleMemberSearchComponent,
   },
 ];
 
