@@ -1,6 +1,6 @@
 import { SlashCommandBuilder, type Interaction } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
-import { commands, dispatchInteraction, type CommandDefinition } from './index';
+import { commands, dispatchInteraction, pendingCommands, type CommandDefinition } from './index';
 
 function command(name: string, overrides: Partial<CommandDefinition> = {}): CommandDefinition {
   return {
@@ -74,6 +74,7 @@ describe('command registry', () => {
       'member-verify',
       'member-history',
       'member-search',
+      'staff',
     ]);
     expect(commands.find((command) => command.data.name === 'competition')?.autocomplete).toBeTypeOf(
       'function',
@@ -92,11 +93,19 @@ describe('command registry', () => {
     ]) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
-    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'members', 'member-history', 'member-search']) {
+    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'members', 'member-history', 'member-search', 'staff']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );
     }
+  });
+
+  it('keeps schema-dependent moderation commands unregistered', () => {
+    expect(commands.map((command) => command.data.name)).not.toContain('blacklist');
+    const blacklist = pendingCommands.find((command) => command.data.name === 'blacklist');
+    expect(blacklist).toBeDefined();
+    expect(blacklist?.autocomplete).toBeTypeOf('function');
+    expect(blacklist?.handleComponent).toBeTypeOf('function');
   });
 
   it('registers all player commands with their handlers', () => {

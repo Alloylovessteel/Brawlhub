@@ -101,6 +101,17 @@ import {
   handleMemberSearchAutocomplete,
   handleMemberSearchComponent,
 } from './member-search.js';
+import {
+  blacklistCommandData,
+  handleBlacklist,
+  handleBlacklistAutocomplete,
+  handleBlacklistComponent,
+} from './blacklist.js';
+import {
+  staffCommandData,
+  handleStaff,
+  handleStaffComponent,
+} from './staff.js';
 import { handlePing } from './ping.js';
 
 const logger = createLogger('bot');
@@ -214,6 +225,26 @@ export const commands: readonly CommandDefinition[] = [
     handle: handleMemberSearch,
     autocomplete: handleMemberSearchAutocomplete,
     handleComponent: handleMemberSearchComponent,
+  },
+  {
+    data: staffCommandData,
+    handle: handleStaff,
+    handleComponent: handleStaffComponent,
+  },
+];
+
+/**
+ * Implemented but intentionally not registered. These commands call RPCs added
+ * by 0009_moderation_blacklists.sql, so they must stay disabled until that
+ * migration has been applied. registerCommands() and handleInteraction() only
+ * use `commands`, so these definitions are never deployed or dispatched.
+ */
+export const pendingCommands: readonly CommandDefinition[] = [
+  {
+    data: blacklistCommandData,
+    handle: handleBlacklist,
+    autocomplete: handleBlacklistAutocomplete,
+    handleComponent: handleBlacklistComponent,
   },
 ];
 
