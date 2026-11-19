@@ -201,6 +201,7 @@ function button(customId: string, userId = ACTOR_ID) {
   const interaction = {
     customId,
     user: { id: userId },
+    guildId: GUILD_ID,
     replied: false,
     deferred: false,
     deferUpdate: vi.fn(async () => {
@@ -468,7 +469,7 @@ describe('/sync', () => {
 
     await handleSync(interaction);
 
-    expect(mocks.service.recordSyncRunAudit).toHaveBeenCalledWith(actor(), failed);
+    expect(mocks.service.recordSyncRunAudit).toHaveBeenCalledWith(actor(), failed, { guildId: GUILD_ID });
     expect(mocks.service.loadSyncRun).toHaveBeenCalledWith('run-1');
     expect(mocks.embeds.buildSyncResultEmbed).toHaveBeenCalledWith(failed, syncRun());
     expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
@@ -640,7 +641,7 @@ describe('/audit', () => {
       'audit:read',
       expect.objectContaining({ guildId: GUILD_ID }),
     );
-    expect(mocks.service.listAuditLogs).toHaveBeenCalledWith(200);
+    expect(mocks.service.listAuditLogs).toHaveBeenCalledWith(200, { guildId: GUILD_ID });
     const reply = payload(interaction, 'editReply');
     expect(buttons(reply)[0]!.data.custom_id).toBe('audit:page:2');
   });
@@ -663,7 +664,7 @@ describe('/audit', () => {
 
     await handleAuditComponent(page);
 
-    expect(mocks.service.listAuditLogs).toHaveBeenCalledWith(200);
+    expect(mocks.service.listAuditLogs).toHaveBeenCalledWith(200, { guildId: GUILD_ID });
     expect(payload(page, 'editReply').embeds).toEqual([{ kind: 'audit-page' }]);
     expect(mocks.service.recordAdminAudit).not.toHaveBeenCalled();
   });

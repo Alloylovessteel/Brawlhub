@@ -251,7 +251,7 @@ describe('staff listing', () => {
     expect(view.generatedAt).toBeInstanceOf(Date);
   });
 
-  it('scopes club role assignments to the requested guild', async () => {
+  it('scopes club role assignments to the requested guild and excludes global staff roles', async () => {
     const foreignClub = 'club-foreign';
     const tables = baseTables();
     tables['clubs'] = [
@@ -269,16 +269,16 @@ describe('staff listing', () => {
 
     const view = await listStaff({ db, guildId: 'guild-a' });
 
-    expect(view.entries.map((entry) => entry.profileId)).toEqual(
-      expect.arrayContaining([OWNER_PROFILE, CLUB_OWNER_PROFILE]),
-    );
+    expect(view.entries.map((entry) => entry.profileId)).toEqual([CLUB_OWNER_PROFILE]);
+    expect(view.entries.some((entry) => entry.profileId === OWNER_PROFILE)).toBe(false);
     expect(view.entries.some((entry) => entry.profileId === CLUB_ADMIN_PROFILE)).toBe(false);
     expect(view.entries.some((entry) => entry.profileId === CLUB_STAFF_PROFILE)).toBe(false);
     const clubOwner = view.entries.find((entry) => entry.profileId === CLUB_OWNER_PROFILE);
     expect(clubOwner?.roles).toEqual([
       expect.objectContaining({ scope: 'club', clubId: ALPHA_CLUB, clubTag: 'ALPHA' }),
     ]);
-    expect(view.globalCount).toBe(1);
+    expect(clubOwner?.highestGlobalRole).toBeNull();
+    expect(view.globalCount).toBe(0);
     expect(view.clubCount).toBe(1);
   });
 });

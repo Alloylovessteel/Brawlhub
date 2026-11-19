@@ -88,7 +88,7 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
       });
       return;
     }
-    await recordSyncRunAudit(actor, result);
+    await recordSyncRunAudit(actor, result, { guildId: interaction.guildId });
     const run = result.syncRunId === '' ? null : await loadSyncRun(result.syncRunId);
     await interaction.editReply({
       ...(site === undefined ? {} : { content: site }),

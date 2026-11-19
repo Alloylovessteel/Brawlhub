@@ -18,8 +18,8 @@ export const auditCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
   .setDescription('View the read-only BrawlHub audit log');
 
-async function buildPage(pageNumber: number) {
-  const view = await listAuditLogs(AUDIT_LOG_LIMIT);
+async function buildPage(guildId: string | null, pageNumber: number) {
+  const view = await listAuditLogs(AUDIT_LOG_LIMIT, { guildId });
   const page = paginate(view.entries, pageNumber, PAGE_SIZE);
   const row = buildPaginationRow(COMMAND_NAME, page.page, page.pageCount);
   return {
@@ -39,7 +39,7 @@ export async function handleAudit(interaction: ChatInputCommandInteraction): Pro
       discordUsername: interaction.user.username,
     });
     await interaction.editReply({
-      ...(await buildPage(1)),
+      ...(await buildPage(interaction.guildId, 1)),
       allowedMentions: { parse: [] },
     });
   } catch (error) {
@@ -61,7 +61,7 @@ export async function handleAuditComponent(interaction: CommandComponentInteract
       discordUsername: interaction.user.username,
     });
     await interaction.editReply({
-      ...(await buildPage(pageNumber)),
+      ...(await buildPage(interaction.guildId, pageNumber)),
       content: null,
       allowedMentions: { parse: [] },
     });

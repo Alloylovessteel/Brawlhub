@@ -198,6 +198,7 @@ export async function listStaff(options: StaffServiceOptions = {}): Promise<Staf
     if (row === null || !isStaffRole(row['role'])) continue;
     const scope = row['scope'];
     if (scope !== 'global' && scope !== 'club') continue;
+    if (scope === 'global' && guildId !== null) continue;
     const profileId = asString(row['user_id']);
     if (profileId === null || !discordIdsByProfile.has(profileId)) continue;
 

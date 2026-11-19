@@ -75,6 +75,7 @@ export class AdminServiceError extends Error {
 
 export interface AdminServiceOptions {
   readonly db?: DatabaseClient;
+  readonly guildId?: string | null;
 }
 
 export interface DiscordPermissionContext {
@@ -419,6 +420,7 @@ export async function updateGuildSettings(
       action: 'guild.settings.updated',
       targetType: 'guild',
       targetId: parsedGuildId.data,
+      guildId: parsedGuildId.data,
       details: { changedFields, primaryClubId: next.primary_club_id },
     },
     { db },
@@ -486,6 +488,7 @@ export async function setGuildRoleMapping(
       action: 'guild.role_mapping.updated',
       targetType: 'guild_role_mapping',
       targetId: `${parsedGuildId.data}:${parsedRoleId.data}`,
+      guildId: parsedGuildId.data,
       details: { guildId: parsedGuildId.data, discordRoleId: parsedRoleId.data, brawlhubRole: role },
     },
     { db },
@@ -521,6 +524,7 @@ export async function clearGuildRoleMapping(
       action: 'guild.role_mapping.removed',
       targetType: 'guild_role_mapping',
       targetId: `${parsedGuildId.data}:${parsedRoleId.data}`,
+      guildId: parsedGuildId.data,
       details: { guildId: parsedGuildId.data, discordRoleId: parsedRoleId.data },
     },
     { db },
@@ -535,6 +539,7 @@ interface AdminAuditInput {
   readonly targetType: string;
   readonly targetId: string | null;
   readonly details: Record<string, unknown>;
+  readonly guildId?: string | null;
 }
 
 export async function recordAdminAudit(
@@ -542,11 +547,18 @@ export async function recordAdminAudit(
   options: AdminServiceOptions = {},
 ): Promise<void> {
   const db = dbFor(options);
+  const guildId =
+    typeof input.guildId === 'string' && input.guildId.trim().length > 0
+      ? input.guildId.trim()
+      : typeof options.guildId === 'string' && options.guildId.trim().length > 0
+        ? options.guildId.trim()
+        : null;
   const audit = await db.from('audit_logs').insert({
     actor_profile_id: input.actor.profileId,
     action: input.action,
     target_type: input.targetType,
     target_id: input.targetId,
+    guild_id: guildId,
     details: { ...input.details, actorDiscordId: input.actor.discordUserId },
   });
   if (audit.error !== null && audit.error !== undefined) {
@@ -675,6 +687,7 @@ export async function recordSyncRunAudit(
         action: 'sync.manual.run',
         targetType: 'sync_run',
         targetId: result.syncRunId === '' ? null : result.syncRunId,
+        guildId: options.guildId ?? null,
         details: {
           status: result.status,
           clubsProcessed: result.clubsProcessed,
@@ -732,11 +745,19 @@ export async function listAuditLogs(
 ): Promise<AuditLogView> {
   const db = dbFor(options);
   const boundedLimit = Math.min(AUDIT_LOG_LIMIT, Math.max(1, Math.floor(limit)));
-  const result = await db
+  let query = db
     .from('audit_logs')
     .select('id, actor_profile_id, action, target_type, target_id, details, created_at')
     .order('created_at', { ascending: false })
     .limit(boundedLimit);
+  const guildId =
+    typeof options.guildId === 'string' && options.guildId.trim().length > 0
+      ? options.guildId.trim()
+      : null;
+  if (guildId !== null) {
+    query = query.eq('guild_id', guildId);
+  }
+  const result = await query;
 
   requireOk(result.error, 'Read audit log');
   const rows = Array.isArray(result.data) ? result.data : [];

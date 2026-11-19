@@ -89,6 +89,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       action: 'guild.settings.updated',
       target_type: 'guild',
       target_id: parsed.data.guildId,
+      guild_id: parsed.data.guildId,
       details: { primaryClubId: parsedClubId ?? null },
     });
     if (audit.error !== null && audit.error !== undefined) {

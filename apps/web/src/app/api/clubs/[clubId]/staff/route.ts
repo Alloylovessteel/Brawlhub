@@ -69,6 +69,19 @@ export async function POST(
   };
 
   try {
+    const club = await db
+      .from('clubs')
+      .select('guild_id')
+      .eq('id', parsedClubId.data)
+      .maybeSingle();
+    if (club.error !== null && club.error !== undefined) {
+      throw new Error(club.error.message);
+    }
+    const guildId =
+      typeof (club.data as { guild_id?: unknown } | null)?.guild_id === 'string'
+        ? ((club.data as { guild_id: string }).guild_id)
+        : null;
+
     const targetProfile = await db
       .from('profiles')
       .select('id')
@@ -104,6 +117,7 @@ export async function POST(
       action: parsed.data.action === 'grant' ? 'club.staff.granted' : 'club.staff.revoked',
       target_type: 'profile',
       target_id: targetProfile.data.id as string,
+      guild_id: guildId,
       details: {
         clubId: parsedClubId.data,
         discordUserId: parsed.data.discordUserId,

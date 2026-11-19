@@ -69,6 +69,19 @@ export async function POST(
   const { announcement_channel_id, verified_role_id, notes } = parsed.data;
 
   try {
+    const club = await db
+      .from('clubs')
+      .select('guild_id')
+      .eq('id', parsedClubId.data)
+      .maybeSingle();
+    if (club.error !== null && club.error !== undefined) {
+      throw new Error(club.error.message);
+    }
+    const guildId =
+      typeof (club.data as { guild_id?: unknown } | null)?.guild_id === 'string'
+        ? ((club.data as { guild_id: string }).guild_id)
+        : null;
+
     const existing = await db
       .from('club_private')
       .select('announcement_channel_id, verified_role_id, notes')
@@ -107,6 +120,7 @@ export async function POST(
       action: 'club.settings.updated',
       target_type: 'club',
       target_id: parsedClubId.data,
+      guild_id: guildId,
       details: { changedFields },
     });
     if (audit.error !== null && audit.error !== undefined) {

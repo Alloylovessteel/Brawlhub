@@ -93,10 +93,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
     if (targetProfile.data === null) return redirectToAdmin(request, 'error');
 
+    let guildId: string | null = null;
     if (parsedClubId !== undefined) {
-      const club = await db.from('clubs').select('id').eq('id', parsedClubId).maybeSingle();
+      const club = await db
+        .from('clubs')
+        .select('id, guild_id')
+        .eq('id', parsedClubId)
+        .maybeSingle();
       if (club.error !== null && club.error !== undefined) throw new Error(club.error.message);
       if (club.data === null) return redirectToAdmin(request, 'error');
+      const clubRow = club.data as { guild_id?: string | null } | null;
+      guildId = typeof clubRow?.guild_id === 'string' ? clubRow.guild_id : null;
     }
 
     let deleteQuery = db
@@ -128,6 +135,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       action: action === 'grant' ? 'role.granted' : 'role.revoked',
       target_type: 'profile',
       target_id: targetProfile.data.id as string,
+      guild_id: guildId,
       details: { discordUserId, scope, role, clubId: parsedClubId ?? null },
     });
     if (audit.error !== null && audit.error !== undefined) {

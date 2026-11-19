@@ -189,6 +189,7 @@ export async function handleRegisterClubComponent(interaction: CommandComponentI
         action: 'club.registered',
         targetType: 'club',
         targetId: pending.tag,
+        guildId: pending.preview.guildId,
         details: { clubTag: pending.tag, clubName: pending.preview.name },
       });
     } catch {
