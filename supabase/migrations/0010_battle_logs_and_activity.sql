@@ -2,7 +2,7 @@
 -- Brawl Stars API. Written by the trusted sync/service role; readable as
 -- collected history for authenticated dashboard/bot consumers.
 
-CREATE TABLE public.player_battles (
+CREATE TABLE IF NOT EXISTS public.player_battles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   player_id uuid NOT NULL REFERENCES public.players(id) ON DELETE CASCADE,
   sync_run_id uuid REFERENCES public.sync_runs(id) ON DELETE SET NULL,
