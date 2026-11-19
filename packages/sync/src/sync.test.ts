@@ -355,6 +355,22 @@ beforeEach(() => {
 });
 
 describe('registerClubs', () => {
+  it('registers a single club tag without requiring a full guild batch', async () => {
+    const guildId = '1488531664962326571';
+    setHandlers({
+      'clubs:select': () => ({ data: null }),
+      'clubs:insert': (call) => ({ data: [{ id: `club-${String(call.payload.tag)}` }] }),
+    });
+    fake.api.current = apiClient();
+
+    const result = await registerClubs(['2UU08YPPJ'], guildId);
+
+    expect(result).toEqual({ registered: 1, rejected: [] });
+    const inserts = callsFor('clubs', 'insert');
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]!.payload).toMatchObject({ guild_id: guildId, tag: '2UU08YPPJ' });
+  });
+
   it('rejects duplicate tags in the input and duplicates already registered', async () => {
     const guildId = '1488531664962326571';
     const newTags = ['G2P9', '2GPU', '2GPQ', '2GPR', '2GQU', '2GRU', '2GVL', '2GYC', '2J0U', '2J0V'];

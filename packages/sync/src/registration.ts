@@ -11,6 +11,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { isUniqueViolation, sanitizeError, withTimeout } from './sync';
 
 const REGISTRATION_API_TIMEOUT_MS = 30_000;
+/** Clubs may be registered one at a time; the 11–20 range describes guild capacity, not a batch minimum. */
+const MIN_CLUB_TAGS_PER_REGISTRATION = 1;
+const MAX_CLUB_TAGS_PER_REGISTRATION = SUPPORTED_CLUB_RANGE.max;
 
 export interface RegistrationResult {
   registered: number;
@@ -224,17 +227,17 @@ export async function registerClubs(
     normalized.push(parsed.data);
   }
 
-  if (normalized.length < SUPPORTED_CLUB_RANGE.min) {
+  if (normalized.length < MIN_CLUB_TAGS_PER_REGISTRATION) {
     rejected.push({
       tag: '',
-      reason: `at least ${SUPPORTED_CLUB_RANGE.min} valid club tag is required`,
+      reason: 'at least one valid club tag is required',
     });
     return { registered: 0, rejected };
   }
-  if (normalized.length > SUPPORTED_CLUB_RANGE.max) {
+  if (normalized.length > MAX_CLUB_TAGS_PER_REGISTRATION) {
     rejected.push({
       tag: '',
-      reason: `no more than ${SUPPORTED_CLUB_RANGE.max} clubs can be registered at once`,
+      reason: `no more than ${MAX_CLUB_TAGS_PER_REGISTRATION} clubs can be registered at once`,
     });
     return { registered: 0, rejected };
   }

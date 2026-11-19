@@ -170,12 +170,17 @@ export async function handleRegisterClubComponent(interaction: CommandComponentI
     });
     const result = await registerClubs([pending.tag], pending.preview.guildId);
     if (result.registered !== 1) {
-      const reason = result.rejected[0]?.reason ?? API_FAILURE_MESSAGE;
-      const duplicate = reason.toLowerCase().includes('already registered');
+      const rawReason = result.rejected[0]?.reason;
+      const reason = rawReason === undefined ? null : rawReason.replace(/\s+/g, ' ').trim();
+      const duplicate = reason !== null && reason.toLowerCase().includes('already registered');
+      const content =
+        reason === null || reason.length === 0
+          ? API_FAILURE_MESSAGE
+          : duplicate
+            ? `Club #${pending.tag} is already registered with BrawlHub.`
+            : `Club registration failed: ${reason.slice(0, 1000)}`;
       await interaction.editReply({
-        content: duplicate
-          ? `Club #${pending.tag} is already registered with BrawlHub.`
-          : API_FAILURE_MESSAGE,
+        content,
         embeds: [],
         components: [],
       });

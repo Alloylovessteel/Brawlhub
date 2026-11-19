@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-/** Official Brawl Stars club trophies are validated against this inclusive range. */
+/** Number of Brawl Stars clubs supported in one Discord guild (project capacity, not a per-registration batch size). */
 export const SUPPORTED_CLUB_RANGE = { min: 11, max: 20 } as const;
 
 export type Role = 'owner' | 'admin' | 'staff' | 'member';

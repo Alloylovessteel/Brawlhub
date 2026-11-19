@@ -419,6 +419,22 @@ describe('/register-club', () => {
     expect(payload(confirmation, 'editReply').content).toContain('already registered');
     expect(mocks.service.recordAdminAudit).not.toHaveBeenCalled();
   });
+
+  it('surfaces a non-duplicate registration failure reason', async () => {
+    mocks.sync.registerClubs.mockResolvedValueOnce({
+      registered: 0,
+      rejected: [{ tag: '2UG9', reason: 'Brawl Stars API request failed (500).' }],
+    });
+    const start = chat(null, { tag: '2UG9' });
+    await handleRegisterClub(start);
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
+
+    const confirmation = button(confirmId);
+    await handleRegisterClubComponent(confirmation);
+
+    expect(payload(confirmation, 'editReply').content).toContain('Brawl Stars API request failed (500).');
+    expect(mocks.service.recordAdminAudit).not.toHaveBeenCalled();
+  });
 });
 
 describe('/sync', () => {
