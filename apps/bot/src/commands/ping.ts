@@ -11,7 +11,7 @@ function errorMessage(error: unknown): string {
 export async function handlePing(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
     const sent = Date.now();
-    await interaction.reply({ content: 'Pong! Measuring latency…', ephemeral: true });
+    await interaction.reply({ content: 'Pong! Measuring latency…', flags: 64 });
     const roundTripMs = Date.now() - sent;
     const wsPing = Math.round(interaction.client.ws.ping);
     const wsText = Number.isFinite(wsPing) && wsPing >= 0 ? `${wsPing}ms` : 'unavailable';

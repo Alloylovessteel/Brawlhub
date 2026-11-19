@@ -3,9 +3,9 @@ import {
   ButtonBuilder,
   EmbedBuilder,
   SlashCommandBuilder,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import {
   buildPaginationRow,
   paginate,
@@ -48,7 +48,7 @@ export async function handleHelp(interaction: ChatInputCommandInteraction): Prom
   }
 }
 
-export async function handleHelpComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleHelpComponent(interaction: CommandComponentInteraction): Promise<void> {
   const pageNumber = parsePaginationCustomId(interaction.customId, COMMAND_NAME);
   if (pageNumber === null) return;
 

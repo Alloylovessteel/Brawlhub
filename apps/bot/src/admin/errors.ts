@@ -1,30 +1,34 @@
-import type { ButtonInteraction, ChatInputCommandInteraction } from 'discord.js';
+import { MessageFlags } from 'discord.js';
 import { getBotConfig } from '../config';
 import { ConfirmationError } from '../discord/confirmations';
+import { isIgnorableInteractionError, type RepliableInteraction } from '../discord/errors.js';
 import { StaffServiceError } from '../staff/service';
 import { AdminServiceError } from './service';
 
-async function reply(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
-  message: string,
-): Promise<void> {
-  const payload = { content: message, ephemeral: true } as const;
-  if (interaction.deferred) {
-    await interaction.editReply({ content: message });
-    return;
+async function reply(interaction: RepliableInteraction, message: string): Promise<void> {
+  const payload = { content: message, flags: MessageFlags.Ephemeral } as const;
+  try {
+    if (interaction.deferred) {
+      await interaction.editReply({ content: message, embeds: [], components: [] });
+      return;
+    }
+    if (interaction.replied) {
+      await interaction.followUp(payload);
+      return;
+    }
+    await interaction.reply(payload);
+  } catch (error) {
+    if (isIgnorableInteractionError(error)) return;
+    throw error;
   }
-  if (interaction.replied) {
-    await interaction.followUp(payload);
-    return;
-  }
-  await interaction.reply(payload);
 }
 
 /** Send expected administration failures ephemerally; rethrow unexpected ones. */
 export async function replyAdminError(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  interaction: RepliableInteraction,
   error: unknown,
 ): Promise<void> {
+  if (isIgnorableInteractionError(error)) return;
   if (
     error instanceof AdminServiceError ||
     error instanceof ConfirmationError ||
@@ -41,4 +45,4 @@ export async function replyAdminError(
     return;
   }
   throw error;
-}
+}

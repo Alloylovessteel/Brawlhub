@@ -238,7 +238,7 @@ describe('/competition command handlers', () => {
 
     await handleCompetition(interaction);
 
-    expect(payload(interaction, 'reply')).toMatchObject({ ephemeral: true });
+    expect(payload(interaction, 'reply')).toMatchObject({ flags: 64 });
     expect(payload(interaction, 'reply').content).toContain('permission');
   });
 

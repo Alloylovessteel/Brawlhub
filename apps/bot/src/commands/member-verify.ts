@@ -176,7 +176,7 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
 
 export async function handleMemberVerify(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!interaction.deferred && !interaction.replied) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: 64 });
   }
 
   const subcommand = interaction.options.getSubcommand();

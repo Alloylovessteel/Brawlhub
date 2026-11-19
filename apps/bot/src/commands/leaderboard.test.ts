@@ -268,14 +268,14 @@ describe('/leaderboard command', () => {
     const initial = chatInteraction('trophies');
     await handleLeaderboard(initial);
     expect(payload(initial, 'reply')).toEqual(
-      expect.objectContaining({ content: SAFE_USER_ERROR, ephemeral: true }),
+      expect.objectContaining({ content: SAFE_USER_ERROR, flags: 64 }),
     );
 
     mocks.service.loadClubLeaderboard.mockRejectedValue(new Error('database unavailable'));
     const button = buttonInteraction('leaderboard:page:2:clubs');
     await handleLeaderboardComponent(button);
     expect((button.followUp as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
-      expect.objectContaining({ content: SAFE_USER_ERROR, ephemeral: true }),
+      expect.objectContaining({ content: SAFE_USER_ERROR, flags: 64 }),
     );
   });
 });

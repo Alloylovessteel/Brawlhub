@@ -59,7 +59,7 @@ export async function replyClubLookupFailure(
     await interaction.editReply({ content, allowedMentions: { parse: [] } });
     return true;
   }
-  await interaction.reply({ content, ephemeral: true, allowedMentions: { parse: [] } });
+  await interaction.reply({ content, flags: 64, allowedMentions: { parse: [] } });
   return true;
 }
 

@@ -3,15 +3,16 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
-  type SlashCommandOptionsOnlyBuilder,
-  type SlashCommandSubcommandsOnlyBuilder,
   type AutocompleteInteraction,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Interaction,
+  type SlashCommandOptionsOnlyBuilder,
+  type SlashCommandSubcommandsOnlyBuilder,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config.js';
 import {
+  isIgnorableInteractionError,
   logAutocompleteError,
   replyWithSafeError,
   safeErrorMessage,
@@ -153,6 +154,8 @@ function errorMessage(error: unknown): string {
   return safeErrorMessage(error, token === undefined ? [] : [token]);
 }
 
+export type { CommandComponentInteraction } from '../discord/interactions.js';
+
 export interface CommandDefinition {
   readonly data:
     | SlashCommandBuilder
@@ -160,7 +163,7 @@ export interface CommandDefinition {
     | SlashCommandSubcommandsOnlyBuilder;
   readonly handle: (interaction: ChatInputCommandInteraction) => Promise<void>;
   readonly autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
-  readonly handleComponent?: (interaction: ButtonInteraction) => Promise<void>;
+  readonly handleComponent?: (interaction: CommandComponentInteraction) => Promise<void>;
 }
 
 export const commands: readonly CommandDefinition[] = [
@@ -388,12 +391,14 @@ export async function dispatchInteraction(
     try {
       await command.autocomplete(interaction);
     } catch (error) {
-      logAutocompleteError(logger, interaction.commandName, error);
+      if (!isIgnorableInteractionError(error)) {
+        logAutocompleteError(logger, interaction.commandName, error);
+      }
     }
     return;
   }
 
-  if (interaction.isButton()) {
+  if (interaction.isButton() || interaction.isAnySelectMenu()) {
     const [commandName] = interaction.customId.split(':');
     const command = definitions.find((candidate) => candidate.data.name === commandName);
     if (command?.handleComponent === undefined) {
@@ -402,11 +407,18 @@ export async function dispatchInteraction(
     try {
       await command.handleComponent(interaction);
     } catch (error) {
-      logger.error('Component handler failed', {
-        command: commandName,
-        error: errorMessage(error),
-      });
-      await replyWithSafeError(interaction).catch(() => undefined);
+      if (isIgnorableInteractionError(error)) {
+        logger.warn('Component interaction expired or was already acknowledged', {
+          command: commandName,
+          error: errorMessage(error),
+        });
+      } else {
+        logger.error('Component handler failed', {
+          command: commandName,
+          error: errorMessage(error),
+        });
+        await replyWithSafeError(interaction).catch(() => undefined);
+      }
     }
     return;
   }
@@ -424,10 +436,17 @@ export async function dispatchInteraction(
   try {
     await command.handle(interaction);
   } catch (error) {
-    logger.error('Command handler failed', {
-      command: interaction.commandName,
-      error: errorMessage(error),
-    });
-    await replyWithSafeError(interaction).catch(() => undefined);
+    if (isIgnorableInteractionError(error)) {
+      logger.warn('Command interaction expired or was already acknowledged', {
+        command: interaction.commandName,
+        error: errorMessage(error),
+      });
+    } else {
+      logger.error('Command handler failed', {
+        command: interaction.commandName,
+        error: errorMessage(error),
+      });
+      await replyWithSafeError(interaction).catch(() => undefined);
+    }
   }
 }

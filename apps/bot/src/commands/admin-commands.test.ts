@@ -432,7 +432,7 @@ describe('/sync', () => {
     await handleSync(interaction);
 
     expect(mocks.guard.runManagedSync).not.toHaveBeenCalled();
-    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(payload(interaction, 'editReply').content).toContain('permission');
     expect(interaction.followUp).not.toHaveBeenCalled();
   });
@@ -506,6 +506,7 @@ describe('/settings', () => {
     const json = settingsCommandData.toJSON() as any;
     expect(json.options.map((option: any) => option.name)).toEqual([
       'view',
+      'setup',
       'roles-view',
       'set-role-mapping',
       'clear-role-mapping',

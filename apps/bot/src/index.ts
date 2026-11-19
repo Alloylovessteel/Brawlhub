@@ -51,7 +51,7 @@ async function executeSync(): Promise<void> {
       return;
     }
     for (const result of outcome.results) {
-      logger.info('Scheduled sync finished', {
+      const meta = {
         syncRunId: result.syncRunId,
         status: result.status,
         clubsProcessed: result.clubsProcessed,
@@ -60,7 +60,22 @@ async function executeSync(): Promise<void> {
         membershipEvents: result.membershipEvents,
         notificationsSent: result.notificationsSent,
         ...(result.error === undefined ? {} : { error: result.error }),
-      });
+      };
+
+      if (result.status === 'failed') {
+        logger.warn('Scheduled sync failed', meta);
+        continue;
+      }
+      if (result.status === 'skipped') {
+        if (typeof result.error === 'string' && result.error.includes('No clubs registered')) {
+          logger.info('Scheduled sync skipped: no clubs registered', meta);
+        } else {
+          logger.warn('Scheduled sync skipped', meta);
+        }
+        continue;
+      }
+
+      logger.info('Scheduled sync finished', meta);
     }
   } catch (error: unknown) {
     logger.error('Scheduled sync failed', { error: safeError(error, token) });

@@ -6,9 +6,9 @@ import {
   EmbedBuilder,
   SlashCommandBuilder,
   type AutocompleteInteraction,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import {
   buildPaginationRowWithState,
@@ -182,15 +182,16 @@ async function buildListPage(
 }
 
 async function replyModerationError(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  interaction: ChatInputCommandInteraction | CommandComponentInteraction,
   error: unknown,
 ): Promise<void> {
   if (!(error instanceof ModerationServiceError)) throw error;
+  const payload = { content: error.message, flags: 64 } as const;
   if (interaction.replied || interaction.deferred) {
-    await interaction.followUp({ content: error.message, ephemeral: true });
+    await interaction.followUp(payload);
     return;
   }
-  await interaction.reply({ content: error.message, ephemeral: true });
+  await interaction.reply(payload);
 }
 
 export async function handleBlacklist(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -216,7 +217,7 @@ export async function handleBlacklist(interaction: ChatInputCommandInteraction):
       await interaction.reply({
         embeds: [buildBlacklistAddConfirmationEmbed(target, reason, actorDiscordUserId)],
         components: [buildConfirmationRow(nonce)],
-        ephemeral: true,
+        flags: 64,
         allowedMentions: { parse: [] },
       });
       return;
@@ -241,7 +242,7 @@ export async function handleBlacklist(interaction: ChatInputCommandInteraction):
       await interaction.reply({
         embeds: [buildRemovalConfirmationEmbed(blacklistId, reason)],
         components: [buildConfirmationRow(nonce)],
-        ephemeral: true,
+        flags: 64,
         allowedMentions: { parse: [] },
       });
       return;
@@ -251,13 +252,13 @@ export async function handleBlacklist(interaction: ChatInputCommandInteraction):
       const search = optionString(interaction, 'search');
       await interaction.reply({
         ...(await buildListPage(search, 1, actorDiscordUserId)),
-        ephemeral: true,
+        flags: 64,
         allowedMentions: { parse: [] },
       });
       return;
     }
 
-    await interaction.reply({ content: 'Choose a blacklist subcommand.', ephemeral: true });
+    await interaction.reply({ content: 'Choose a blacklist subcommand.', flags: 64 });
   } catch (error) {
     await replyModerationError(interaction, error);
   }
@@ -322,7 +323,7 @@ function takePendingAction(
   return action;
 }
 
-export async function handleBlacklistComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleBlacklistComponent(interaction: CommandComponentInteraction): Promise<void> {
   const pagination = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   const actionRef = pagination === null ? parseActionCustomId(interaction.customId) : null;
   if (pagination === null && actionRef === null) return;

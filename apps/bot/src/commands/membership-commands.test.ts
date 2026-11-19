@@ -279,7 +279,7 @@ describe('/member-verify command', () => {
 
     await handleMemberVerify(interaction);
 
-    expect((interaction.deferReply as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ ephemeral: true });
+    expect((interaction.deferReply as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ flags: 64 });
     expect(mocks.verificationService.startVerification).toHaveBeenCalledWith({
       discordUserId: ACTOR_DISCORD_ID,
       tagInput: '#2c0y',
@@ -521,7 +521,7 @@ describe('/member-search command', () => {
     });
     await handleMemberSearch(member);
     expect(payload(member, 'reply').content).toBe('You do not have permission.');
-    expect(payload(member, 'reply').ephemeral).toBe(true);
+    expect(payload(member, 'reply').flags).toBe(64);
   });
 
   it('round-trips encoded pagination state and paginates results', async () => {

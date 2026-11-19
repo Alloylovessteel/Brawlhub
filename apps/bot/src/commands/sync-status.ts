@@ -22,7 +22,7 @@ export async function handleSyncStatus(interaction: ChatInputCommandInteraction)
     const status = await loadSyncStatus(interaction.guildId);
     await interaction.reply({
       embeds: [buildSyncStatusEmbed(status)],
-      ephemeral: true,
+      flags: 64,
       allowedMentions: { parse: [] },
     });
   } catch (error) {

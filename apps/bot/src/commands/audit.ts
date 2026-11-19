@@ -1,9 +1,9 @@
 import {
   MessageFlags,
   SlashCommandBuilder,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { buildAuditPageEmbed } from '../admin/embed';
 import { replyAdminError } from '../admin/errors';
 import { listAuditLogs, requireGlobalPermission } from '../admin/service';
@@ -47,7 +47,7 @@ export async function handleAudit(interaction: ChatInputCommandInteraction): Pro
   }
 }
 
-export async function handleAuditComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleAuditComponent(interaction: CommandComponentInteraction): Promise<void> {
   const pageNumber = parsePaginationCustomId(interaction.customId, COMMAND_NAME);
   if (pageNumber === null) return;
 

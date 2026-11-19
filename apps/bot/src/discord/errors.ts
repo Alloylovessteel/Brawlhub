@@ -1,10 +1,24 @@
-import type {
-  AutocompleteInteraction,
-  ButtonInteraction,
-  ChatInputCommandInteraction,
+import {
+  DiscordAPIError,
+  MessageFlags,
+  type AnySelectMenuInteraction,
+  type AutocompleteInteraction,
+  type ButtonInteraction,
+  type ChatInputCommandInteraction,
 } from 'discord.js';
 
 export const SAFE_USER_ERROR = 'Something went wrong. Please try again later.';
+
+export type RepliableInteraction =
+  | ChatInputCommandInteraction
+  | ButtonInteraction
+  | AnySelectMenuInteraction;
+
+/** Discord interaction/message errors that are not actionable after expiry or races. */
+export function isIgnorableInteractionError(error: unknown): boolean {
+  if (!(error instanceof DiscordAPIError)) return false;
+  return error.code === 10062 || error.code === 40060 || error.code === 10008;
+}
 
 /** Sanitise an error for logs, redacting known secrets from the message. */
 export function safeErrorMessage(error: unknown, secrets: readonly string[] = []): string {
@@ -20,16 +34,20 @@ export function safeErrorMessage(error: unknown, secrets: readonly string[] = []
 /**
  * Send a safe, ephemeral error without leaking the underlying exception to
  * Discord. Works before and after an interaction has been deferred/replied to.
+ * Interaction-expiry/acknowledgement races are ignored.
  */
-export async function replyWithSafeError(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
-): Promise<void> {
-  const payload = { content: SAFE_USER_ERROR, ephemeral: true } as const;
-  if (interaction.replied || interaction.deferred) {
-    await interaction.followUp(payload);
-    return;
+export async function replyWithSafeError(interaction: RepliableInteraction): Promise<void> {
+  const payload = { content: SAFE_USER_ERROR, flags: MessageFlags.Ephemeral } as const;
+  try {
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(payload);
+      return;
+    }
+    await interaction.reply(payload);
+  } catch (error) {
+    if (isIgnorableInteractionError(error)) return;
+    throw error;
   }
-  await interaction.reply(payload);
 }
 
 /** Autocomplete cannot send ephemeral messages; failures are logged only. */

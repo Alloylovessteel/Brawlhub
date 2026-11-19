@@ -8,6 +8,7 @@ import {
   type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import { buildLeaderboardPageEmbed } from '../clubs/embed';
 import { loadLeaderboardView } from '../clubs/service';
@@ -104,7 +105,7 @@ export async function handleClubLeaderboard(interaction: ChatInputCommandInterac
   await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
 }
 
-export async function handleClubLeaderboardComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleClubLeaderboardComponent(interaction: CommandComponentInteraction): Promise<void> {
   if (!isPaginationButtonWithState(interaction, COMMAND_NAME)) return;
   const parsed = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   if (parsed === null) return;

@@ -4,9 +4,9 @@ import {
   ButtonBuilder,
   EmbedBuilder,
   SlashCommandBuilder,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import { replyWithSafeError } from '../discord/errors';
 import {
@@ -176,7 +176,7 @@ async function loadPage(
 export async function handleLeaderboard(interaction: ChatInputCommandInteraction): Promise<void> {
   const state = stateFromSubcommand(interaction.options.getSubcommand(false));
   if (state === null) {
-    await interaction.reply({ content: 'Choose a leaderboard subcommand.', ephemeral: true });
+    await interaction.reply({ content: 'Choose a leaderboard subcommand.', flags: 64 });
     return;
   }
 
@@ -199,7 +199,7 @@ export async function handleLeaderboard(interaction: ChatInputCommandInteraction
   }
 }
 
-export async function handleLeaderboardComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleLeaderboardComponent(interaction: CommandComponentInteraction): Promise<void> {
   if (!isPaginationButtonWithState(interaction, COMMAND_NAME)) return;
   const parsed = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   if (parsed === null) return;

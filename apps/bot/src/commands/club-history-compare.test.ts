@@ -284,7 +284,7 @@ describe('/club-compare command', () => {
     await handleClubCompare(interaction);
 
     expect((interaction.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ content: expect.stringContaining('two different'), ephemeral: true }),
+      expect.objectContaining({ content: expect.stringContaining('two different'), flags: 64 }),
     );
   });
 

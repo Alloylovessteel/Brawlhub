@@ -15,6 +15,7 @@ function autocompleteInteraction(commandName: string): Interaction {
     commandName,
     isAutocomplete: () => true,
     isButton: () => false,
+    isAnySelectMenu: () => false,
     isChatInputCommand: () => false,
   } as unknown as Interaction;
 }
@@ -28,6 +29,7 @@ function buttonInteraction(customId: string): Interaction {
     followUp: vi.fn(async () => undefined),
     isAutocomplete: () => false,
     isButton: () => true,
+    isAnySelectMenu: () => false,
     isChatInputCommand: () => false,
   } as unknown as Interaction;
 }
@@ -41,6 +43,7 @@ function chatInteraction(commandName: string): Interaction {
     followUp: vi.fn(async () => undefined),
     isAutocomplete: () => false,
     isButton: () => false,
+    isAnySelectMenu: () => false,
     isChatInputCommand: () => true,
   } as unknown as Interaction;
 }
@@ -65,7 +68,7 @@ describe('command registry', () => {
       'club-log',
       'club-history',
       'club-compare',
-      'player',
+      'me',
       'player-history',
       'player-clubs',
       'player-compare',
@@ -132,7 +135,7 @@ describe('command registry', () => {
   });
 
   it('registers all player commands with their handlers', () => {
-    for (const name of ['player', 'player-history', 'player-clubs', 'player-compare']) {
+    for (const name of ['me', 'player-history', 'player-clubs', 'player-compare']) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
     for (const name of ['player-history', 'player-clubs']) {
@@ -184,6 +187,7 @@ describe('dispatchInteraction', () => {
       followUp: vi.fn(async () => undefined),
       isAutocomplete: () => false,
       isButton: () => false,
+      isAnySelectMenu: () => false,
       isChatInputCommand: () => true,
     } as unknown as Interaction;
 
@@ -200,7 +204,7 @@ describe('dispatchInteraction', () => {
 
     expect(reply).toHaveBeenCalledWith({
       content: 'Something went wrong. Please try again later.',
-      ephemeral: true,
+      flags: 64,
     });
   });
 });

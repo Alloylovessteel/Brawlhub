@@ -5,9 +5,9 @@ import {
   EmbedBuilder,
   SlashCommandBuilder,
   type AutocompleteInteraction,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
 import {
@@ -214,14 +214,15 @@ function optionInteger(interaction: ChatInputCommandInteraction, name: string): 
 }
 
 async function replyCompetitionError(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  interaction: ChatInputCommandInteraction | CommandComponentInteraction,
   error: unknown,
 ): Promise<void> {
   if (error instanceof CompetitionServiceError) {
+    const payload = { content: error.message, flags: 64 } as const;
     if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content: error.message, ephemeral: true });
+      await interaction.followUp(payload);
     } else {
-      await interaction.reply({ content: error.message, ephemeral: true });
+      await interaction.reply(payload);
     }
     return;
   }
@@ -358,7 +359,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
       return;
     }
 
-    await interaction.reply({ content: 'Choose a competition subcommand.', ephemeral: true });
+    await interaction.reply({ content: 'Choose a competition subcommand.', flags: 64 });
   } catch (error) {
     try {
       await replyCompetitionError(interaction, error);
@@ -373,7 +374,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
   }
 }
 
-export async function handleCompetitionComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleCompetitionComponent(interaction: CommandComponentInteraction): Promise<void> {
   if (!isPaginationButtonWithState(interaction, COMMAND_NAME)) return;
   const parsed = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   if (parsed === null) return;

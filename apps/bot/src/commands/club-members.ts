@@ -5,9 +5,9 @@ import {
   EmbedBuilder,
   SlashCommandBuilder,
   type AutocompleteInteraction,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import { buildClubMembersPageEmbed } from '../clubs/embed';
 import { loadMemberView } from '../clubs/service';
@@ -86,7 +86,7 @@ export async function handleClubMembers(interaction: ChatInputCommandInteraction
   await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
 }
 
-export async function handleClubMembersComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleClubMembersComponent(interaction: CommandComponentInteraction): Promise<void> {
   if (!isPaginationButtonWithState(interaction, COMMAND_NAME)) return;
   const parsed = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   if (parsed === null) return;

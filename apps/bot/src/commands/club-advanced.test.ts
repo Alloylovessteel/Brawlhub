@@ -171,14 +171,14 @@ describe('/club-members command', () => {
     mocks.service.loadMemberView.mockResolvedValueOnce({ kind: 'invalid-tag' });
     await handleClubMembers(invalid);
     expect((invalid.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ content: expect.stringContaining('not valid'), ephemeral: true }),
+      expect.objectContaining({ content: expect.stringContaining('not valid'), flags: 64 }),
     );
 
     const unregistered = chatInteraction({ tag: 'G2P9' });
     mocks.service.loadMemberView.mockResolvedValueOnce({ kind: 'unregistered', tag: 'G2P9' });
     await handleClubMembers(unregistered);
     expect((unregistered.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ content: expect.stringContaining('not registered'), ephemeral: true }),
+      expect.objectContaining({ content: expect.stringContaining('not registered'), flags: 64 }),
     );
   });
 

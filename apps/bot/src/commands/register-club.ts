@@ -6,9 +6,9 @@ import {
 import {
   MessageFlags,
   SlashCommandBuilder,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import {
   buildClubRegisteredEmbed,
   buildClubRegistrationPreviewEmbed,
@@ -16,6 +16,7 @@ import {
 import { AdminServiceError, recordAdminAudit, requireGlobalPermission } from '../admin/service';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import type { AdminActor } from '../admin/types';
+import { isIgnorableInteractionError, type RepliableInteraction } from '../discord/errors.js';
 import {
   buildConfirmationRow,
   parseConfirmationCustomId,
@@ -53,29 +54,43 @@ export const registerClubCommandData = new SlashCommandBuilder()
   );
 
 async function replyRegistrationError(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  interaction: RepliableInteraction,
   error: unknown,
 ): Promise<void> {
-  if (error instanceof AdminServiceError || error instanceof ConfirmationError) {
-    const message =
-      error instanceof AdminServiceError && error.code === 'forbidden'
-        ? FORBIDDEN_MESSAGE
-        : error.message;
-    if (interaction.deferred) {
-      await interaction.editReply({ content: message, embeds: [], components: [] });
-    } else if (interaction.replied) {
-      await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral });
-    } else {
-      await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
+  if (isIgnorableInteractionError(error)) return;
+  try {
+    if (error instanceof AdminServiceError || error instanceof ConfirmationError) {
+      const message =
+        error instanceof AdminServiceError && error.code === 'forbidden'
+          ? FORBIDDEN_MESSAGE
+          : error.message;
+      if (interaction.deferred) {
+        await interaction.editReply({ content: message, embeds: [], components: [] });
+      } else if (interaction.replied) {
+        await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral });
+      } else {
+        await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
+      }
+      return;
     }
-    return;
-  }
-  if (interaction.deferred) {
-    await interaction.editReply({ content: API_FAILURE_MESSAGE, embeds: [], components: [] });
-  } else if (interaction.replied) {
-    await interaction.followUp({ content: API_FAILURE_MESSAGE, flags: MessageFlags.Ephemeral });
-  } else {
-    await interaction.reply({ content: API_FAILURE_MESSAGE, flags: MessageFlags.Ephemeral });
+
+    const reason = error instanceof Error ? error.message.trim() : '';
+    const fallback =
+      reason.length > 0 && reason !== API_FAILURE_MESSAGE
+        ? `The official Brawl Stars API could not validate that club: ${reason} Nothing was registered.`
+            .replace(/\s+/g, ' ')
+            .slice(0, 1500)
+        : API_FAILURE_MESSAGE;
+    if (interaction.deferred) {
+      await interaction.editReply({ content: fallback, embeds: [], components: [] });
+    } else if (interaction.replied) {
+      await interaction.followUp({ content: fallback, flags: MessageFlags.Ephemeral });
+    } else {
+      await interaction.reply({ content: fallback, flags: MessageFlags.Ephemeral });
+    }
+  } catch (replyError) {
+    if (isIgnorableInteractionError(replyError)) return;
+    throw replyError;
   }
 }
 
@@ -117,7 +132,7 @@ export async function handleRegisterClub(interaction: ChatInputCommandInteractio
   }
 }
 
-export async function handleRegisterClubComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleRegisterClubComponent(interaction: CommandComponentInteraction): Promise<void> {
   const action = parseConfirmationCustomId(interaction.customId, COMMAND_NAME);
   if (action === null) return;
 

@@ -1,4 +1,10 @@
-import { createBrawlStarsClient, clubSchema, type BrawlStarsClient, type Club } from '@brawlhub/brawl-stars';
+import {
+  BrawlStarsApiError,
+  createBrawlStarsClient,
+  clubSchema,
+  type BrawlStarsClient,
+  type Club,
+} from '@brawlhub/brawl-stars';
 import { createTrustedClient } from '@brawlhub/database';
 import { brawlTagSchema, SUPPORTED_CLUB_RANGE } from '@brawlhub/shared';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -96,6 +102,28 @@ export async function previewClubRegistration(
   try {
     club = await withTimeout(client.getClub(tag), timeoutMs, 'Brawl Stars club lookup');
   } catch (error) {
+    if (error instanceof BrawlStarsApiError) {
+      if (error.status === 404) {
+        throw new Error('Club not found in the official Brawl Stars API (404). Check the club tag.');
+      }
+      if (error.status === 403) {
+        throw new Error('Brawl Stars API access denied (403). Check the server API key/IP allowlist configuration.');
+      }
+      if (error.status === 429) {
+        throw new Error('Brawl Stars API rate limit reached (429). Try again in a moment.');
+      }
+      if (error.status >= 500) {
+        throw new Error(`Brawl Stars API is unavailable (${error.status}). Try again later.`);
+      }
+      if (error.status === 0) {
+        const message = sanitizeError(error);
+        if (message.toLowerCase().includes('timed out')) {
+          throw new Error('Brawl Stars API request timed out. Try again later.');
+        }
+        throw new Error('Could not reach the Brawl Stars API (network error). Try again later.');
+      }
+      throw new Error(`Brawl Stars API request failed (${error.status}).`);
+    }
     throw new Error(sanitizeError(error));
   }
 

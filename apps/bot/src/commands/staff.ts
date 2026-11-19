@@ -3,9 +3,9 @@ import {
   ButtonBuilder,
   EmbedBuilder,
   SlashCommandBuilder,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import {
   buildPaginationRow,
   paginate,
@@ -55,15 +55,16 @@ async function requireStaffManager(discordUserId: string): Promise<void> {
 }
 
 async function replyStaffError(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  interaction: ChatInputCommandInteraction | CommandComponentInteraction,
   error: unknown,
 ): Promise<void> {
   if (!(error instanceof StaffServiceError)) throw error;
+  const payload = { content: error.message, flags: 64 } as const;
   if (interaction.replied || interaction.deferred) {
-    await interaction.followUp({ content: error.message, ephemeral: true });
+    await interaction.followUp(payload);
     return;
   }
-  await interaction.reply({ content: error.message, ephemeral: true });
+  await interaction.reply(payload);
 }
 
 export async function handleStaff(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -80,7 +81,7 @@ export async function handleStaff(interaction: ChatInputCommandInteraction): Pro
     await requireStaffManager(interaction.user.id);
     await interaction.reply({
       ...(await buildListPage(1)),
-      ephemeral: true,
+      flags: 64,
       allowedMentions: { parse: [] },
     });
   } catch (error) {
@@ -88,7 +89,7 @@ export async function handleStaff(interaction: ChatInputCommandInteraction): Pro
   }
 }
 
-export async function handleStaffComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleStaffComponent(interaction: CommandComponentInteraction): Promise<void> {
   const pageNumber = parsePaginationCustomId(interaction.customId, COMMAND_NAME);
   if (pageNumber === null) return;
 

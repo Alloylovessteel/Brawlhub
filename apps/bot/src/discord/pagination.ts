@@ -2,7 +2,6 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  type ButtonInteraction,
 } from 'discord.js';
 
 export interface Page<T> {
@@ -81,8 +80,8 @@ export function buildPaginationRow(
   return buttons.length === 0 ? null : new ActionRowBuilder<ButtonBuilder>().addComponents(buttons);
 }
 
-/** True when a button interaction targets this command's pagination. */
-export function isPaginationButton(interaction: ButtonInteraction, commandName: string): boolean {
+/** True when a component interaction targets this command's pagination. */
+export function isPaginationButton(interaction: { customId: string }, commandName: string): boolean {
   return parsePaginationCustomId(interaction.customId, commandName) !== null;
 }
 
@@ -152,7 +151,7 @@ export function buildPaginationRowWithState(
 }
 
 export function isPaginationButtonWithState(
-  interaction: ButtonInteraction,
+  interaction: { customId: string },
   commandName: string,
 ): boolean {
   return parsePaginationCustomIdWithState(interaction.customId, commandName) !== null;

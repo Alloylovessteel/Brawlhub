@@ -28,7 +28,7 @@ function websiteLine(): string | undefined {
 export async function handleSync(interaction: ChatInputCommandInteraction): Promise<void> {
   let deferred = false;
   try {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: 64 });
     deferred = true;
 
     if (interaction.guildId === null) {

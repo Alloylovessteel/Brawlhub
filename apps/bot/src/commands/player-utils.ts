@@ -39,12 +39,12 @@ export async function replyPlayerLookupFailure(
 ): Promise<boolean> {
   switch (failure.kind) {
     case 'invalid-tag':
-      await interaction.reply({ content: INVALID_PLAYER_TAG_MESSAGE, ephemeral: true });
+      await interaction.reply({ content: INVALID_PLAYER_TAG_MESSAGE, flags: 64 });
       return true;
     case 'not-found':
       await interaction.reply({
         content: `Player #${failure.tag} was not found in BrawlHub data or the official API.`,
-        ephemeral: true,
+        flags: 64,
       });
       return true;
     case 'api-unavailable':
@@ -52,13 +52,13 @@ export async function replyPlayerLookupFailure(
         content:
           `Player #${failure.tag} could not be verified right now (API issue: ${failure.issue}). ` +
           'No valid stored profile was available to show.',
-        ephemeral: true,
+        flags: 64,
       });
       return true;
     case 'same-player':
       await interaction.reply({
         content: 'Choose two different players to compare.',
-        ephemeral: true,
+        flags: 64,
       });
       return true;
     default:

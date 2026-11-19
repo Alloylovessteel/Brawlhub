@@ -1,9 +1,9 @@
 import { createLogger } from '@brawlhub/logging';
 import {
   SlashCommandBuilder,
-  type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { buildClubsPageEmbed, paginateClubs } from '../clubs/embed';
 import { loadClubSummaries } from '../clubs/service';
 import { replyWithSafeError } from '../discord/errors';
@@ -36,7 +36,7 @@ export async function handleClubs(interaction: ChatInputCommandInteraction): Pro
 }
 
 /** Handle Previous/Next buttons for `/clubs`. */
-export async function handleClubsComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleClubsComponent(interaction: CommandComponentInteraction): Promise<void> {
   if (!isPaginationButton(interaction, COMMAND_NAME)) return;
   const requestedPage = parsePaginationCustomId(interaction.customId, COMMAND_NAME);
   if (requestedPage === null) return;

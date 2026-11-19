@@ -161,7 +161,7 @@ describe('/staff command handlers', () => {
 
     await handleStaff(interaction);
 
-    expect(payload(interaction, 'reply')).toMatchObject({ ephemeral: true });
+    expect(payload(interaction, 'reply')).toMatchObject({ flags: 64 });
     expect(payload(interaction, 'reply').content).toContain('permission');
     expect(mocks.service.listStaff).not.toHaveBeenCalled();
   });
@@ -180,7 +180,7 @@ describe('/staff command handlers', () => {
       expect.objectContaining({ page: 1, pageCount: 2, total: 7 }),
     );
     const reply = payload(interaction, 'reply');
-    expect(reply.ephemeral).toBe(true);
+    expect(reply.flags).toBe(64);
     expect(reply.embeds).toEqual([mocks.embeds.list]);
     expect(reply.components[0].components[0].data.custom_id).toBe('staff:page:2');
   });
@@ -194,7 +194,7 @@ describe('/staff command handlers', () => {
 
     expect(button.deferUpdate).toHaveBeenCalled();
     expect(mocks.service.resolveStaffActor).toHaveBeenCalledWith(DISCORD_ID);
-    expect(payload(button, 'followUp')).toMatchObject({ ephemeral: true });
+    expect(payload(button, 'followUp')).toMatchObject({ flags: 64 });
     expect(payload(button, 'followUp').content).toContain('permission');
     expect(button.editReply).not.toHaveBeenCalled();
   });

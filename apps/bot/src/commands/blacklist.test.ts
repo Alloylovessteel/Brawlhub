@@ -217,7 +217,7 @@ describe('/blacklist command handlers', () => {
     ).toHaveBeenCalledWith(target(), 'cheating', DISCORD_ID);
 
     const reply = payload(interaction, 'reply');
-    expect(reply.ephemeral).toBe(true);
+    expect(reply.flags).toBe(64);
     expect(reply.embeds).toEqual([mocks.embeds.addConfirmation]);
     expect(confirmId).toMatch(/^blacklist:confirm:[0-9a-f-]{36}$/);
     expect(cancelId).toMatch(/^blacklist:cancel:[0-9a-f-]{36}$/);
@@ -274,7 +274,7 @@ describe('/blacklist command handlers', () => {
     await handleBlacklistComponent(wrongActor);
 
     expect(mocks.service.addBlacklist).not.toHaveBeenCalled();
-    expect(payload(wrongActor, 'followUp')).toMatchObject({ ephemeral: true });
+    expect(payload(wrongActor, 'followUp')).toMatchObject({ flags: 64 });
     expect(payload(wrongActor, 'followUp').content).toContain('another moderator');
   });
 
@@ -301,7 +301,7 @@ describe('/blacklist command handlers', () => {
 
     expect(mocks.service.removeBlacklist).not.toHaveBeenCalled();
     const reply = payload(interaction, 'reply');
-    expect(reply.ephemeral).toBe(true);
+    expect(reply.flags).toBe(64);
     expect(reply.embeds[0].toJSON().title).toBe('Confirm blacklist removal');
     expect(reply.embeds[0].toJSON().description).toContain('preserved');
 
@@ -340,7 +340,7 @@ describe('/blacklist command handlers', () => {
       mocks.config,
     );
     const reply = payload(list, 'reply');
-    expect(reply.ephemeral).toBe(true);
+    expect(reply.flags).toBe(64);
     expect(reply.embeds).toEqual([mocks.embeds.list]);
     expect(reply.components[0].components[0].data.custom_id).toBe('blacklist:page:2:abc');
 

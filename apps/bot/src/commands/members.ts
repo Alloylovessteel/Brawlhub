@@ -8,6 +8,7 @@ import {
   type ButtonInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import { replyWithSafeError } from '../discord/errors';
 import {
@@ -54,7 +55,7 @@ async function replyFailure(
   interaction: ChatInputCommandInteraction,
   failure: MemberLookupFailure,
 ): Promise<void> {
-  await interaction.reply({ content: failure.message, ephemeral: true });
+  await interaction.reply({ content: failure.message, flags: 64 });
 }
 
 async function buildPage(
@@ -89,7 +90,7 @@ export async function handleMembers(interaction: ChatInputCommandInteraction): P
   await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
 }
 
-export async function handleMembersComponent(interaction: ButtonInteraction): Promise<void> {
+export async function handleMembersComponent(interaction: CommandComponentInteraction): Promise<void> {
   if (!isPaginationButtonWithState(interaction, COMMAND_NAME)) return;
   const parsed = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   if (parsed === null) return;

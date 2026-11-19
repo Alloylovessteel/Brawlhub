@@ -34,7 +34,7 @@ export async function handleRemoveClub(interaction: ChatInputCommandInteraction)
     });
     await interaction.reply({
       embeds: [buildClubRemovalUnavailableEmbed()],
-      ephemeral: true,
+      flags: 64,
       allowedMentions: { parse: [] },
     });
   } catch (error) {
