@@ -27,10 +27,12 @@ const mocks = vi.hoisted(() => ({
     loadClubSummaries: vi.fn(),
     filterRegisteredClubs: vi.fn(),
   },
+  resolveClubBadgeUrl: vi.fn(async (): Promise<string | null> => null),
 }));
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
 vi.mock('../clubs/service', () => mocks.service);
+vi.mock('../metadata/assets', () => ({ resolveClubBadgeUrl: mocks.resolveClubBadgeUrl }));
 
 import { handleClubAutocomplete, handleClub } from './club';
 import { handleClubs, handleClubsComponent } from './clubs';
@@ -128,6 +130,7 @@ beforeEach(() => {
   mocks.service.getRegisteredClubs.mockReset();
   mocks.service.loadClubSummaries.mockReset();
   mocks.service.filterRegisteredClubs.mockReset();
+  mocks.resolveClubBadgeUrl.mockReset().mockResolvedValue(null);
 });
 
 describe('/club command', () => {
@@ -163,6 +166,18 @@ describe('/club command', () => {
     );
     const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(payload.embeds[0].toJSON().title).toContain('#2C0Y');
+  });
+
+  it('resolves the club badge from static metadata before rendering', async () => {
+    mocks.resolveClubBadgeUrl.mockResolvedValue('https://cdn.example.test/badge.png');
+    mocks.service.loadClubView.mockResolvedValue(okView({ badgeId: 8000001 }));
+    const interaction = chatInteraction();
+
+    await handleClub(interaction);
+
+    expect(mocks.resolveClubBadgeUrl).toHaveBeenCalledWith(8000001);
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(payload.embeds[0].toJSON().thumbnail.url).toBe('https://cdn.example.test/badge.png');
   });
 
   it('explains invalid tags without a database lookup', async () => {

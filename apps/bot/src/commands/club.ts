@@ -8,6 +8,7 @@ import { getBotConfig } from '../config';
 import type { ApiIssue } from '../clubs/types';
 import { buildClubEmbed } from '../clubs/embed';
 import { filterRegisteredClubs, getRegisteredClubs, loadClubView } from '../clubs/service';
+import { resolveClubBadgeUrl } from '../metadata/assets.js';
 
 const logger = createLogger('bot');
 
@@ -75,7 +76,8 @@ export async function handleClub(interaction: ChatInputCommandInteraction): Prom
     return;
   }
 
-  const embed = buildClubEmbed(result.view, config, now);
+  const badgeUrl = await resolveClubBadgeUrl(result.view.badgeId);
+  const embed = buildClubEmbed(result.view, config, now, badgeUrl);
   const content = apiNotice(result.view.apiIssue);
   await interaction.editReply({
     ...(content === undefined ? {} : { content }),

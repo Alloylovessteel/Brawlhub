@@ -1,6 +1,9 @@
 export {
+  clearVerificationIconCache,
   DEFAULT_BRAWLER_VERIFICATION_ICONS,
+  loadBrawlerVerificationIcons,
   pickRandomVerificationIcon,
+  pickRandomVerificationIconAsync,
 } from './icons.js';
 export type { VerificationTargetIcon } from './icons.js';
 export {

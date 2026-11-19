@@ -29,10 +29,12 @@ const mocks = vi.hoisted(() => ({
     loadPlayerCompare: vi.fn(),
     searchPlayers: vi.fn(),
   },
+  resolvePlayerIconUrl: vi.fn(async (): Promise<string | null> => null),
 }));
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
 vi.mock('../players/service', () => mocks.service);
+vi.mock('../metadata/assets', () => ({ resolvePlayerIconUrl: mocks.resolvePlayerIconUrl }));
 
 import { handleMe, handleMeAutocomplete } from './player';
 import {
@@ -196,6 +198,7 @@ function payload(interaction: ChatInputCommandInteraction | ButtonInteraction, m
 
 beforeEach(() => {
   for (const fn of Object.values(mocks.service)) fn.mockReset();
+  mocks.resolvePlayerIconUrl.mockReset().mockResolvedValue(null);
 });
 
 describe('/me command', () => {
@@ -209,6 +212,22 @@ describe('/me command', () => {
     expect(mocks.service.loadPlayerProfile).toHaveBeenCalledWith({ tag: '#2c0y', guildId: 'guild-1' });
     expect(JSON.stringify(payload(interaction, 'editReply').embeds[0].toJSON())).toContain(
       '[Alpha](https://brawlify.com/player/2C0Y)',
+    );
+  });
+
+  it('resolves the player icon from static metadata before rendering', async () => {
+    mocks.resolvePlayerIconUrl.mockResolvedValue('https://cdn.example.test/icon.png');
+    mocks.service.loadPlayerProfile.mockResolvedValue({
+      ...profileResult(),
+      value: { ...profileResult().value, player: identity({ iconId: 28000003 }) },
+    });
+    const interaction = chatInteraction({ tag: '#2c0y' });
+
+    await handleMe(interaction);
+
+    expect(mocks.resolvePlayerIconUrl).toHaveBeenCalledWith(28000003);
+    expect(payload(interaction, 'editReply').embeds[0].toJSON().thumbnail.url).toBe(
+      'https://cdn.example.test/icon.png',
     );
   });
 

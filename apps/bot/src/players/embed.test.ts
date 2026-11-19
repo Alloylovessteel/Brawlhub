@@ -36,6 +36,7 @@ function identity(overrides: Partial<PlayerIdentity> = {}): PlayerIdentity {
     id: 'p1',
     tag: '2C0Y',
     name: 'Alpha',
+    iconId: null,
     trophies: 5000,
     highestTrophies: 5200,
     expLevel: 35,
@@ -126,6 +127,16 @@ describe('player embeds', () => {
     expect(text).toContain('[Alpha Club](https://example.test/clubs/8QCL)');
     expect(text).toContain('Top Brawlers (Live API)');
     expect(text).toContain('Snapshot:');
+  });
+
+  it('uses a resolved player icon as an optional thumbnail', () => {
+    const embed = buildPlayerProfileEmbed(
+      profile({ player: identity({ iconId: 28000003 }) }),
+      config,
+      'https://cdn.example.test/player/28000003.png',
+    ).toJSON();
+
+    expect(embed.thumbnail?.url).toBe('https://cdn.example.test/player/28000003.png');
   });
 
   it('omits missing profile fields instead of showing placeholders', () => {

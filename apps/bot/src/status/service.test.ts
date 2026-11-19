@@ -51,6 +51,8 @@ function apiClient(result: 'ok' | 'timeout' | 'fail'): BrawlStarsClient {
     getClubMembers: vi.fn(async () => []),
     getPlayer: vi.fn(async () => ({ tag: 'P1', name: 'P', trophies: 0 }) as never),
     getBattleLog: vi.fn(async () => []),
+    getBrawlers: vi.fn(async () => []),
+    getEventRotation: vi.fn(async () => []),
   };
 }
 

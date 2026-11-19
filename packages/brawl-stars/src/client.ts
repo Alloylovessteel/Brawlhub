@@ -1,12 +1,16 @@
 import { z, type ZodType } from 'zod';
 import {
   battleLogResponseSchema,
+  brawlerCatalogResponseSchema,
   clubMembersResponseSchema,
   clubSchema,
+  eventRotationResponseSchema,
   playerSchema,
   type BattleLogItem,
+  type BrawlerCatalogItem,
   type Club,
   type ClubMember,
+  type EventRotationSlot,
   type Player,
 } from './types';
 
@@ -43,6 +47,8 @@ export interface BrawlStarsClient {
   getClubMembers(tag: string): Promise<ClubMember[]>;
   getPlayer(tag: string): Promise<Player>;
   getBattleLog(tag: string): Promise<BattleLogItem[]>;
+  getBrawlers(): Promise<BrawlerCatalogItem[]>;
+  getEventRotation(): Promise<EventRotationSlot[]>;
 }
 
 const MAX_ATTEMPTS = 3;
@@ -203,6 +209,13 @@ export function createBrawlStarsClient(options?: BrawlStarsClientOptions): Brawl
         battleLogResponseSchema,
       );
       return response.items;
+    },
+    async getBrawlers() {
+      const response = await request('/brawlers', brawlerCatalogResponseSchema);
+      return response.items;
+    },
+    getEventRotation() {
+      return request('/events/rotation', eventRotationResponseSchema);
     },
   };
 }

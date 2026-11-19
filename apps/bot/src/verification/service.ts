@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createTrustedClient } from '@brawlhub/database';
 import { BrawlStarsApiError, createBrawlStarsClient, type BrawlStarsClient } from '@brawlhub/brawl-stars';
 import { brawlTagSchema } from '@brawlhub/shared';
-import { pickRandomVerificationIcon } from './icons.js';
+import { pickRandomVerificationIconAsync } from './icons.js';
 import type {
   CancelVerificationResult,
   CheckVerificationResult,
@@ -305,7 +305,7 @@ export async function startVerification(
     };
   }
 
-  const targetIcon = pickRandomVerificationIcon(iconId);
+  const targetIcon = await pickRandomVerificationIconAsync(iconId);
   const createdAt = nowMs();
   const challenge: VerificationChallenge = {
     discordUserId: input.discordUserId,

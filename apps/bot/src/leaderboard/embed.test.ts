@@ -82,6 +82,7 @@ function identity(index: number, name = `Player ${index + 1}`): PlayerIdentity {
     id: `p${index}`,
     tag: tagAt(index),
     name,
+    iconId: null,
     trophies: 5_000,
     highestTrophies: 5_200,
     expLevel: 35,

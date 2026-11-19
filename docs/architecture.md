@@ -81,7 +81,15 @@ All sync-derived writes are upserts with conflict handling so repeated runs conv
 - Base URL comes from `BRAWL_STARS_BASE_URL`.
 - Every request sends `Authorization: Bearer ${BRAWL_STARS_API_KEY}`.
 - There is **no token endpoint and no token cache**: the developer API key is a static credential sent directly on each request.
-- The client is server-side only (planned as `packages/brawl-stars`); it never runs in the browser. It will handle timeouts, rate limiting/backoff, and response validation, and be the single entry point for official API data.
+- The client is server-side only (`packages/brawl-stars`); it never runs in the browser. It handles throttling, retry/backoff and response validation, and is the single entry point for official API data.
+- Official static endpoints are preferred: `GET /brawlers` supplies authoritative brawler IDs/names and `GET /events/rotation` supplies the live map/mode rotation.
+
+## Static metadata (BrawlAPI)
+
+- `packages/brawlapi` is a cached, server-side-only client for `https://api.brawlapi.com`.
+- BrawlAPI is used only for metadata the official API does not expose: profile icon, club badge, brawler portrait, map and game-mode asset URLs.
+- Names, trophies, rosters, rankings, battle history and live events always come from the official Brawl Stars API or stored official API snapshots. BrawlAPI failures degrade to Unicode/URL fallbacks and never fail a Discord command.
+- BrawlAPI `/v1/events` is not used: it is a static catalogue and cannot replace the official live `GET /events/rotation` endpoint.
 
 ## No stored OAuth tokens
 

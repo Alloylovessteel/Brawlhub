@@ -15,6 +15,7 @@ This is an npm workspaces monorepo:
 | `packages/shared` | Roles, permission matrix and validated Brawl Stars/Discord input schemas. |
 | `packages/database` | Supabase anon/client helpers and service-role client for trusted jobs. |
 | `packages/brawl-stars` | Official Brawl Stars API client with Bearer key, retry/backoff and throttling. |
+| `packages/brawlapi` | Optional cached BrawlAPI static metadata client for icons, badges, maps and mode assets. |
 | `packages/sync` | Club registration, sync lock, snapshots, membership transitions and notification claims. |
 | `packages/logging` | Structured JSON-lines logger with secret redaction. |
 | `supabase/migrations` | Schema, constraints, indexes and RLS policies. |

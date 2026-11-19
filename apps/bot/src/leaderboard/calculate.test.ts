@@ -19,6 +19,7 @@ function player(tag: string, id = `id-${tag}`): PlayerIdentity {
     id,
     tag,
     name: `Player ${tag}`,
+    iconId: null,
     trophies: null,
     highestTrophies: null,
     expLevel: null,

@@ -17,6 +17,8 @@ export interface PlayerIdentity {
   readonly id: string | null;
   readonly tag: string;
   readonly name: string;
+  /** Official profile icon id; used only to resolve a static image URL. */
+  readonly iconId: number | null;
   readonly trophies: number | null;
   readonly highestTrophies: number | null;
   readonly expLevel: number | null;

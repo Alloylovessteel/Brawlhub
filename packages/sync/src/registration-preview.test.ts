@@ -34,6 +34,8 @@ function clientReturning(value: unknown): BrawlStarsClient {
     getClubMembers: vi.fn(async () => []),
     getPlayer: vi.fn(async () => ({}) as never),
     getBattleLog: vi.fn(async () => []),
+    getBrawlers: vi.fn(async () => []),
+    getEventRotation: vi.fn(async () => []),
   };
 }
 
@@ -100,6 +102,8 @@ describe('previewClubRegistration', () => {
       getClubMembers: vi.fn(async () => []),
       getPlayer: vi.fn(async () => ({}) as never),
       getBattleLog: vi.fn(async () => []),
+      getBrawlers: vi.fn(async () => []),
+      getEventRotation: vi.fn(async () => []),
     };
 
     await expect(previewClubRegistration('2UG9', GUILD_ID, { client })).rejects.toThrow(

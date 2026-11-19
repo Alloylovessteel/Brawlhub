@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, type AutocompleteInteraction, type ChatInputCommandInteraction } from 'discord.js';
 import { buildPlayerProfileEmbed } from '../players/embed';
 import { loadPlayerProfile } from '../players/service';
+import { resolvePlayerIconUrl } from '../metadata/assets.js';
 import { getBotConfig } from '../config';
 import { replyPlayerLookupFailure, respondWithPlayerChoices } from './player-utils';
 
@@ -28,8 +29,9 @@ export async function handleMe(interaction: ChatInputCommandInteraction): Promis
     return;
   }
 
+  const iconUrl = await resolvePlayerIconUrl(result.value.player.iconId);
   await interaction.editReply({
-    embeds: [buildPlayerProfileEmbed(result.value, getBotConfig())],
+    embeds: [buildPlayerProfileEmbed(result.value, getBotConfig(), iconUrl)],
     allowedMentions: { parse: [] },
   });
 }

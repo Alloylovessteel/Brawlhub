@@ -12,6 +12,7 @@
     "dotenv": "^16.6.1",
     "@brawlhub/logging": "*",
     "@brawlhub/brawl-stars": "*",
+    "@brawlhub/brawlapi": "*",
     "@brawlhub/database": "*",
     "@brawlhub/shared": "*",
     "@brawlhub/sync": "*"

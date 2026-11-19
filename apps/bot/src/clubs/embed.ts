@@ -206,11 +206,12 @@ function progressionSummary(view: ClubView, config: EmbedConfig, now: Date): str
   return parts.length === 0 ? null : parts.join('  ');
 }
 
-/** Build the detailed `/club` embed. */
+/** Build the detailed `/club` embed. Static badge images are optional and best-effort. */
 export function buildClubEmbed(
   view: ClubView,
   config: EmbedConfig,
   now: Date = new Date(),
+  badgeUrl?: string | null,
 ): EmbedBuilder {
   const emoji = clubEmojis(config);
 
@@ -225,7 +226,11 @@ export function buildClubEmbed(
     .setTimestamp(now);
 
   if (view.badgeId !== null) {
-    embed.setThumbnail(`https://cdn.brawlify.com/club-badges/regular/${view.badgeId}.png`);
+    const thumbnail =
+      badgeUrl === undefined
+        ? `https://cdn.brawlify.com/club-badges/regular/${view.badgeId}.png`
+        : badgeUrl;
+    if (thumbnail !== null) embed.setThumbnail(thumbnail);
   }
 
   const total = formatInteger(view.currentTrophies);

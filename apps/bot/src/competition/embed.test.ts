@@ -43,6 +43,7 @@ function player(name: string): PlayerIdentity {
     id: 'player-1',
     tag: '2C0Y',
     name,
+    iconId: null,
     trophies: 5_000,
     highestTrophies: 5_200,
     expLevel: 40,

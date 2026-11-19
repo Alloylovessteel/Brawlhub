@@ -1,3 +1,6 @@
+import { createBrawlApiClient, type BrawlApiClient } from '@brawlhub/brawlapi';
+import { createBrawlStarsClient, type BrawlStarsClient } from '@brawlhub/brawl-stars';
+
 export interface VerificationTargetIcon {
   readonly id: number;
   readonly name: string;
@@ -129,4 +132,82 @@ export function pickRandomVerificationIcon(excludeId?: number): VerificationTarg
 
 export function formatVerificationIconName(icon: VerificationTargetIcon): string {
   return icon.name;
+}
+
+const VERIFICATION_ICON_CACHE_TTL_MS = 60 * 60 * 1000;
+let verificationIconCache: { readonly icons: readonly VerificationTargetIcon[]; readonly at: number } | null =
+  null;
+
+/** Official API names are authoritative; BrawlAPI only supplies the icon image. */
+function toDisplayBrawlerName(officialName: string): string {
+  return officialName
+    .trim()
+    .toLowerCase()
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+/**
+ * Load the current default brawler icon pool.
+ *
+ * Official `/brawlers` provides the authoritative brawler names and IDs;
+ * BrawlAPI `/v1/icons` supplies the profile-icon image URLs that the official
+ * API does not expose. Any failure falls back to the bundled icon list so
+ * verification remains available offline.
+ */
+export async function loadBrawlerVerificationIcons(): Promise<readonly VerificationTargetIcon[]> {
+  const cached = verificationIconCache;
+  if (cached !== null && Date.now() - cached.at < VERIFICATION_ICON_CACHE_TTL_MS) {
+    return cached.icons;
+  }
+
+  const brawlApi: BrawlApiClient = createBrawlApiClient();
+  const official: BrawlStarsClient = createBrawlStarsClient();
+  try {
+    const [iconsResponse, brawlers] = await Promise.all([
+      brawlApi.getIconCatalog(),
+      official.getBrawlers(),
+    ]);
+    const names = new Map(brawlers.map((brawler) => [brawler.id, toDisplayBrawlerName(brawler.name)]));
+    const icons = Object.values(iconsResponse.player)
+      .filter((icon) => icon.brawler !== null && icon.brawler !== undefined)
+      .filter((icon) => icon.name2?.startsWith('player_icon_') === true)
+      .flatMap((icon) => {
+        const brawlerId = icon.brawler;
+        if (brawlerId === null || brawlerId === undefined) return [];
+        const name = names.get(brawlerId);
+        if (name === undefined) return [];
+        return [
+          {
+            id: icon.id,
+            name,
+            imageUrl: icon.imageUrl,
+          },
+        ];
+      });
+
+    if (icons.length >= DEFAULT_BRAWLER_VERIFICATION_ICONS.length) {
+      verificationIconCache = { icons, at: Date.now() };
+      return icons;
+    }
+  } catch {
+    // Static metadata is optional; keep the bundled pool on failure.
+  }
+
+  return DEFAULT_BRAWLER_VERIFICATION_ICONS;
+}
+
+/** Pick from the freshest available default brawler icon pool. */
+export async function pickRandomVerificationIconAsync(
+  excludeId?: number,
+): Promise<VerificationTargetIcon> {
+  const icons = await loadBrawlerVerificationIcons();
+  const pool = excludeId === undefined ? icons : icons.filter((icon) => icon.id !== excludeId);
+  const source = pool.length > 0 ? pool : icons;
+  const index = Math.floor(Math.random() * source.length);
+  return source[index] ?? DEFAULT_BRAWLER_VERIFICATION_ICONS[0]!;
+}
+
+/** Test helper for resetting the in-process metadata cache. */
+export function clearVerificationIconCache(): void {
+  verificationIconCache = null;
 }

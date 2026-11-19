@@ -272,6 +272,24 @@ describe('club embeds', () => {
     expect(json.fields?.[6]?.value).toContain('Season +300');
   });
 
+  it('uses a resolved club badge as an optional thumbnail', () => {
+    const json = buildClubEmbed(
+      view({ badgeId: 8000001 }),
+      CONFIG,
+      NOW,
+      'https://cdn.example.test/club-badges/8000001.png',
+    ).toJSON();
+
+    expect(json.thumbnail?.url).toBe('https://cdn.example.test/club-badges/8000001.png');
+  });
+
+  it('keeps the bundled badge URL when no static metadata is supplied', () => {
+    const json = buildClubEmbed(view({ badgeId: 8000001 }), CONFIG, NOW).toJSON();
+    expect(json.thumbnail?.url).toBe(
+      'https://cdn.brawlify.com/club-badges/regular/8000001.png',
+    );
+  });
+
   it('omits unsupported and unavailable fields instead of showing placeholders', () => {
     const empty = view({
       roster: [],

@@ -93,6 +93,17 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     ],
   },
   {
+    name: 'Game data',
+    entries: [
+      {
+        name: 'events',
+        usage: '/events active|upcoming',
+        description:
+          'Show the live official Brawl Stars event rotation with map and game-mode images.',
+      },
+    ],
+  },
+  {
     name: 'Competition',
     entries: [
       {

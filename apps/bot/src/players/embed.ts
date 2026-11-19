@@ -143,10 +143,11 @@ function formatRankedLine(name: string | null | undefined, elo: number | null): 
   return parts.length === 0 ? null : parts.join(' • ');
 }
 
-/** Build the detailed `/me` embed. */
+/** Build the detailed `/me` embed. Static icon images are optional and best-effort. */
 export function buildPlayerProfileEmbed(
   view: PlayerProfileView,
   config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
 ): EmbedBuilder {
   const emoji = profileEmojis(config);
   const embed = new EmbedBuilder()
@@ -159,6 +160,7 @@ export function buildPlayerProfileEmbed(
         2048,
       ),
     );
+  if (iconUrl !== null) embed.setThumbnail(iconUrl);
 
   const trophies = formatInteger(view.player.trophies);
   if (trophies !== null) {

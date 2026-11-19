@@ -57,6 +57,11 @@ import {
   handleClubCompareAutocomplete,
 } from './club-compare.js';
 import {
+  eventsCommandData,
+  handleEvents,
+  handleEventsComponent,
+} from './events.js';
+import {
   meCommandData,
   handleMe,
   handleMeAutocomplete,
@@ -211,6 +216,11 @@ export const commands: readonly CommandDefinition[] = [
     data: clubCompareCommandData,
     handle: handleClubCompare,
     autocomplete: handleClubCompareAutocomplete,
+  },
+  {
+    data: eventsCommandData,
+    handle: handleEvents,
+    handleComponent: handleEventsComponent,
   },
   {
     data: meCommandData,

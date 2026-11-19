@@ -196,3 +196,47 @@ export const battleLogResponseSchema = z
   .passthrough();
 export type BattleLogItem = z.infer<typeof battleLogItemSchema>;
 export type BattleLogResponse = z.infer<typeof battleLogResponseSchema>;
+
+/** Official static brawler catalog (`GET /brawlers`). */
+export const brawlerCatalogItemSchema = z
+  .object({
+    id: z.number().int().nonnegative(),
+    name: z.string(),
+    starPowers: z.array(brawlerAccessorySchema).optional(),
+    gadgets: z.array(brawlerAccessorySchema).optional(),
+    gears: z.array(brawlerAccessorySchema).optional(),
+    hyperCharges: z.array(brawlerAccessorySchema).optional(),
+  })
+  .passthrough();
+export type BrawlerCatalogItem = z.infer<typeof brawlerCatalogItemSchema>;
+
+export const brawlerCatalogResponseSchema = z
+  .object({
+    items: z.array(brawlerCatalogItemSchema),
+    paging: z.unknown().optional(),
+  })
+  .passthrough();
+export type BrawlerCatalogResponse = z.infer<typeof brawlerCatalogResponseSchema>;
+
+/** Official live event rotation (`GET /events/rotation`). */
+export const eventRotationEventSchema = z
+  .object({
+    id: z.number().int().optional(),
+    mode: z.string().optional(),
+    modeId: z.number().int().optional(),
+    map: z.string().optional(),
+  })
+  .passthrough();
+
+export const eventRotationSlotSchema = z
+  .object({
+    /** Official format: `20261119T080000.000Z`. */
+    startTime: z.string(),
+    /** Official format: `20261120T080000.000Z`. */
+    endTime: z.string(),
+    slotId: z.number().int().nonnegative(),
+    event: eventRotationEventSchema.optional(),
+  })
+  .passthrough();
+export type EventRotationSlot = z.infer<typeof eventRotationSlotSchema>;
+export const eventRotationResponseSchema = z.array(eventRotationSlotSchema);

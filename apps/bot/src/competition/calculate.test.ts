@@ -40,6 +40,7 @@ function entry(id: string, name: string, baseline: number | null): CompetitionEn
       id: id.replace('e', 'p'),
       tag: '2C0Y',
       name,
+      iconId: null,
       trophies: null,
       highestTrophies: null,
       expLevel: null,

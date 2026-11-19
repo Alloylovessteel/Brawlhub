@@ -129,4 +129,49 @@ describe('createBrawlStarsClient', () => {
     expect(fetchFn).toHaveBeenCalledTimes(3);
     expect(sleepFn).toHaveBeenCalledTimes(2);
   });
+
+  it('reads the official brawler catalog', async () => {
+    const requested: string[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (input) => {
+      requested.push(String(input));
+      return jsonResponse({
+        items: [
+          {
+            id: 16000000,
+            name: 'SHELLY',
+            gadgets: [{ id: 23000001, name: 'CLAY PIGEON' }],
+          },
+        ],
+      });
+    });
+
+    const client = createBrawlStarsClient({ apiKey: API_KEY, baseUrl: BASE_URL, fetchFn });
+    const brawlers = await client.getBrawlers();
+
+    expect(brawlers).toHaveLength(1);
+    expect(brawlers[0]?.name).toBe('SHELLY');
+    expect(requested).toEqual([`${BASE_URL}/brawlers`]);
+  });
+
+  it('reads the official live event rotation', async () => {
+    const requested: string[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (input) => {
+      requested.push(String(input));
+      return jsonResponse([
+        {
+          startTime: '20261119T080000.000Z',
+          endTime: '20261120T080000.000Z',
+          slotId: 1,
+          event: { id: 15000026, mode: 'brawlBall', modeId: 5, map: 'Pinhole Punt' },
+        },
+      ]);
+    });
+
+    const client = createBrawlStarsClient({ apiKey: API_KEY, baseUrl: BASE_URL, fetchFn });
+    const rotation = await client.getEventRotation();
+
+    expect(rotation).toHaveLength(1);
+    expect(rotation[0]?.event?.map).toBe('Pinhole Punt');
+    expect(requested).toEqual([`${BASE_URL}/events/rotation`]);
+  });
 });

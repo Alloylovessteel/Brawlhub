@@ -142,6 +142,7 @@ describe('/help', () => {
       'Club',
       'Player',
       'Leaderboard',
+      'Game data',
       'Competition',
       'Membership',
       'Staff and moderation',
@@ -157,7 +158,7 @@ describe('/help', () => {
   });
 
   it('paginates category embeds within Discord limits', () => {
-    for (let page = 1; page <= 4; page += 1) {
+    for (let page = 1; page <= 5; page += 1) {
       const paged = paginate(HELP_CATEGORIES, page, 2);
       const embed = buildHelpPageEmbed(paged).toJSON();
       expect(embed.fields?.length ?? 0).toBeGreaterThan(0);
@@ -188,7 +189,7 @@ describe('/help', () => {
     expect(interaction.deferUpdate).toHaveBeenCalledOnce();
     expect(edit.content).toBeNull();
     expect(edit.embeds).toHaveLength(1);
-    expect(edit.embeds[0].data.description).toContain('Page 2 of 4');
+    expect(edit.embeds[0].data.description).toContain('Page 2 of 5');
     const customIds = edit.components[0].components.map(
       (component: any) => component.data.custom_id,
     );
