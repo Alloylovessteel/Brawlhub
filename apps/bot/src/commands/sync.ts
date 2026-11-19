@@ -8,6 +8,7 @@ import {
   requireGlobalPermission,
 } from '../admin/service';
 import { checkBotRateLimit } from '../discord/rate-limit';
+import { runSync } from '@brawlhub/sync';
 import { runManagedSync } from '../sync/guard';
 
 const COMMAND_NAME = 'sync';
@@ -16,7 +17,7 @@ const RATE_WINDOW_MS = 60_000;
 
 export const syncCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
-  .setDescription('Run the existing all-clubs synchronisation pipeline');
+  .setDescription("Run this server's BrawlHub club synchronisation");
 
 function websiteLine(): string | undefined {
   const appUrl = getBotConfig().appUrl;
@@ -29,10 +30,17 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
     await interaction.deferReply({ ephemeral: true });
     deferred = true;
 
+    if (interaction.guildId === null) {
+      await interaction.editReply({
+        content: 'Sync can only be run from within a Discord server.',
+      });
+      return;
+    }
+
     const actor = await requireGlobalPermission(interaction.user.id, 'sync:run');
 
     const rateLimit = checkBotRateLimit(
-      `admin-sync:${interaction.user.id}`,
+      `admin-sync:${interaction.user.id}:${interaction.guildId}`,
       RATE_LIMIT,
       RATE_WINDOW_MS,
     );
@@ -49,7 +57,8 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
       return;
     }
 
-    const outcome = await runManagedSync();
+    // Run only this guild to preserve per-server isolation for manual syncs.
+    const outcome = await runManagedSync({ run: () => runSync({ guildId: interaction.guildId! }).then((r) => [r]) });
     const site = websiteLine();
     if (outcome.kind === 'overlap') {
       await interaction.editReply({
@@ -63,7 +72,15 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
       return;
     }
 
-    const result = outcome.result;
+    const result = outcome.results[0];
+    if (result === undefined) {
+      await interaction.editReply({
+        content: ['Sync did not produce a result.', site]
+          .filter((line): line is string => line !== undefined)
+          .join('\n'),
+      });
+      return;
+    }
     await recordSyncRunAudit(actor, result);
     const run = result.syncRunId === '' ? null : await loadSyncRun(result.syncRunId);
     await interaction.editReply({
@@ -79,7 +96,6 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
     try {
       await replyAdminError(interaction, error);
     } catch {
-      // replyAdminError may try to reply/edit; fall back to a safe edit
       try {
         const site = websiteLine();
         await interaction.editReply({

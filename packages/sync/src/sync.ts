@@ -17,8 +17,17 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 const log = createLogger('sync');
 
-/** Fixed scope for the global, all-clubs sync run. */
+/** Fixed scope for legacy global sync runs. Prefer {@link guildSyncScope}. */
 export const SYNC_SCOPE = 'all-clubs';
+
+/** Database/sync-run scope for one Discord guild's registered clubs. */
+export function guildSyncScope(guildId: string): string {
+  const normalized = guildId.trim();
+  if (normalized.length === 0) {
+    throw new Error('A Discord guild id is required for scoped sync');
+  }
+  return `guild:${normalized}`;
+}
 
 /** Default cadence used when SYNC_INTERVAL_MINUTES is absent or invalid. */
 export const SYNC_INTERVAL_MINUTES = 15;
@@ -206,12 +215,13 @@ interface ClubRow {
   id: string;
   tag: string;
   name: string;
+  guild_id?: string | null;
 }
 
 interface RunRow {
   id: string;
-  status: string;
-  started_at: string;
+  status: 'running' | 'completed' | 'failed';
+  started_at: string | null;
 }
 
 interface IdRow {
@@ -576,6 +586,7 @@ function buildGlobalRoster(fetched: readonly FetchedClub[]): Map<string, RosterE
 
 function runPayload(
   existingId: string | undefined,
+  scope: string,
   periodStartIso: string,
   nowIso: string,
   clubIds: readonly string[],
@@ -583,7 +594,7 @@ function runPayload(
   affectedColumns: boolean,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
-    scope: SYNC_SCOPE,
+    scope,
     period_start: periodStartIso,
     status: 'running',
     started_at: nowIso,
@@ -615,6 +626,7 @@ async function upsertRun(
 
 async function acquireRun(
   db: SupabaseClient,
+  scope: string,
   periodStartIso: string,
   nowIso: string,
   nowMs: number,
@@ -624,7 +636,7 @@ async function acquireRun(
   const existingResult = await db
     .from('sync_runs')
     .select('id, status, started_at')
-    .eq('scope', SYNC_SCOPE)
+    .eq('scope', scope)
     .eq('period_start', periodStartIso)
     .maybeSingle();
   requireOk(existingResult.error, 'Read sync_runs');
@@ -637,7 +649,7 @@ async function acquireRun(
     };
   }
   if (existing?.status === 'running') {
-    const startedMs = Date.parse(existing.started_at);
+    const startedMs = existing.started_at ? Date.parse(existing.started_at) : Number.NaN;
     if (Number.isFinite(startedMs) && startedMs >= nowMs - STALE_RUN_MS) {
       return {
         kind: 'skip',
@@ -650,13 +662,13 @@ async function acquireRun(
   let affectedColumns = true;
   let result = await upsertRun(
     db,
-    runPayload(existing?.id, periodStartIso, nowIso, clubIds, clubTags, true),
+    runPayload(existing?.id, scope, periodStartIso, nowIso, clubIds, clubTags, true),
   );
   if (result.error !== null && result.error !== undefined && isUndefinedColumnError(result.error)) {
     affectedColumns = false;
     result = await upsertRun(
       db,
-      runPayload(existing?.id, periodStartIso, nowIso, clubIds, clubTags, false),
+      runPayload(existing?.id, scope, periodStartIso, nowIso, clubIds, clubTags, false),
     );
   }
   requireOk(result.error, 'Acquire sync run');
@@ -715,10 +727,14 @@ async function markFailed(
 // Database-level lock and atomic membership transitions
 // ---------------------------------------------------------------------------
 
-/** Claims the global sync lock. Only one process can hold it at a time. */
-async function acquireSyncLock(db: SupabaseClient, token: string): Promise<boolean> {
+/** Claims the sync lock for a scope. Only one process can hold it at a time. */
+async function acquireSyncLock(
+  db: SupabaseClient,
+  scope: string,
+  token: string,
+): Promise<boolean> {
   const result = await db.rpc('try_acquire_sync_lock', {
-    p_scope: SYNC_SCOPE,
+    p_scope: scope,
     p_token: token,
     p_ttl_seconds: SYNC_LOCK_TTL_SECONDS,
   });
@@ -726,13 +742,17 @@ async function acquireSyncLock(db: SupabaseClient, token: string): Promise<boole
   return result.data === token;
 }
 
-async function releaseSyncLock(db: SupabaseClient, token: string): Promise<void> {
+async function releaseSyncLock(
+  db: SupabaseClient,
+  scope: string,
+  token: string,
+): Promise<void> {
   const result = await db.rpc('release_sync_lock', {
-    p_scope: SYNC_SCOPE,
+    p_scope: scope,
     p_token: token,
   });
   if (result.error !== null && result.error !== undefined) {
-    log.warn('Could not release sync lock', { reason: sanitizeError(result.error) });
+    log.warn('Could not release sync lock', { reason: sanitizeError(result.error), scope });
   }
 }
 
@@ -872,10 +892,15 @@ async function readOpenMembership(
   return (result.data ?? undefined) as OpenMembershipRow | undefined;
 }
 
-async function readAllOpenMemberships(db: SupabaseClient): Promise<OpenMembershipRow[]> {
+async function readOpenMembershipsForClubs(
+  db: SupabaseClient,
+  clubIds: readonly string[],
+): Promise<OpenMembershipRow[]> {
+  if (clubIds.length === 0) return [];
   const result = await db
     .from('club_memberships')
     .select('id, club_id, player_id, role')
+    .in('club_id', [...clubIds])
     .is('valid_to', null);
   requireOk(result.error, 'Read open memberships');
   return (result.data ?? []) as OpenMembershipRow[];
@@ -1012,11 +1037,74 @@ async function sendNotifications(
 // Entry point
 // ---------------------------------------------------------------------------
 
-export async function runSync(options?: {
+export interface RunSyncOptions {
   now?: Date;
   notifier?: SyncNotifier;
   client?: BrawlStarsClient;
-}): Promise<SyncResult> {
+  guildId?: string;
+}
+
+async function listGuildIdsWithRegisteredClubs(db: SupabaseClient): Promise<string[]> {
+  const result = await db.from('clubs').select('guild_id');
+  requireOk(result.error, 'List guilds with registered clubs');
+  const ids = new Set<string>();
+  for (const row of (result.data ?? []) as Array<{ guild_id?: string | null }>) {
+    const id = typeof row.guild_id === 'string' ? row.guild_id.trim() : '';
+    if (id.length > 0) ids.add(id);
+  }
+  return [...ids].sort();
+}
+
+/**
+ * Run sync separately for every guild that currently has registered clubs.
+ * Returns one result per guild run; an overall failure is returned if guild
+ * discovery fails.
+ */
+export async function runSyncForAllGuilds(
+  options: Omit<RunSyncOptions, 'guildId'> = {},
+): Promise<SyncResult[]> {
+  let db: SupabaseClient;
+  try {
+    db = createTrustedClient();
+  } catch (error) {
+    return [
+      {
+        syncRunId: '',
+        status: 'failed',
+        ...emptyCounters(),
+        error: sanitizeError(error),
+        affectedClubIds: [],
+      },
+    ];
+  }
+
+  let guildIds: string[];
+  try {
+    guildIds = await listGuildIdsWithRegisteredClubs(db);
+  } catch (error) {
+    return [
+      {
+        syncRunId: '',
+        status: 'failed',
+        ...emptyCounters(),
+        error: sanitizeError(error),
+        affectedClubIds: [],
+      },
+    ];
+  }
+
+  if (guildIds.length === 0) {
+    return [skippedResult('', 'No clubs registered')];
+  }
+
+  const results: SyncResult[] = [];
+  for (const guildId of guildIds) {
+    results.push(await runSync({ ...options, guildId }));
+  }
+  return results;
+}
+
+export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult> {
   let now: Date;
   let nowIso: string;
   let db: SupabaseClient;
@@ -1045,16 +1133,26 @@ export async function runSync(options?: {
   const notifierTimeoutMs = readPositiveEnv('SYNC_NOTIFIER_TIMEOUT_MS', DEFAULT_NOTIFIER_TIMEOUT_MS);
   const collectBattleLogsEnabled = readBooleanEnv('SYNC_COLLECT_BATTLE_LOGS', true);
 
+  const requestedGuildId = options.guildId?.trim();
+  const scope =
+    requestedGuildId !== undefined && requestedGuildId.length > 0
+      ? guildSyncScope(requestedGuildId)
+      : SYNC_SCOPE;
+
   let clubRows: ClubRow[];
   try {
-    const clubsResult = await db.from('clubs').select('id, tag, name').order('tag', {
+    let clubsQuery = db.from('clubs').select('id, tag, name, guild_id').order('tag', {
       ascending: true,
     });
+    if (requestedGuildId !== undefined && requestedGuildId.length > 0) {
+      clubsQuery = clubsQuery.eq('guild_id', requestedGuildId);
+    }
+    const clubsResult = await clubsQuery;
     requireOk(clubsResult.error, 'Load registered clubs');
     clubRows = (clubsResult.data ?? []) as ClubRow[];
   } catch (error) {
     const message = sanitizeError(error);
-    log.error('Sync failed before acquiring a run', { message });
+    log.error('Sync failed before acquiring a run', { message, scope });
     return {
       syncRunId: '',
       status: 'failed',
@@ -1065,10 +1163,16 @@ export async function runSync(options?: {
   }
 
   if (clubRows.length === 0) {
-    return skippedResult('', 'No clubs registered');
+    return skippedResult(
+      '',
+      requestedGuildId !== undefined && requestedGuildId.length > 0
+        ? 'No clubs registered for this server'
+        : 'No clubs registered',
+    );
   }
 
   const clubIds = clubRows.map((club) => club.id);
+  const clubIdSet = new Set(clubIds);
   const clubTags = clubRows.map((club) => club.tag);
   const clubNames = new Map(clubRows.map((club) => [club.id, club.name]));
 
@@ -1080,10 +1184,10 @@ export async function runSync(options?: {
 
   try {
     try {
-      lockHeld = await acquireSyncLock(db, lockToken);
+      lockHeld = await acquireSyncLock(db, scope, lockToken);
     } catch (error) {
       const message = sanitizeError(error);
-      log.error('Sync lock acquisition failed', { message });
+      log.error('Sync lock acquisition failed', { message, scope });
       return {
         syncRunId: '',
         status: 'failed',
@@ -1096,7 +1200,7 @@ export async function runSync(options?: {
       return skippedResult('', 'Another sync process holds the database lock');
     }
 
-    const acquired = await acquireRun(db, periodStartIso, nowIso, nowMs, clubIds, clubTags);
+    const acquired = await acquireRun(db, scope, periodStartIso, nowIso, nowMs, clubIds, clubTags);
     if (acquired.kind === 'skip') {
       return acquired.result;
     }
@@ -1126,12 +1230,17 @@ export async function runSync(options?: {
     }
     const presentPlayerIds = new Set(states.map((state) => state.playerId));
 
-    // 3. Joins and transfers, computed against the global API roster. Each
+    // 3. Joins and transfers, computed against the synced guild roster. Each
     //    event + membership change is committed atomically by Postgres.
     for (const state of states) {
       const open = await readOpenMembership(db, state.playerId);
       if (open !== undefined && open.club_id === state.clubId) {
         continue;
+      }
+      if (open !== undefined && !clubIdSet.has(open.club_id)) {
+        throw new Error(
+          `Player ${state.tag} has an open membership in a club outside this sync scope; refusing to mutate cross-guild membership state`,
+        );
       }
       const eventType: EventType = open === undefined ? 'join' : 'transfer';
       await applyMembershipTransition(db, {
@@ -1148,8 +1257,8 @@ export async function runSync(options?: {
       counters.membershipEvents += 1;
     }
 
-    // 4. Leaves for open memberships absent from the whole API roster.
-    const openMemberships = await readAllOpenMemberships(db);
+    // 4. Leaves for open memberships in this scope absent from the synced roster.
+    const openMemberships = await readOpenMembershipsForClubs(db, clubIds);
     const leavingPlayers = new Map<string, { tag: string; name: string }>();
     for (const open of openMemberships) {
       if (presentPlayerIds.has(open.player_id)) {
@@ -1284,7 +1393,7 @@ export async function runSync(options?: {
     };
   } finally {
     if (lockHeld) {
-      await releaseSyncLock(db, lockToken);
+      await releaseSyncLock(db, scope, lockToken);
     }
   }
 }

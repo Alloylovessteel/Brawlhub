@@ -87,7 +87,7 @@ export async function handleClub(interaction: ChatInputCommandInteraction): Prom
 /** Suggest registered club names and tags for the `tag` option. */
 export async function handleClubAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   try {
-    const clubs = await getRegisteredClubs();
+    const clubs = await getRegisteredClubs(interaction.guildId);
     const query = interaction.options.getFocused();
     const choices = filterRegisteredClubs(clubs, query).map((club) => ({
       name: `${club.name} (#${club.tag})`,

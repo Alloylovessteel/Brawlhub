@@ -528,33 +528,54 @@ async function fetchLiveClub(
   return result;
 }
 
-async function readClubs(db: DatabaseClient): Promise<ClubRecord[]> {
-  const { data, error } = await db
-    .from('clubs')
-    .select(CLUB_COLUMNS)
-    .order('name', { ascending: true });
+async function readClubs(
+  db: DatabaseClient,
+  guildId?: string | null,
+): Promise<ClubRecord[]> {
+  let query = db.from('clubs').select(CLUB_COLUMNS).order('name', { ascending: true });
+  if (guildId !== undefined && guildId !== null && guildId.trim() !== '') {
+    query = query.eq('guild_id', guildId.trim());
+  }
+  const { data, error } = await query;
   requireOk(error, 'Read registered clubs');
   return (data ?? [])
     .map((row: unknown) => parseClubRow(row))
     .filter((row): row is ClubRecord => row !== null);
 }
 
-async function findClubByTag(tag: string, db: DatabaseClient): Promise<ClubRecord | null> {
-  const { data, error } = await db
-    .from('clubs')
-    .select(CLUB_COLUMNS)
-    .eq('tag', tag)
-    .maybeSingle();
-  requireOk(error, 'Read registered club');
+async function findClubByTag(
+  tag: string,
+  db: DatabaseClient,
+  guildId?: string | null,
+): Promise<ClubRecord | null> {
+  let query = db.from('clubs').select(CLUB_COLUMNS).eq('tag', tag);
+  if (guildId !== undefined && guildId !== null && guildId.trim() !== '') {
+    query = query.eq('guild_id', guildId.trim());
+  }
+  const { data, error } = guildId ? await query.maybeSingle() : await query.limit(2);
+  if (error !== null && error !== undefined) {
+    requireOk(error, 'Read registered club');
+  }
+  if (!guildId) {
+    const rows = Array.isArray(data) ? data : data ? [data] : [];
+    if (rows.length > 1) {
+      throw new Error(`Club tag ${tag} is registered in multiple servers; guild context is required`);
+    }
+    return parseClubRow(rows[0] ?? null);
+  }
   return parseClubRow(data);
 }
 
-async function findClubById(id: string, db: DatabaseClient): Promise<ClubRecord | null> {
-  const { data, error } = await db
-    .from('clubs')
-    .select(CLUB_COLUMNS)
-    .eq('id', id)
-    .maybeSingle();
+async function findClubById(
+  id: string,
+  db: DatabaseClient,
+  guildId?: string | null,
+): Promise<ClubRecord | null> {
+  let query = db.from('clubs').select(CLUB_COLUMNS).eq('id', id);
+  if (guildId !== undefined && guildId !== null && guildId.trim() !== '') {
+    query = query.eq('guild_id', guildId.trim());
+  }
+  const { data, error } = await query.maybeSingle();
   requireOk(error, 'Read default club');
   return parseClubRow(data);
 }
@@ -605,7 +626,7 @@ async function resolveClub(input: {
   readonly db: DatabaseClient;
 }): Promise<ClubRecord | null> {
   if (input.tag !== undefined) {
-    return findClubByTag(input.tag, input.db);
+    return findClubByTag(input.tag, input.db, input.guildId);
   }
 
   if (input.guildId !== undefined && input.guildId !== null) {
@@ -617,21 +638,29 @@ async function resolveClub(input: {
     requireOk(error, 'Read guild settings');
     const primaryClubId = asString(record(data)?.['primary_club_id']);
     if (primaryClubId !== null) {
-      const configured = await findClubById(primaryClubId, input.db);
+      const configured = await findClubById(primaryClubId, input.db, input.guildId);
       if (configured !== null) return configured;
     }
   }
 
-  // With no guild default, an unambiguous single registered club is the default.
-  const clubs = await readClubs(input.db);
+  // With no guild default, an unambiguous single registered club in this scope
+  // is the default.
+  const clubs = await readClubs(input.db, input.guildId);
   return clubs.length === 1 ? clubs[0] ?? null : null;
 }
 
 /** List registered clubs without contacting the Brawl Stars API. */
 export async function getRegisteredClubs(
-  db: DatabaseClient = createTrustedClient(),
+  guildIdOrDb?: string | null | DatabaseClient,
+  dbArg?: DatabaseClient,
 ): Promise<ClubRecord[]> {
-  return readClubs(db);
+  const isDb =
+    typeof guildIdOrDb === 'object' &&
+    guildIdOrDb !== null &&
+    typeof (guildIdOrDb as { from?: unknown }).from === 'function';
+  const db = isDb ? (guildIdOrDb as DatabaseClient) : (dbArg ?? createTrustedClient());
+  const guildId = isDb ? null : (guildIdOrDb as string | null | undefined);
+  return readClubs(db, guildId);
 }
 
 export interface ClubServiceOptions {

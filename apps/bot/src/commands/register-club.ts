@@ -75,9 +75,17 @@ async function replyRegistrationError(
 
 export async function handleRegisterClub(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
+    if (interaction.guildId === null) {
+      await interaction.reply({
+        content: 'Clubs can only be registered from within a Discord server.',
+        ephemeral: true,
+      });
+      return;
+    }
+
     const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write');
     const rawTag = interaction.options.getString('tag', true);
-    const preview = await previewClubRegistration(rawTag);
+    const preview = await previewClubRegistration(rawTag, interaction.guildId);
 
     const nonce = pendingRegistrations.create(interaction.user.id, {
       actor,
@@ -109,7 +117,7 @@ export async function handleRegisterClubComponent(interaction: ButtonInteraction
     }
 
     await requireGlobalPermission(interaction.user.id, 'clubs:write');
-    const result = await registerClubs([pending.tag]);
+    const result = await registerClubs([pending.tag], pending.preview.guildId);
     if (result.registered !== 1) {
       const reason = result.rejected[0]?.reason ?? API_FAILURE_MESSAGE;
       const duplicate = reason.toLowerCase().includes('already registered');

@@ -44,7 +44,7 @@ export async function handleRemoveClubAutocomplete(interaction: AutocompleteInte
   }
   try {
     await requireGlobalPermission(interaction.user.id, 'clubs:write');
-    const clubs = await getRegisteredClubs();
+    const clubs = await getRegisteredClubs(interaction.guildId);
     const choices = filterRegisteredClubs(clubs, String(focused.value)).map((club) => ({
       name: `${club.name} (#${club.tag})`,
       value: club.id,

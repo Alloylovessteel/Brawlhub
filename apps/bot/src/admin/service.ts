@@ -5,7 +5,7 @@ import {
   hasPermission,
   type Permission,
 } from '@brawlhub/shared';
-import { SYNC_SCOPE, type SyncResult } from '@brawlhub/sync';
+import { type SyncResult } from '@brawlhub/sync';
 import { asNumber, asString, record, requireOk } from '../clubs/service';
 import { safeErrorMessage } from '../discord/errors';
 import { resolveStaffActor } from '../staff/service';
@@ -337,7 +337,6 @@ export async function loadSyncStatus(
   const runResult = await db
     .from('sync_runs')
     .select(SYNC_RUN_COLUMNS)
-    .eq('scope', SYNC_SCOPE)
     .order('period_start', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -346,22 +345,26 @@ export async function loadSyncStatus(
   const lockResult = await db
     .from('sync_locks')
     .select('scope, locked_by, locked_at, locked_until')
-    .eq('scope', SYNC_SCOPE)
-    .maybeSingle();
-  requireOk(lockResult.error, 'Read sync lock');
-  const lockRow = record(lockResult.data);
-
-  const lockedBy = asString(lockRow?.['locked_by']);
-  const lockedAt = asString(lockRow?.['locked_at']);
-  const lockedUntil = asString(lockRow?.['locked_until']);
-  const lockedUntilMs = parseTimestamp(lockedUntil);
+    .order('locked_at', { ascending: false, nullsFirst: false })
+    .limit(20);
+  requireOk(lockResult.error, 'Read sync locks');
+  const lockRows = (lockResult.data ?? []) as Array<Record<string, unknown>>;
   const nowMs = Date.now();
-  const active =
-    lockedBy !== null &&
-    (lockedUntilMs === null || lockedUntilMs > nowMs);
+  const activeLockRow =
+    lockRows.find((row) => {
+      const lockedBy = asString(row['locked_by']);
+      const lockedUntilMs = parseTimestamp(asString(row['locked_until']));
+      return lockedBy !== null && (lockedUntilMs === null || lockedUntilMs > nowMs);
+    }) ?? lockRows[0] ?? null;
+
+  const lockedBy = asString(activeLockRow?.['locked_by']);
+  const lockedAt = asString(activeLockRow?.['locked_at']);
+  const lockedUntil = asString(activeLockRow?.['locked_until']);
+  const lockedUntilMs = parseTimestamp(lockedUntil);
+  const active = lockedBy !== null && (lockedUntilMs === null || lockedUntilMs > nowMs);
 
   const lock: SyncLockSummary = {
-    scope: asString(lockRow?.['scope']) ?? SYNC_SCOPE,
+    scope: asString(activeLockRow?.['scope']) ?? 'all',
     lockedBy,
     lockedAt,
     lockedUntil,

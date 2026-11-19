@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import { runSync } from '@brawlhub/sync';
+import { runSyncForAllGuilds } from '@brawlhub/sync';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -39,8 +39,9 @@ async function handleSyncRequest(request: Request): Promise<NextResponse> {
   }
 
   try {
-    const result = await runSync();
-    return json(result, result.status === 'failed' ? 500 : 200);
+    const results = await runSyncForAllGuilds();
+    const failed = results.some((entry) => entry.status === 'failed');
+    return json({ results }, failed ? 207 : 200);
   } catch {
     // Never include the secret, request headers, or raw error details in the response.
     return json({ error: 'Sync failed' }, 500);

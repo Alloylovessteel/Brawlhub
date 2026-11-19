@@ -41,7 +41,7 @@ const INITIAL_SYNC_DELAY_MS = 5_000;
 let initialSyncTimer: ReturnType<typeof setTimeout> | undefined;
 let syncTimer: ReturnType<typeof setInterval> | undefined;
 
-/** Run one sync, skipping it if a previous run is still in progress. */
+/** Run scheduled sync for all guilds, skipping if a previous batch is running. */
 async function executeSync(): Promise<void> {
   try {
     const notifier: SyncNotifier = createDiscordNotifier();
@@ -50,17 +50,18 @@ async function executeSync(): Promise<void> {
       logger.warn('Scheduled sync skipped: a sync run is already in progress');
       return;
     }
-    const result = outcome.result;
-    logger.info('Scheduled sync finished', {
-      syncRunId: result.syncRunId,
-      status: result.status,
-      clubsProcessed: result.clubsProcessed,
-      playersUpserted: result.playersUpserted,
-      snapshotsWritten: result.snapshotsWritten,
-      membershipEvents: result.membershipEvents,
-      notificationsSent: result.notificationsSent,
-      ...(result.error === undefined ? {} : { error: result.error }),
-    });
+    for (const result of outcome.results) {
+      logger.info('Scheduled sync finished', {
+        syncRunId: result.syncRunId,
+        status: result.status,
+        clubsProcessed: result.clubsProcessed,
+        playersUpserted: result.playersUpserted,
+        snapshotsWritten: result.snapshotsWritten,
+        membershipEvents: result.membershipEvents,
+        notificationsSent: result.notificationsSent,
+        ...(result.error === undefined ? {} : { error: result.error }),
+      });
+    }
   } catch (error: unknown) {
     logger.error('Scheduled sync failed', { error: safeError(error, token) });
   }

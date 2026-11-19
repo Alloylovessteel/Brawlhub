@@ -75,7 +75,7 @@ export async function respondWithClubChoices(
       return;
     }
     const query = typeof focused.value === 'string' ? focused.value : '';
-    const clubs = await getRegisteredClubs();
+    const clubs = await getRegisteredClubs(interaction.guildId);
     const choices = filterRegisteredClubs(clubs, query).map((club) => ({
       name: `${club.name} (#${club.tag})`,
       value: club.tag,

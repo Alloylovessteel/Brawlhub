@@ -18,6 +18,7 @@ export interface ClubRegistrationPreview {
   readonly description: string | null;
   readonly trophies: number;
   readonly memberCount: number | null;
+  readonly guildId: string;
 }
 
 export interface RegistrationPreviewOptions {
@@ -39,167 +40,175 @@ function readPositiveTimeout(): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : REGISTRATION_API_TIMEOUT_MS;
 }
 
-/**
- * Validates the API response without inventing fields the official client may
- * strip. badgeId/memberCount are read defensively from the raw payload.
- */
-function profileFromApi(raw: unknown, expectedTag: string): {
-  name: string;
-  description: string | null;
-  badgeId: number | null;
-  trophies: number;
-  requiredTrophies: number | null;
-  memberCount: number | null;
-} {
-  const parsed = clubSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error('Official API returned malformed club data');
+function normalizeGuildId(guildId: string): string {
+  const value = guildId.trim();
+  if (value.length === 0) {
+    throw new Error('A Discord guild id is required to register clubs');
   }
-  const club: Club = parsed.data;
-  const tagCheck = brawlTagSchema.safeParse(club.tag);
-  if (!tagCheck.success || tagCheck.data !== expectedTag) {
-    throw new Error(`Official API returned a mismatched club tag (${club.tag})`);
+  return value;
+}
+
+async function loadExistingClub(
+  db: SupabaseClient,
+  guildId: string,
+  tag: string,
+): Promise<ClubRow | null> {
+  const { data, error } = await db
+    .from('clubs')
+    .select('id, tag, name')
+    .eq('guild_id', guildId)
+    .eq('tag', tag)
+    .maybeSingle();
+
+  if (error !== null) {
+    throw new Error(sanitizeError(error));
   }
 
-  const rawRecord = raw as unknown as Record<string, unknown>;
-  const badgeId = typeof rawRecord['badgeId'] === 'number' ? rawRecord['badgeId'] : null;
-  const apiMemberCount =
-    typeof rawRecord['memberCount'] === 'number' ? rawRecord['memberCount'] : null;
+  return (data ?? null) as ClubRow | null;
+}
+
+/**
+ * Validate a club tag against the official Brawl Stars API without writing.
+ * The result is safe to show to an administrator during the confirmation step.
+ */
+export async function previewClubRegistration(
+  input: string,
+  guildId: string,
+  options: RegistrationPreviewOptions = {},
+): Promise<ClubRegistrationPreview> {
+  const parsed = brawlTagSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new Error('Invalid club tag');
+  }
+  const tag = parsed.data;
+  const normalizedGuildId = normalizeGuildId(guildId);
+
+  const db = createTrustedClient();
+  const existing = await loadExistingClub(db, normalizedGuildId, tag);
+  if (existing !== null) {
+    throw new Error(`Club ${tag} is already registered for this server`);
+  }
+
+  const client = options.client ?? createBrawlStarsClient();
+  const timeoutMs = readPositiveTimeout();
+
+  let club: Club;
+  try {
+    club = await withTimeout(client.getClub(tag), timeoutMs, 'Brawl Stars club lookup');
+  } catch (error) {
+    throw new Error(sanitizeError(error));
+  }
+
+  const validated = clubSchema.safeParse(club);
+  if (!validated.success) {
+    throw new Error('Official club response could not be validated');
+  }
 
   return {
-    name: club.name,
-    description: club.description ?? null,
-    badgeId,
-    trophies: club.trophies,
-    requiredTrophies: club.requiredTrophies ?? null,
-    memberCount: apiMemberCount ?? (club.members?.length ?? null),
+    tag,
+    name: validated.data.name,
+    description: validated.data.description ?? null,
+    trophies: validated.data.trophies,
+    memberCount: Array.isArray(validated.data.members) ? validated.data.members.length : null,
+    guildId: normalizedGuildId,
   };
 }
 
-async function registerClubsWith(
-  db: SupabaseClient,
-  client: BrawlStarsClient,
-  tags: readonly string[],
+/**
+ * Register a club that has already been validated against the official API.
+ * This is a trusted, write-once operation used after explicit confirmation.
+ */
+export async function registerClubFromPreview(
+  preview: ClubRegistrationPreview,
 ): Promise<RegistrationResult> {
+  const db = createTrustedClient();
+  const guildId = normalizeGuildId(preview.guildId);
+
+  const { error } = await db.from('clubs').insert({
+    guild_id: guildId,
+    tag: preview.tag,
+    name: preview.name,
+    description: preview.description,
+    trophies: preview.trophies,
+    member_count: preview.memberCount,
+  });
+
+  if (error !== null) {
+    if (isUniqueViolation(error)) {
+      return {
+        registered: 0,
+        rejected: [{ tag: preview.tag, reason: 'already registered for this server' }],
+      };
+    }
+    return { registered: 0, rejected: [{ tag: preview.tag, reason: sanitizeError(error) }] };
+  }
+
+  return { registered: 1, rejected: [] };
+}
+
+/**
+ * Register one or more club tags by validating each against the official API.
+ * The number of distinct tags per registration is bounded by the supported range.
+ */
+export async function registerClubs(
+  inputs: readonly string[],
+  guildId: string,
+): Promise<RegistrationResult> {
+  if (inputs.length === 0) {
+    return { registered: 0, rejected: [{ tag: '', reason: 'no club tags provided' }] };
+  }
+
+  let normalizedGuildId: string;
+  try {
+    normalizedGuildId = normalizeGuildId(guildId);
+  } catch (error) {
+    return { registered: 0, rejected: [{ tag: '', reason: sanitizeError(error) }] };
+  }
+
+  const normalized: string[] = [];
   const rejected: Array<{ tag: string; reason: string }> = [];
   const seen = new Set<string>();
-  const normalized: string[] = [];
 
-  // 1. Normalise and reject invalid / duplicated input tags up front.
-  for (const rawTag of tags) {
-    const parsed = brawlTagSchema.safeParse(rawTag);
+  for (const raw of inputs) {
+    const parsed = brawlTagSchema.safeParse(raw);
     if (!parsed.success) {
-      rejected.push({ tag: rawTag, reason: 'Invalid Brawl Stars tag' });
+      rejected.push({ tag: raw, reason: 'invalid club tag' });
       continue;
     }
-    const tag = parsed.data;
-    if (seen.has(tag)) {
-      rejected.push({ tag, reason: 'Duplicate tag in input' });
+    if (seen.has(parsed.data)) {
+      rejected.push({ tag: parsed.data, reason: 'duplicate tag in input' });
       continue;
     }
-    seen.add(tag);
-    normalized.push(tag);
+    seen.add(parsed.data);
+    normalized.push(parsed.data);
   }
 
-  // 2. Pre-check against existing clubs (the UNIQUE constraint handles races).
-  const clubsResult = await db.from('clubs').select('id, tag');
-  if (clubsResult.error !== null && clubsResult.error !== undefined) {
-    throw new Error(`Unable to read registered clubs: ${sanitizeError(clubsResult.error)}`);
+  if (normalized.length < SUPPORTED_CLUB_RANGE.min) {
+    rejected.push({
+      tag: '',
+      reason: `at least ${SUPPORTED_CLUB_RANGE.min} valid club tag is required`,
+    });
+    return { registered: 0, rejected };
   }
-  const existingRows = (clubsResult.data ?? []) as ClubRow[];
-  const existingTags = new Set(existingRows.map((row) => row.tag));
-  const existingCount = existingRows.length;
-
-  const toFetch: string[] = [];
-  for (const tag of normalized) {
-    if (existingTags.has(tag)) {
-      rejected.push({ tag, reason: 'Club is already registered' });
-    } else {
-      toFetch.push(tag);
-    }
+  if (normalized.length > SUPPORTED_CLUB_RANGE.max) {
+    rejected.push({
+      tag: '',
+      reason: `no more than ${SUPPORTED_CLUB_RANGE.max} clubs can be registered at once`,
+    });
+    return { registered: 0, rejected };
   }
 
-  // 3. Enforce the supported club range without fabricating placeholder clubs.
-  if (existingCount + toFetch.length > SUPPORTED_CLUB_RANGE.max) {
-    for (const tag of toFetch) {
-      rejected.push({
-        tag,
-        reason: `Registering would exceed the maximum of ${SUPPORTED_CLUB_RANGE.max} supported clubs (${existingCount} already registered)`,
-      });
-    }
-    toFetch.length = 0;
-  }
-
-  // 4. Fetch the official profile and insert only complete data.
-  const timeoutMs = readPositiveTimeout();
   let registered = 0;
-  for (const tag of toFetch) {
+  for (const tag of normalized) {
     try {
-      const rawClub = await withTimeout(
-        client.getClub(tag),
-        timeoutMs,
-        `getClub(${tag})`,
-      );
-      const profile = profileFromApi(rawClub, tag);
-      const insert = await db.from('clubs').insert({
-        tag,
-        name: profile.name,
-        description: profile.description,
-        badge_id: profile.badgeId,
-        trophies: profile.trophies,
-        required_trophies: profile.requiredTrophies,
-        member_count: profile.memberCount,
-      });
-      if (insert.error !== null && insert.error !== undefined) {
-        if (isUniqueViolation(insert.error)) {
-          rejected.push({ tag, reason: 'Club is already registered' });
-          continue;
-        }
-        throw new Error(sanitizeError(insert.error));
-      }
-      registered += 1;
+      const preview = await previewClubRegistration(tag, normalizedGuildId);
+      const result = await registerClubFromPreview(preview);
+      registered += result.registered;
+      rejected.push(...result.rejected);
     } catch (error) {
-      // Never store partial or fabricated club data when the API fails.
       rejected.push({ tag, reason: sanitizeError(error) });
     }
   }
 
   return { registered, rejected };
-}
-
-/**
- * Fetch and validate a club from the official API without writing anything.
- * This is used by confirmation flows so an administrator sees real club data
- * before authorising registration.
- */
-export async function previewClubRegistration(
-  rawTag: string,
-  options: RegistrationPreviewOptions = {},
-): Promise<ClubRegistrationPreview> {
-  const parsed = brawlTagSchema.safeParse(rawTag);
-  if (!parsed.success) {
-    throw new Error('Invalid Brawl Stars tag');
-  }
-  const tag = parsed.data;
-  const client = options.client ?? createBrawlStarsClient();
-  const rawClub = await withTimeout(
-    client.getClub(tag),
-    readPositiveTimeout(),
-    `getClub(${tag})`,
-  );
-  const profile = profileFromApi(rawClub, tag);
-  return {
-    tag,
-    name: profile.name,
-    description: profile.description,
-    trophies: profile.trophies,
-    memberCount: profile.memberCount,
-  };
-}
-
-/** Registers clubs supplied by their (optionally '#'-prefixed) tags. */
-export async function registerClubs(tags: readonly string[]): Promise<RegistrationResult> {
-  const db = createTrustedClient();
-  const client = createBrawlStarsClient();
-  return registerClubsWith(db, client, tags);
 }
