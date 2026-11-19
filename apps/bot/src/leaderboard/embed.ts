@@ -125,9 +125,9 @@ export function buildClubLeaderboardPageEmbed(
   config: LeaderboardEmbedConfig,
 ): EmbedBuilder {
   const embed = baseEmbed(
-    'Global Club Leaderboard',
+    'Registered Club Leaderboard',
     withWarning(
-      'Ranked by total trophies from the latest valid completed synchronisation.',
+      'Ranked by total trophies from the latest valid completed synchronisation among clubs registered in this server.',
       view.warning,
     ),
     view,
@@ -172,8 +172,8 @@ export function buildPlayerLeaderboardPageEmbed(
   config: LeaderboardEmbedConfig,
 ): EmbedBuilder {
   const embed = baseEmbed(
-    'Global Player Leaderboard — Current Trophies',
-    withWarning('Ranked by stored current trophies across tracked players.', view.warning),
+    'Tracked Player Leaderboard — Current Trophies',
+    withWarning('Ranked by stored current trophies across players tracked in this server.', view.warning),
     view,
     page,
     'Players',
@@ -215,9 +215,9 @@ export function buildTrophyLeaderboardPageEmbed(
   config: LeaderboardEmbedConfig,
 ): EmbedBuilder {
   const embed = baseEmbed(
-    'Global Player Leaderboard — Recorded Personal Bests',
+    'Tracked Player Leaderboard — Recorded Personal Bests',
     withWarning(
-      'Ranked by recorded personal-best trophies. Current trophies are shown separately and do not affect the ranking.',
+      'Ranked by recorded personal-best trophies among players tracked in this server. Current trophies are shown separately and do not affect the ranking.',
       view.warning,
     ),
     view,
@@ -261,9 +261,9 @@ export function buildProgressionLeaderboardPageEmbed(
   config: LeaderboardEmbedConfig,
 ): EmbedBuilder {
   const embed = baseEmbed(
-    `Global Progression Leaderboard — ${PERIOD_LABELS[view.period]}`,
+    `Tracked Player Progression Leaderboard — ${PERIOD_LABELS[view.period]}`,
     withWarning(
-      `Ranked by trophy gains between actual stored snapshots in ${PERIOD_LABELS[view.period].toLowerCase()}. Missing snapshots are never estimated.`,
+      `Ranked by trophy gains between actual stored snapshots in ${PERIOD_LABELS[view.period].toLowerCase()} among players tracked in this server. Missing snapshots are never estimated.`,
       view.warning,
     ),
     view,

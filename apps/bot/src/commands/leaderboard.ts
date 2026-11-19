@@ -55,7 +55,7 @@ const PERIOD_CHOICES = [
 
 export const leaderboardCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
-  .setDescription('Show global BrawlHub leaderboards')
+  .setDescription('Show BrawlHub leaderboards for this server')
   .addSubcommand((subcommand) =>
     subcommand
       .setName('clubs')

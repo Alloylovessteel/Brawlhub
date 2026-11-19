@@ -1,5 +1,5 @@
 import { EmbedBuilder } from 'discord.js';
-import type { BotConfig } from '../config';
+import type { BotConfig, BotEmojiConfig } from '../config';
 import { formatAbsoluteTime, formatSyncTime, fitEmbedToDiscordLimits } from '../clubs/embed';
 import type { HistoryPeriod } from '../clubs/types';
 import {
@@ -45,6 +45,20 @@ function truncate(value: string, maximum: number): string {
 
 function displayTag(tag: string): string {
   return `#${cleanTag(tag)}`;
+}
+
+/** Shared BrawlTools-style emoji fallbacks for player embeds. */
+function profileEmojis(config: { readonly emojis: Partial<BotEmojiConfig> }) {
+  return {
+    trophies: formatEmoji(config.emojis.trophies, 'trophies') || '🏆',
+    crown: formatEmoji(config.emojis.president, 'president') || '👑',
+    ranked: formatEmoji(config.emojis.ranked, 'ranked') || '🎖️',
+    rank: formatEmoji(config.emojis.rank, 'rank') || '🔹',
+    club: formatEmoji(config.emojis.members, 'members') || '👥',
+    online: formatEmoji(config.emojis.online, 'online') || '🟢',
+    wins: formatEmoji(config.emojis.wins, 'wins') || '✅',
+    sync: '🕒',
+  };
 }
 
 function formatDelta(value: number): string {
@@ -134,6 +148,7 @@ export function buildPlayerProfileEmbed(
   view: PlayerProfileView,
   config: PlayerEmbedConfig,
 ): EmbedBuilder {
+  const emoji = profileEmojis(config);
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
     .setTitle(truncate(`${playerName(view, config)} • ${displayTag(view.player.tag)}`, 256))
@@ -148,14 +163,18 @@ export function buildPlayerProfileEmbed(
   const trophies = formatInteger(view.player.trophies);
   if (trophies !== null) {
     embed.addFields({
-      name: `${formatEmoji(config.emojis.trophies, 'trophies')}Current Trophies`.trim(),
+      name: `${emoji.trophies} Current Trophies`,
       value: trophies,
       inline: true,
     });
   }
   const highest = formatInteger(view.player.highestTrophies);
   if (highest !== null) {
-    embed.addFields({ name: 'Highest Trophies', value: highest, inline: true });
+    embed.addFields({
+      name: `${emoji.crown} Highest Trophies`,
+      value: highest,
+      inline: true,
+    });
   }
   const expLevel = formatInteger(view.player.expLevel);
   if (expLevel !== null) {
@@ -193,7 +212,21 @@ export function buildPlayerProfileEmbed(
     view.player.isQualifiedFromChampionshipChallenge === true ? 'Championship Challenge: Qualified' : null,
   ].filter((line): line is string => line !== null);
   if (rankedLines.length > 0) {
-    embed.addFields({ name: 'Ranked', value: truncate(rankedLines.join('\n'), 1024) });
+    embed.addFields({
+      name: `${emoji.ranked} Ranked`,
+      value: truncate(rankedLines.join('\n'), 1024),
+    });
+  }
+
+  const lastBattle = formatSyncTime(view.player.lastBattleAt);
+  if (lastBattle !== null) {
+    embed.addFields({
+      name: `${emoji.online} Player Activity`,
+      value: truncate(
+        `Last battle: ${lastBattle}\nLive online status is not exposed by the Brawl Stars API`,
+        1024,
+      ),
+    });
   }
 
   const victoryLines = [
@@ -213,14 +246,14 @@ export function buildPlayerProfileEmbed(
   ].filter((line): line is string => line !== null);
   if (victoryLines.length > 0 || recordLines.length > 0) {
     embed.addFields({
-      name: 'Victories & Records',
+      name: `${emoji.wins} Victories & Records`,
       value: truncate([...victoryLines, ...recordLines].join('\n'), 1024),
     });
   }
 
   if (view.currentClub !== null) {
     const club = view.currentClub;
-    const lines = [`Club: ${clubName(club, config)} (#${cleanTag(club.tag)})`];
+    const lines = [`${emoji.club} Club: ${clubName(club, config)} (#${cleanTag(club.tag)})`];
     if (club.role !== null) lines.push(`Role: ${club.role}`);
     if (club.validFrom !== null) {
       lines.push(`Recorded from: ${formatAbsoluteTime(club.validFrom) ?? club.validFrom}`);
@@ -238,7 +271,7 @@ export function buildPlayerProfileEmbed(
   const latestSnapshot = formatAbsoluteTime(view.latestSnapshotAt);
   if (latestSync !== null || latestSnapshot !== null) {
     embed.addFields({
-      name: 'Latest Synchronisation',
+      name: `${emoji.sync} Latest Synchronisation`,
       value: truncate(
         [
           latestSync === null ? null : `Player sync: ${latestSync}`,
@@ -264,7 +297,7 @@ export function buildPlayerProfileEmbed(
           view.brawlers
             .map((brawler) => {
               const parts = [
-                `${formatInteger(brawler.trophies) ?? 0}🏆`,
+                `${emoji.trophies}${formatInteger(brawler.trophies) ?? 0}`,
                 brawler.power === null ? null : `P${brawler.power}`,
                 brawler.rank === null ? null : `R${brawler.rank}`,
                 brawler.prestigeLevel !== null && brawler.prestigeLevel > 0

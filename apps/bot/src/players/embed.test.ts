@@ -109,13 +109,20 @@ function json(embed: ReturnType<typeof buildPlayerProfileEmbed>) {
 
 describe('player embeds', () => {
   it('renders profile details with Brawlify and configured club links', () => {
-    const data = json(buildPlayerProfileEmbed(profile(), config));
+    const data = json(
+      buildPlayerProfileEmbed(
+        profile({ player: identity({ lastBattleAt: '2026-11-18T10:00:00.000Z' }) }),
+        config,
+      ),
+    );
     const text = JSON.stringify(data);
 
     expect(data.title).toContain('[Alpha](https://brawlify.com/player/2C0Y)');
-    expect(text).toContain('Current Trophies');
-    expect(text).toContain('Highest Trophies');
+    expect(text).toContain('🏆 Current Trophies');
+    expect(text).toContain('👑 Highest Trophies');
     expect(text).toContain('Experience');
+    expect(text).toContain('🟢 Player Activity');
+    expect(text).toContain('Live online status is not exposed by the Brawl Stars API');
     expect(text).toContain('[Alpha Club](https://example.test/clubs/8QCL)');
     expect(text).toContain('Top Brawlers (Live API)');
     expect(text).toContain('Snapshot:');
