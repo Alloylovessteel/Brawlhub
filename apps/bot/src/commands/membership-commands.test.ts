@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
     guildId: 'guild-1',
     callbackUrl: undefined,
     logLevel: undefined,
+    appUrl: undefined as string | undefined,
     emojis: {
       trophies: undefined,
       trophyRange: undefined,
@@ -35,6 +36,12 @@ const mocks = vi.hoisted(() => ({
     loadPlayerClubs: vi.fn(),
     searchPlayers: vi.fn(),
   },
+  verificationService: {
+    startVerification: vi.fn(),
+    checkVerification: vi.fn(),
+    cancelVerification: vi.fn(),
+    getVerificationChallenge: vi.fn(),
+  },
 }));
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
@@ -46,13 +53,14 @@ vi.mock('../players/service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../players/service')>();
   return { ...actual, ...mocks.playerService };
 });
+vi.mock('../verification', () => mocks.verificationService);
 
 import {
   handleMemberHistory,
   handleMemberHistoryAutocomplete,
   handleMemberHistoryComponent,
 } from './member-history';
-import { handleMemberVerify, MEMBER_VERIFY_UNAVAILABLE_MESSAGE } from './member-verify';
+import { handleMemberVerify } from './member-verify';
 import {
   decodeMemberSearchState,
   encodeMemberSearchState,
@@ -73,7 +81,7 @@ function chatInteraction(
   options: Record<string, string | null> = {},
   subcommand: string | null = null,
 ) {
-  return {
+  const interaction = {
     guildId: 'guild-1',
     user: { id: ACTOR_DISCORD_ID },
     options: {
@@ -82,9 +90,16 @@ function chatInteraction(
     },
     replied: false,
     deferred: false,
-    reply: vi.fn(async () => undefined),
+    reply: vi.fn(async () => {
+      interaction.replied = true;
+    }),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function buttonInteraction(customId: string) {
@@ -178,6 +193,8 @@ function searchView(count: number, mode: 'player' | 'discord' = 'player') {
 beforeEach(() => {
   for (const fn of Object.values(mocks.memberService)) fn.mockReset();
   for (const fn of Object.values(mocks.playerService)) fn.mockReset();
+  for (const fn of Object.values(mocks.verificationService)) fn.mockReset();
+  mocks.config.appUrl = undefined;
 });
 
 describe('/members command', () => {
@@ -237,13 +254,96 @@ describe('/members command', () => {
 });
 
 describe('/member-verify command', () => {
-  it('always reports that verification is unavailable without inferring ownership', async () => {
-    const interaction = chatInteraction();
+  it('starts icon verification, defers ephemerally, and gives instructions without inferring ownership', async () => {
+    mocks.verificationService.startVerification.mockResolvedValue({
+      ok: true,
+      challenge: {
+        discordUserId: ACTOR_DISCORD_ID,
+        profileId: 'profile-1',
+        playerTag: '2C0Y',
+        playerDbId: 'player-db-1',
+        playerName: 'Alpha',
+        originalIconId: 28000000,
+        createdAt: 1_732_000_000_000,
+        expiresAt: 1_732_000_600_000,
+      },
+      appUrl: undefined,
+    });
+    const interaction = chatInteraction({ tag: '#2c0y' }, 'start');
+
     await handleMemberVerify(interaction);
-    const reply = payload(interaction, 'reply');
-    expect(reply.content).toBe(MEMBER_VERIFY_UNAVAILABLE_MESSAGE);
-    expect(reply.ephemeral).toBe(true);
-    expect(reply.content).toContain('not infer player ownership');
+
+    expect((interaction.deferReply as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ ephemeral: true });
+    expect(mocks.verificationService.startVerification).toHaveBeenCalledWith({
+      discordUserId: ACTOR_DISCORD_ID,
+      tagInput: '#2c0y',
+      discordUsername: null,
+    });
+    const reply = payload(interaction, 'editReply');
+    expect(reply.content).toContain('Verification started for Alpha (#2C0Y)');
+    expect(reply.content).toContain('change your **player icon** to any **different** icon');
+    expect(reply.content).toContain('/member-verify check');
+    expect(reply.content).toContain('will not infer ownership');
+  });
+
+  it('reports when icon change is not detected yet', async () => {
+    mocks.verificationService.checkVerification.mockResolvedValue({
+      ok: true,
+      status: 'unchanged',
+      playerTag: '2C0Y',
+      playerName: 'Alpha',
+      originalIconId: 28000000,
+      currentIconId: 28000000,
+      expiresAt: 1_732_000_600_000,
+    });
+    const interaction = chatInteraction({}, 'check');
+
+    await handleMemberVerify(interaction);
+
+    const reply = payload(interaction, 'editReply');
+    expect(reply.content).toContain('Icon change not detected yet');
+    expect(reply.content).toContain('28000000');
+  });
+
+  it('confirms successful verification with API-observed icon change', async () => {
+    mocks.verificationService.checkVerification.mockResolvedValue({
+      ok: true,
+      status: 'verified',
+      playerTag: '2C0Y',
+      playerName: 'Alpha',
+      previousIconId: 28000000,
+      currentIconId: 28000001,
+    });
+    const interaction = chatInteraction({}, 'check');
+
+    await handleMemberVerify(interaction);
+
+    const reply = payload(interaction, 'editReply');
+    expect(reply.content).toContain('**Verified:** Alpha (#2C0Y)');
+    expect(reply.content).toContain('Icon changed from `28000000` to `28000001`');
+    expect(reply.content).toContain('official Brawl Stars API');
+  });
+
+  it('reports start failures clearly', async () => {
+    mocks.verificationService.startVerification.mockResolvedValue({
+      ok: false,
+      code: 'api-unavailable',
+      message: 'The official Brawl Stars API could not be reached right now. Please try again later.',
+    });
+    const interaction = chatInteraction({ tag: '2C0Y' }, 'start');
+
+    await handleMemberVerify(interaction);
+
+    expect(payload(interaction, 'editReply').content).toContain('could not be reached');
+  });
+
+  it('cancels an active challenge', async () => {
+    mocks.verificationService.cancelVerification.mockReturnValue({ ok: true, hadChallenge: true });
+    const interaction = chatInteraction({}, 'cancel');
+
+    await handleMemberVerify(interaction);
+
+    expect(payload(interaction, 'editReply').content).toContain('cancelled');
   });
 });
 
