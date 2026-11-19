@@ -25,6 +25,7 @@ export const clubCompareCommandData = new SlashCommandBuilder()
   );
 
 export async function handleClubCompare(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const firstTag = interaction.options.getString('first', true);
   const secondTag = interaction.options.getString('second', true);
   const result = await loadCompareView({
@@ -39,7 +40,7 @@ export async function handleClubCompare(interaction: ChatInputCommandInteraction
     return;
   }
 
-  await interaction.reply({
+  await interaction.editReply({
     embeds: [buildCompareEmbed(result.value, getBotConfig())],
     allowedMentions: { parse: [] },
   });

@@ -185,10 +185,20 @@ async function replyFailure(
   interaction: ChatInputCommandInteraction,
   failure: MemberSearchFailure,
 ): Promise<void> {
-  await interaction.reply({ content: failure.message, flags: 64 });
+  const payload = { content: failure.message, allowedMentions: { parse: [] } } as const;
+  if (interaction.deferred) {
+    await interaction.editReply({ ...payload, embeds: [], components: [] });
+    return;
+  }
+  if (interaction.replied) {
+    await interaction.followUp({ ...payload, flags: 64 });
+    return;
+  }
+  await interaction.reply({ ...payload, flags: 64 });
 }
 
 export async function handleMemberSearch(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const subcommand = interaction.options.getSubcommand(false);
   let state: SearchState | null = null;
   let inputRejected = false;
@@ -206,9 +216,11 @@ export async function handleMemberSearch(interaction: ChatInputCommandInteractio
   }
 
   if (state === null) {
-    await interaction.reply({
+    await interaction.editReply({
       content: inputRejected ? INVALID_SEARCH_MESSAGE : INVALID_SUBCOMMAND_MESSAGE,
-      flags: 64,
+      embeds: [],
+      components: [],
+      allowedMentions: { parse: [] },
     });
     return;
   }
@@ -218,7 +230,7 @@ export async function handleMemberSearch(interaction: ChatInputCommandInteractio
     await replyFailure(interaction, built.failure);
     return;
   }
-  await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
+  await interaction.editReply({ ...built.payload, content: null, allowedMentions: { parse: [] } });
 }
 
 export async function handleMemberSearchComponent(interaction: CommandComponentInteraction): Promise<void> {

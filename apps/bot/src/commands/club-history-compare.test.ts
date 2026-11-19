@@ -36,14 +36,19 @@ import { handleClubCompare, handleClubCompareAutocomplete } from './club-compare
 import { handleClubHistory, handleClubHistoryAutocomplete, handleClubHistoryComponent } from './club-history';
 
 function chatInteraction(options: Record<string, string | null> = {}) {
-  return {
+  const interaction = {
     guildId: 'guild-1',
     options: { getString: vi.fn((name: string) => options[name] ?? null) },
     replied: false,
     deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function buttonInteraction(customId: string) {
@@ -185,6 +190,7 @@ describe('/club-history command', () => {
 
     await handleClubHistory(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.service.loadHistoryView).toHaveBeenCalledWith(
       expect.objectContaining({
         tag: '#2c0y',
@@ -193,7 +199,7 @@ describe('/club-history command', () => {
         seasonStartIso: mocks.config.seasonStartIso,
       }),
     );
-    const payload = replyPayload(interaction, 'reply');
+    const payload = replyPayload(interaction, 'editReply');
     expect(payload.embeds[0].toJSON().footer?.text).toContain('Last 30 days');
     expect(payload.components?.[0].toJSON().components[0]?.custom_id).toBe(
       'club-history:page:2:30d|2C0Y',
@@ -225,9 +231,10 @@ describe('/club-history command', () => {
 
     await handleClubHistory(interaction);
 
-    const json = replyPayload(interaction, 'reply').embeds[0].toJSON();
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    const json = replyPayload(interaction, 'editReply').embeds[0].toJSON();
     expect(JSON.stringify(json)).toContain('No stored snapshots');
-    expect(replyPayload(interaction, 'reply').components).toEqual([]);
+    expect(replyPayload(interaction, 'editReply').components).toEqual([]);
   });
 
   it('autocompletes only the tag option', async () => {
@@ -253,6 +260,7 @@ describe('/club-compare command', () => {
 
     await handleClubCompare(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.service.loadCompareView).toHaveBeenCalledWith(
       expect.objectContaining({
         firstTag: '2C0Y',
@@ -260,7 +268,7 @@ describe('/club-compare command', () => {
         seasonStartIso: mocks.config.seasonStartIso,
       }),
     );
-    const json = replyPayload(interaction, 'reply').embeds[0].toJSON();
+    const json = replyPayload(interaction, 'editReply').embeds[0].toJSON();
     expect(json.description).toContain('same completed sync');
     expect(json.fields?.find((field: { name: string; value: string }) => field.name === 'Total Trophies')?.value).toContain(
       'Leader: Alpha (#2C0Y)',
@@ -273,7 +281,7 @@ describe('/club-compare command', () => {
 
     await handleClubCompare(interaction);
 
-    const json = replyPayload(interaction, 'reply').embeds[0].toJSON();
+    const json = replyPayload(interaction, 'editReply').embeds[0].toJSON();
     expect(json.description).toContain('different completed sync times');
   });
 
@@ -283,8 +291,9 @@ describe('/club-compare command', () => {
 
     await handleClubCompare(interaction);
 
-    expect((interaction.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ content: expect.stringContaining('two different'), flags: 64 }),
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect((interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ content: expect.stringContaining('two different') }),
     );
   });
 

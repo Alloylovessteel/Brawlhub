@@ -55,7 +55,16 @@ async function replyFailure(
   interaction: ChatInputCommandInteraction,
   failure: MemberLookupFailure,
 ): Promise<void> {
-  await interaction.reply({ content: failure.message, flags: 64 });
+  const payload = { content: failure.message, allowedMentions: { parse: [] } } as const;
+  if (interaction.deferred) {
+    await interaction.editReply({ ...payload, embeds: [], components: [] });
+    return;
+  }
+  if (interaction.replied) {
+    await interaction.followUp({ ...payload, flags: 64 });
+    return;
+  }
+  await interaction.reply({ ...payload, flags: 64 });
 }
 
 async function buildPage(
@@ -81,13 +90,14 @@ async function buildPage(
 }
 
 export async function handleMembers(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const tag = interaction.options.getString('tag', false) ?? undefined;
   const built = await buildPage(tag, interaction.guildId, 1);
   if (built.kind === 'failure') {
     await replyFailure(interaction, built.failure);
     return;
   }
-  await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
+  await interaction.editReply({ ...built.payload, content: null, allowedMentions: { parse: [] } });
 }
 
 export async function handleMembersComponent(interaction: CommandComponentInteraction): Promise<void> {

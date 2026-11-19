@@ -37,33 +37,36 @@ export async function replyPlayerLookupFailure(
   interaction: ChatInputCommandInteraction,
   failure: PlayerLookupFailure,
 ): Promise<boolean> {
+  let content: string | null = null;
   switch (failure.kind) {
     case 'invalid-tag':
-      await interaction.reply({ content: INVALID_PLAYER_TAG_MESSAGE, flags: 64 });
-      return true;
+      content = INVALID_PLAYER_TAG_MESSAGE;
+      break;
     case 'not-found':
-      await interaction.reply({
-        content: `Player #${failure.tag} was not found in BrawlHub data or the official API.`,
-        flags: 64,
-      });
-      return true;
+      content = `Player #${failure.tag} was not found in BrawlHub data or the official API.`;
+      break;
     case 'api-unavailable':
-      await interaction.reply({
-        content:
-          `Player #${failure.tag} could not be verified right now (API issue: ${failure.issue}). ` +
-          'No valid stored profile was available to show.',
-        flags: 64,
-      });
-      return true;
+      content =
+        `Player #${failure.tag} could not be verified right now (API issue: ${failure.issue}). ` +
+        'No valid stored profile was available to show.';
+      break;
     case 'same-player':
-      await interaction.reply({
-        content: 'Choose two different players to compare.',
-        flags: 64,
-      });
-      return true;
+      content = 'Choose two different players to compare.';
+      break;
     default:
       return false;
   }
+
+  if (interaction.deferred) {
+    await interaction.editReply({ content, embeds: [], components: [], allowedMentions: { parse: [] } });
+    return true;
+  }
+  if (interaction.replied) {
+    await interaction.followUp({ content, flags: 64, allowedMentions: { parse: [] } });
+    return true;
+  }
+  await interaction.reply({ content, flags: 64, allowedMentions: { parse: [] } });
+  return true;
 }
 
 /** Respond with registered/stored player suggestions for the focused option. */

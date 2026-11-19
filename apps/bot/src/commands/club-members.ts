@@ -75,6 +75,7 @@ async function buildPage(
 }
 
 export async function handleClubMembers(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const tag = interaction.options.getString('tag', false) ?? undefined;
   const built = await buildPage(tag, interaction.guildId, 1);
 
@@ -83,7 +84,7 @@ export async function handleClubMembers(interaction: ChatInputCommandInteraction
     return;
   }
 
-  await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
+  await interaction.editReply({ ...built.payload, content: null, allowedMentions: { parse: [] } });
 }
 
 export async function handleClubMembersComponent(interaction: CommandComponentInteraction): Promise<void> {

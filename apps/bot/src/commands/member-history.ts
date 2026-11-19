@@ -75,13 +75,14 @@ async function buildPage(tag: string, guildId: string | null, pageNumber: number
 }
 
 export async function handleMemberHistory(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const tag = interaction.options.getString('tag', true);
   const built = await buildPage(tag, interaction.guildId, 1);
   if (built.kind === 'failure') {
     await replyPlayerLookupFailure(interaction, built.failure);
     return;
   }
-  await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
+  await interaction.editReply({ ...built.payload, content: null, allowedMentions: { parse: [] } });
 }
 
 export async function handleMemberHistoryComponent(interaction: CommandComponentInteraction): Promise<void> {

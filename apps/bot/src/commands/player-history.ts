@@ -116,6 +116,7 @@ async function loadPage(
 }
 
 export async function handlePlayerHistory(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const tag = interaction.options.getString('tag', true);
   const rawPeriod = interaction.options.getString('period', false);
   const period = rawPeriod !== null && isPlayerHistoryPeriod(rawPeriod) ? rawPeriod : DEFAULT_PLAYER_PERIOD;
@@ -126,7 +127,7 @@ export async function handlePlayerHistory(interaction: ChatInputCommandInteracti
     return;
   }
 
-  await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
+  await interaction.editReply({ ...built.payload, content: null, allowedMentions: { parse: [] } });
 }
 
 export async function handlePlayerHistoryComponent(interaction: CommandComponentInteraction): Promise<void> {

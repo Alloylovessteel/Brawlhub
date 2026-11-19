@@ -94,6 +94,7 @@ async function loadPage(
 }
 
 export async function handleClubLeaderboard(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const tag = interaction.options.getString('tag', false) ?? undefined;
   const built = await loadPage(tag, interaction.guildId, 1);
 
@@ -102,7 +103,7 @@ export async function handleClubLeaderboard(interaction: ChatInputCommandInterac
     return;
   }
 
-  await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
+  await interaction.editReply({ ...built.payload, content: null, allowedMentions: { parse: [] } });
 }
 
 export async function handleClubLeaderboardComponent(interaction: CommandComponentInteraction): Promise<void> {

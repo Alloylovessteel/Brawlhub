@@ -36,14 +36,19 @@ import { handleClubLeaderboard, handleClubLeaderboardAutocomplete, handleClubLea
 import { handleClubMembers, handleClubMembersAutocomplete, handleClubMembersComponent } from './club-members';
 
 function chatInteraction(options: Record<string, string | null> = {}) {
-  return {
+  const interaction = {
     guildId: 'guild-1',
     options: { getString: vi.fn((name: string) => options[name] ?? null) },
     replied: false,
     deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function buttonInteraction(customId: string) {
@@ -132,11 +137,12 @@ describe('/club-members command', () => {
 
     await handleClubMembers(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.service.loadMemberView).toHaveBeenCalledWith({
       tag: undefined,
       guildId: 'guild-1',
     });
-    const payload = payloadOf(interaction, 'reply');
+    const payload = payloadOf(interaction, 'editReply');
     expect(payload.embeds[0].toJSON().fields).toHaveLength(10);
     expect(payload.embeds[0].toJSON().footer?.text).toContain('Page 1 / 2');
     expect(payload.components[0].toJSON().components[0]?.custom_id).toBe(
@@ -170,15 +176,17 @@ describe('/club-members command', () => {
     const invalid = chatInteraction({ tag: '#BAD-TAG!' });
     mocks.service.loadMemberView.mockResolvedValueOnce({ kind: 'invalid-tag' });
     await handleClubMembers(invalid);
-    expect((invalid.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ content: expect.stringContaining('not valid'), flags: 64 }),
+    expect(invalid.deferReply).toHaveBeenCalledOnce();
+    expect((invalid.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ content: expect.stringContaining('not valid') }),
     );
 
     const unregistered = chatInteraction({ tag: 'G2P9' });
     mocks.service.loadMemberView.mockResolvedValueOnce({ kind: 'unregistered', tag: 'G2P9' });
     await handleClubMembers(unregistered);
-    expect((unregistered.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ content: expect.stringContaining('not registered'), flags: 64 }),
+    expect(unregistered.deferReply).toHaveBeenCalledOnce();
+    expect((unregistered.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ content: expect.stringContaining('not registered') }),
     );
   });
 
@@ -202,6 +210,7 @@ describe('/club-leaderboard command', () => {
 
     await handleClubLeaderboard(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.service.loadLeaderboardView).toHaveBeenCalledWith(
       expect.objectContaining({
         tag: '#2c0y',
@@ -209,7 +218,7 @@ describe('/club-leaderboard command', () => {
         seasonStartIso: mocks.config.seasonStartIso,
       }),
     );
-    const payload = payloadOf(interaction, 'reply');
+    const payload = payloadOf(interaction, 'editReply');
     expect(payload.embeds[0].toJSON().fields).toHaveLength(10);
     expect(payload.components[0].toJSON().components[0]?.custom_id).toBe(
       'club-leaderboard:page:2:2C0Y',
@@ -222,7 +231,8 @@ describe('/club-leaderboard command', () => {
 
     await handleClubLeaderboard(interaction);
 
-    const payload = payloadOf(interaction, 'reply');
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    const payload = payloadOf(interaction, 'editReply');
     expect(JSON.stringify(payload.embeds[0].toJSON())).toContain('No members have valid stored trophy data');
     expect(payload.components).toEqual([]);
   });

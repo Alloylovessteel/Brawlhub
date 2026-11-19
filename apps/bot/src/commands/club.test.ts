@@ -250,7 +250,8 @@ describe('/clubs command', () => {
 
     await handleClubs(interaction);
 
-    const payload = (interaction.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(payload.embeds[0].toJSON().footer.text).toContain('Page 1 / 2');
     expect(payload.components[0].toJSON().components[0].custom_id).toBe('clubs:page:2');
   });

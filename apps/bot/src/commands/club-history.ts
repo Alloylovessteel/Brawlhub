@@ -124,6 +124,7 @@ async function loadPage(
 }
 
 export async function handleClubHistory(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const rawPeriod = interaction.options.getString('period', false);
   const period: HistoryPeriod = rawPeriod !== null && isHistoryPeriod(rawPeriod) ? rawPeriod : DEFAULT_PERIOD;
   const tag = interaction.options.getString('tag', false) ?? undefined;
@@ -134,7 +135,7 @@ export async function handleClubHistory(interaction: ChatInputCommandInteraction
     return;
   }
 
-  await interaction.reply({ ...built.payload, allowedMentions: { parse: [] } });
+  await interaction.editReply({ ...built.payload, content: null, allowedMentions: { parse: [] } });
 }
 
 export async function handleClubHistoryComponent(interaction: CommandComponentInteraction): Promise<void> {

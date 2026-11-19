@@ -42,6 +42,7 @@ export const playerCompareCommandData = new SlashCommandBuilder()
   });
 
 export async function handlePlayerCompare(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const rawPeriod = interaction.options.getString('period', false);
   const period: HistoryPeriod = rawPeriod !== null && isPlayerHistoryPeriod(rawPeriod)
     ? rawPeriod
@@ -59,7 +60,7 @@ export async function handlePlayerCompare(interaction: ChatInputCommandInteracti
     return;
   }
 
-  await interaction.reply({
+  await interaction.editReply({
     embeds: [buildPlayerCompareEmbed(result.value, getBotConfig())],
     allowedMentions: { parse: [] },
   });

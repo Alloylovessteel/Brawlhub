@@ -17,6 +17,7 @@ export const meCommandData = new SlashCommandBuilder()
   );
 
 export async function handleMe(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
   const result = await loadPlayerProfile({
     tag: interaction.options.getString('tag', true),
     guildId: interaction.guildId,
@@ -27,7 +28,7 @@ export async function handleMe(interaction: ChatInputCommandInteraction): Promis
     return;
   }
 
-  await interaction.reply({
+  await interaction.editReply({
     embeds: [buildPlayerProfileEmbed(result.value, getBotConfig())],
     allowedMentions: { parse: [] },
   });

@@ -48,14 +48,19 @@ import {
 import { handlePlayerCompare, handlePlayerCompareAutocomplete } from './player-compare';
 
 function chatInteraction(options: Record<string, string | null> = {}) {
-  return {
+  const interaction = {
     guildId: 'guild-1',
     options: { getString: vi.fn((name: string) => options[name] ?? null) },
     replied: false,
     deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function buttonInteraction(customId: string) {
@@ -200,8 +205,9 @@ describe('/me command', () => {
 
     await handleMe(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.service.loadPlayerProfile).toHaveBeenCalledWith({ tag: '#2c0y', guildId: 'guild-1' });
-    expect(JSON.stringify(payload(interaction, 'reply').embeds[0].toJSON())).toContain(
+    expect(JSON.stringify(payload(interaction, 'editReply').embeds[0].toJSON())).toContain(
       '[Alpha](https://brawlify.com/player/2C0Y)',
     );
   });
@@ -210,17 +216,20 @@ describe('/me command', () => {
     const invalid = chatInteraction({ tag: '#BAD-TAG!' });
     mocks.service.loadPlayerProfile.mockResolvedValueOnce({ kind: 'invalid-tag' });
     await handleMe(invalid);
-    expect(payload(invalid, 'reply').content).toContain('not valid');
+    expect(invalid.deferReply).toHaveBeenCalledOnce();
+    expect(payload(invalid, 'editReply').content).toContain('not valid');
 
     const unknown = chatInteraction({ tag: 'QQQ' });
     mocks.service.loadPlayerProfile.mockResolvedValueOnce({ kind: 'not-found', tag: 'QQQ' });
     await handleMe(unknown);
-    expect(payload(unknown, 'reply').content).toContain('was not found');
+    expect(unknown.deferReply).toHaveBeenCalledOnce();
+    expect(payload(unknown, 'editReply').content).toContain('was not found');
 
     const unavailable = chatInteraction({ tag: 'QQQ' });
     mocks.service.loadPlayerProfile.mockResolvedValueOnce({ kind: 'api-unavailable', tag: 'QQQ', issue: 'rate-limit' });
     await handleMe(unavailable);
-    expect(payload(unavailable, 'reply').content).toContain('could not be verified');
+    expect(unavailable.deferReply).toHaveBeenCalledOnce();
+    expect(payload(unavailable, 'editReply').content).toContain('could not be verified');
   });
 
   it('offers stored player autocomplete choices', async () => {
@@ -242,10 +251,11 @@ describe('/player-history command', () => {
 
     await handlePlayerHistory(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.service.loadPlayerHistory).toHaveBeenCalledWith(
       expect.objectContaining({ tag: '#2c0y', period: '30d', seasonStartIso: mocks.config.seasonStartIso }),
     );
-    expect(payload(interaction, 'reply').components[0].toJSON().components[0]?.custom_id).toBe(
+    expect(payload(interaction, 'editReply').components[0].toJSON().components[0]?.custom_id).toBe(
       'player-history:page:2:30d|2C0Y',
     );
   });
@@ -288,10 +298,11 @@ describe('/player-clubs command', () => {
 
     await handlePlayerClubs(interaction);
 
-    expect(JSON.stringify(payload(interaction, 'reply').embeds[0].toJSON())).toContain(
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect(JSON.stringify(payload(interaction, 'editReply').embeds[0].toJSON())).toContain(
       'No stored club membership records',
     );
-    expect(payload(interaction, 'reply').components).toEqual([]);
+    expect(payload(interaction, 'editReply').components).toEqual([]);
   });
 
   it('offers stored player autocomplete choices', async () => {
@@ -309,10 +320,11 @@ describe('/player-compare command', () => {
 
     await handlePlayerCompare(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.service.loadPlayerCompare).toHaveBeenCalledWith(
       expect.objectContaining({ firstTag: '2C0Y', secondTag: 'Q8VR', period: '30d' }),
     );
-    const data = payload(interaction, 'reply').embeds[0].toJSON();
+    const data = payload(interaction, 'editReply').embeds[0].toJSON();
     expect(data.description).toContain('different periods');
     expect(JSON.stringify(data)).toContain('Leader: [Alpha](https://brawlify.com/player/2C0Y)');
   });
@@ -323,7 +335,8 @@ describe('/player-compare command', () => {
 
     await handlePlayerCompare(interaction);
 
-    expect(payload(interaction, 'reply').content).toContain('two different players');
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect(payload(interaction, 'editReply').content).toContain('two different players');
   });
 
   it('offers autocomplete choices for both tag options', async () => {

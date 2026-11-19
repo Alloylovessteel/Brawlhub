@@ -31,8 +31,16 @@ async function buildPage(guildId: string | null, pageNumber: number) {
 
 /** Handle `/clubs` with a paginated list of registered clubs. */
 export async function handleClubs(interaction: ChatInputCommandInteraction): Promise<void> {
-  const page = await buildPage(interaction.guildId, 1);
-  await interaction.reply({ ...page, allowedMentions: { parse: [] } });
+  try {
+    await interaction.deferReply();
+    const page = await buildPage(interaction.guildId, 1);
+    await interaction.editReply({ ...page, allowedMentions: { parse: [] } });
+  } catch (error) {
+    logger.error('Clubs command failed', {
+      error: error instanceof Error ? error.message : 'unknown error',
+    });
+    await replyWithSafeError(interaction);
+  }
 }
 
 /** Handle Previous/Next buttons for `/clubs`. */

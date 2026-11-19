@@ -236,8 +236,9 @@ describe('/members command', () => {
 
     await handleMembers(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.memberService.loadTrackedMembers).toHaveBeenCalledWith({ tag: '8QCL', guildId: 'guild-1' });
-    const text = embedText(payload(interaction, 'reply'));
+    const text = embedText(payload(interaction, 'editReply'));
     expect(text).toContain('Tracked Members');
     expect(text).toContain('Current: 1');
     expect(text).toContain('Historical/unverified: 1');
@@ -252,7 +253,8 @@ describe('/members command', () => {
       message: 'That club tag is not valid.',
     });
     await handleMembers(invalid);
-    expect(payload(invalid, 'reply').content).toBe('That club tag is not valid.');
+    expect(invalid.deferReply).toHaveBeenCalledOnce();
+    expect(payload(invalid, 'editReply').content).toBe('That club tag is not valid.');
 
     const empty = chatInteraction();
     mocks.memberService.loadTrackedMembers.mockResolvedValueOnce({
@@ -260,7 +262,8 @@ describe('/members command', () => {
       value: { ...memberView(0), currentCount: 0, historicalCount: 0 },
     });
     await handleMembers(empty);
-    expect(embedText(payload(empty, 'reply'))).toContain('No stored membership records match');
+    expect(empty.deferReply).toHaveBeenCalledOnce();
+    expect(embedText(payload(empty, 'editReply'))).toContain('No stored membership records match');
   });
 
   it('paginates and restores the optional club filter', async () => {
@@ -453,8 +456,9 @@ describe('/member-history command', () => {
 
     await handleMemberHistory(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.playerService.loadPlayerClubs).toHaveBeenCalledWith({ tag: '#2c0y', guildId: 'guild-1' });
-    const text = embedText(payload(interaction, 'reply'));
+    const text = embedText(payload(interaction, 'editReply'));
     expect(text).toContain('Club History');
     expect(text).toContain('transferred from');
     expect(text).toContain('Joined:');
@@ -466,7 +470,8 @@ describe('/member-history command', () => {
     const invalid = chatInteraction({ tag: 'bad' });
     mocks.playerService.loadPlayerClubs.mockResolvedValueOnce({ kind: 'invalid-tag' });
     await handleMemberHistory(invalid);
-    expect(payload(invalid, 'reply').content).toContain('not valid');
+    expect(invalid.deferReply).toHaveBeenCalledOnce();
+    expect(payload(invalid, 'editReply').content).toContain('not valid');
 
     mocks.playerService.loadPlayerClubs.mockResolvedValue({ kind: 'ok', value: historyView(12) });
     const interaction = buttonInteraction('member-history:page:2:2C0Y');
@@ -492,11 +497,13 @@ describe('/member-search command', () => {
     });
     const byName = chatInteraction({ query: 'alpha' }, 'player');
     await handleMemberSearch(byName);
+    expect(byName.deferReply).toHaveBeenCalledOnce();
     expect(mocks.memberService.searchTrackedMembersByPlayer).toHaveBeenCalledWith('alpha', { guildId: 'guild-1' });
-    expect(embedText(payload(byName, 'reply'))).toContain('Alpha');
+    expect(embedText(payload(byName, 'editReply'))).toContain('Alpha');
 
     const byTag = chatInteraction({ query: '#2c0y' }, 'player');
     await handleMemberSearch(byTag);
+    expect(byTag.deferReply).toHaveBeenCalledOnce();
     expect(mocks.memberService.searchTrackedMembersByPlayer).toHaveBeenCalledWith('#2c0y', { guildId: 'guild-1' });
   });
 
@@ -507,7 +514,8 @@ describe('/member-search command', () => {
       value: { ...searchView(0), query: 'nobody' },
     });
     await handleMemberSearch(empty);
-    expect(embedText(payload(empty, 'reply'))).toContain('No tracked players matched');
+    expect(empty.deferReply).toHaveBeenCalledOnce();
+    expect(embedText(payload(empty, 'editReply'))).toContain('No tracked players matched');
 
     const invalid = chatInteraction({ query: 'a' }, 'player');
     mocks.memberService.searchTrackedMembersByPlayer.mockResolvedValueOnce({
@@ -515,11 +523,13 @@ describe('/member-search command', () => {
       message: 'Enter 2–32 characters.',
     });
     await handleMemberSearch(invalid);
-    expect(payload(invalid, 'reply').content).toContain('Enter 2–32 characters');
+    expect(invalid.deferReply).toHaveBeenCalledOnce();
+    expect(payload(invalid, 'editReply').content).toContain('Enter 2–32 characters');
 
     const unknown = chatInteraction({}, 'unknown');
     await handleMemberSearch(unknown);
-    expect(payload(unknown, 'reply').content).toContain('Choose either');
+    expect(unknown.deferReply).toHaveBeenCalledOnce();
+    expect(payload(unknown, 'editReply').content).toContain('Choose either');
   });
 
   it('allows Discord identity search for staff and enforces permission failures', async () => {
@@ -529,6 +539,7 @@ describe('/member-search command', () => {
     });
     const staff = chatInteraction({ user: TARGET_DISCORD_ID }, 'discord');
     await handleMemberSearch(staff);
+    expect(staff.deferReply).toHaveBeenCalledOnce();
     expect(mocks.adminService.requireGlobalPermission).toHaveBeenCalledWith(
       ACTOR_DISCORD_ID,
       'members:verify',
@@ -539,7 +550,7 @@ describe('/member-search command', () => {
       ACTOR_DISCORD_ID,
       { guildId: 'guild-1', allowInspectOthers: true },
     );
-    const text = embedText(payload(staff, 'reply'));
+    const text = embedText(payload(staff, 'editReply'));
     expect(text).toContain('Linked Discord Players');
     expect(text).toContain(TARGET_DISCORD_ID);
     expect(text).toContain('No ownership is inferred');
@@ -549,8 +560,8 @@ describe('/member-search command', () => {
     );
     const member = chatInteraction({ user: TARGET_DISCORD_ID }, 'discord');
     await handleMemberSearch(member);
-    expect(payload(member, 'reply').content).toBe('You do not have permission to look up other Discord users’ linked players.');
-    expect(payload(member, 'reply').flags).toBe(64);
+    expect(member.deferReply).toHaveBeenCalledOnce();
+    expect(payload(member, 'editReply').content).toBe('You do not have permission to look up other Discord users’ linked players.');
   });
 
   it('round-trips encoded pagination state and paginates results', async () => {
