@@ -247,20 +247,29 @@ describe('club embeds', () => {
       'President',
       'Required Trophies',
       'Members',
+      'Club Staff',
       'Trophy Progression',
       'Description',
     ]);
     expect(json.title).toBe('Alpha • #2C0Y');
-    expect(json.fields?.[0]?.value).toContain('1,300');
-    expect(json.fields?.[0]?.value).toContain('Average');
-    expect(json.fields?.[0]?.value).toContain('733');
-    expect(json.fields?.[2]?.value).toBe('[Leader](https://brawlify.com/player/G2P9)');
-    expect(json.fields?.[4]?.value).toContain(`3/${CLUB_MEMBER_CAPACITY}`);
+    expect(json.fields?.[0]?.value).toContain('🏆1,300');
+    expect(json.fields?.[0]?.value).toContain('👑 Highest 900');
+    expect(json.fields?.[0]?.value).toContain('Avg 🏆733');
+    expect(json.fields?.[2]?.value).toBe(
+      '👑 [Leader](https://brawlify.com/player/G2P9) (#G2P9)',
+    );
+    expect(json.fields?.[4]?.value).toContain(`👥3/${CLUB_MEMBER_CAPACITY}`);
     expect(json.fields?.[4]?.value).toContain('Vice-Presidents 1');
     expect(json.fields?.[4]?.value).toContain('Seniors 1');
-    expect(json.fields?.[5]?.value).toContain('Today +100');
-    expect(json.fields?.[5]?.value).toContain('Week +200');
-    expect(json.fields?.[5]?.value).toContain('Season +300');
+    expect(json.fields?.[5]?.value).toContain(
+      'President: [Leader](https://brawlify.com/player/G2P9) (900)',
+    );
+    expect(json.fields?.[5]?.value).toContain(
+      'Vice-Presidents: [Vice](https://brawlify.com/player/2C0Y) (600)',
+    );
+    expect(json.fields?.[6]?.value).toContain('Today +100');
+    expect(json.fields?.[6]?.value).toContain('Week +200');
+    expect(json.fields?.[6]?.value).toContain('Season +300');
   });
 
   it('omits unsupported and unavailable fields instead of showing placeholders', () => {

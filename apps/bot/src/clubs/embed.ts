@@ -116,7 +116,7 @@ function formatCompact(value: number | null): string | null {
   return formatInteger(value);
 }
 
-function overviewEmojis(config: { readonly emojis: Partial<BotEmojiConfig> }) {
+function clubEmojis(config: { readonly emojis: Partial<BotEmojiConfig> }) {
   return {
     crown: formatEmoji(config.emojis.president, 'president') || '👑',
     trophies: formatEmoji(config.emojis.trophies, 'trophies') || '🏆',
@@ -151,6 +151,25 @@ export function formatSyncTime(value: string | null | undefined): string | null 
 
 function president(roster: readonly RosterMember[]): RosterMember | null {
   return roster.find((member) => member.role === 'president' && member.name !== '') ?? null;
+}
+
+/** BrawlTools-style staff breakdown from the synced club roster. */
+function staffLines(roster: readonly RosterMember[], config: EmbedConfig): string[] {
+  const groups = [
+    { role: 'president', label: 'President' },
+    { role: 'vicePresident', label: 'Vice-Presidents' },
+    { role: 'senior', label: 'Seniors' },
+  ] as const;
+
+  return groups.flatMap(({ role, label }) => {
+    const members = roster.filter((member) => member.role === role && member.name !== '');
+    if (members.length === 0) return [];
+    const names = members.map((member) => {
+      const link = formatPlayerLink(member.name, member.tag, config.playerProfileUrlTemplate);
+      return `${link} (${formatInteger(member.trophies) ?? '—'})`;
+    });
+    return [`${label}: ${names.join(', ')}`];
+  });
 }
 
 function formatClubType(value: string | null): string | null {
@@ -193,19 +212,16 @@ export function buildClubEmbed(
   config: EmbedConfig,
   now: Date = new Date(),
 ): EmbedBuilder {
-  const emoji = {
-    trophies: formatEmoji(config.emojis.trophies, 'trophies'),
-    trophyRange: formatEmoji(config.emojis.trophyRange, 'trophy_range'),
-    president: formatEmoji(config.emojis.president, 'president'),
-    requiredTrophies: formatEmoji(config.emojis.requiredTrophies, 'required_trophies'),
-    members: formatEmoji(config.emojis.members, 'members'),
-    progression: formatEmoji(config.emojis.progression, 'progression'),
-    description: formatEmoji(config.emojis.description, 'description'),
-  };
+  const emoji = clubEmojis(config);
 
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
-    .setTitle(truncate(`${escapeMarkdown(view.club.name)} • ${displayTag(view.club.tag)}`, 256))
+    .setTitle(
+      truncate(
+        `${formatClubLink(view.club.name, view.club.tag, config.clubProfileUrlTemplate)} • ${displayTag(view.club.tag)}`,
+        256,
+      ),
+    )
     .setTimestamp(now);
 
   if (view.badgeId !== null) {
@@ -213,24 +229,30 @@ export function buildClubEmbed(
   }
 
   const total = formatInteger(view.currentTrophies);
+  const range = view.rosterAvailable ? calculateTrophyRange(view.roster) : null;
   const average = view.rosterAvailable
     ? formatInteger(calculateAverage(view.roster.map((member) => member.trophies)))
     : null;
-  if (total !== null || average !== null) {
-    const parts: string[] = [];
-    if (total !== null) parts.push(`${emoji.trophies}${total}`);
-    if (average !== null) parts.push(`Average ${emoji.trophies}${average}`);
+  const trophyParts: string[] = [];
+  if (total !== null) trophyParts.push(`${emoji.trophies}${total}`);
+  if (range !== null) {
+    trophyParts.push(`${emoji.crown} Highest ${formatInteger(range.high) ?? '—'}`);
+  }
+  if (average !== null) trophyParts.push(`Avg ${emoji.trophies}${average}`);
+  if (trophyParts.length > 0) {
     embed.addFields({
       name: 'Trophies',
-      value: truncate(parts.join('  '), 1024),
+      value: truncate(trophyParts.join('  '), 1024),
     });
   }
 
-  const range = view.rosterAvailable ? calculateTrophyRange(view.roster) : null;
   if (range !== null) {
     embed.addFields({
       name: 'Trophy Range',
-      value: truncate(`${emoji.trophyRange}${formatInteger(range.low)} - ${formatInteger(range.high)}`, 1024),
+      value: truncate(
+        `${emoji.trophyRange}${formatInteger(range.low) ?? '—'} - ${formatInteger(range.high) ?? '—'}`,
+        1024,
+      ),
     });
   }
 
@@ -239,7 +261,7 @@ export function buildClubEmbed(
     embed.addFields({
       name: 'President',
       value: truncate(
-        formatPlayerLink(leader.name, leader.tag, config.playerProfileUrlTemplate),
+        `${emoji.crown} ${formatPlayerLink(leader.name, leader.tag, config.playerProfileUrlTemplate)} (${displayTag(leader.tag)})`,
         1024,
       ),
     });
@@ -249,7 +271,7 @@ export function buildClubEmbed(
   if (required !== null) {
     embed.addFields({
       name: 'Required Trophies',
-      value: truncate(`${emoji.requiredTrophies}${required}`, 1024),
+      value: truncate(`${emoji.required} ${required}`, 1024),
     });
   }
 
@@ -268,6 +290,11 @@ export function buildClubEmbed(
     if (vicePresidents !== null) lines.push(`${emoji.members}Vice-Presidents ${vicePresidents}`);
     if (seniors !== null) lines.push(`${emoji.members}Seniors ${seniors}`);
     embed.addFields({ name: 'Members', value: truncate(lines.join('\n'), 1024) });
+
+    const staff = staffLines(view.roster, config);
+    if (staff.length > 0) {
+      embed.addFields({ name: 'Club Staff', value: truncate(staff.join('\n'), 1024) });
+    }
   }
 
   const activity = view.matchActivity;
@@ -305,8 +332,8 @@ export function buildClubEmbed(
   const megaPig = view.megaPigEstimate;
   if (megaPig !== null && megaPig.sampleSize > 0) {
     const lines = [
-      `Matches: ${formatInteger(megaPig.matches)}`,
-      `Wins: ${formatInteger(megaPig.wins)}`,
+      `${emoji.megaPig} Matches: ${formatInteger(megaPig.matches)}`,
+      `${emoji.wins} Wins: ${formatInteger(megaPig.wins)}`,
       `Trophy Δ: ${formatDelta(megaPig.trophyChange)}`,
     ];
     embed.addFields({
@@ -325,6 +352,7 @@ export function buildClubEmbed(
 
   const footer: string[] = [
     view.liveStatus === 'live' ? 'Live official API data' : 'Latest synced data',
+    'Live online status is not exposed by the Brawl Stars API',
   ];
   const syncedAt = formatSyncTime(view.latestSyncAt);
   if (syncedAt !== null) footer.push(`Synced ${syncedAt}`);
@@ -339,7 +367,7 @@ export function buildClubsPageEmbed(
   page: Page<ClubSummary>,
   config?: EmbedConfig,
 ): EmbedBuilder {
-  const emoji = overviewEmojis(config ?? { emojis: {} });
+  const emoji = clubEmojis(config ?? { emojis: {} });
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
     .setTitle('Club Overview')
