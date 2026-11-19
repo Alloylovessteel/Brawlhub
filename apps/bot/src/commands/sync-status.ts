@@ -12,6 +12,7 @@ export const syncStatusCommandData = new SlashCommandBuilder()
 
 export async function handleSyncStatus(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
+    await interaction.deferReply({ flags: 64 });
     await requireGlobalPermission(interaction.user.id, 'sync:run', {
       guildId: interaction.guildId,
       memberPermissions: interaction.memberPermissions,
@@ -20,9 +21,9 @@ export async function handleSyncStatus(interaction: ChatInputCommandInteraction)
       discordUsername: interaction.user.username,
     });
     const status = await loadSyncStatus(interaction.guildId);
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [buildSyncStatusEmbed(status)],
-      flags: 64,
+      components: [],
       allowedMentions: { parse: [] },
     });
   } catch (error) {

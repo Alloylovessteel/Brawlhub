@@ -482,13 +482,14 @@ describe('/sync-status', () => {
 
     await handleSyncStatus(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(mocks.service.requireGlobalPermission).toHaveBeenCalledWith(
       ACTOR_ID,
       'sync:run',
       expect.objectContaining({ guildId: GUILD_ID }),
     );
-    expect(mocks.service.loadSyncStatus).toHaveBeenCalledOnce();
-    expect(payload(interaction, 'reply').embeds).toEqual([{ kind: 'sync-status' }]);
+    expect(mocks.service.loadSyncStatus).toHaveBeenCalledWith(GUILD_ID);
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-status' }]);
   });
 
   it('rejects unauthorized readers', async () => {
@@ -497,7 +498,9 @@ describe('/sync-status', () => {
 
     await handleSyncStatus(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(mocks.service.loadSyncStatus).not.toHaveBeenCalled();
+    expect(payload(interaction, 'editReply').content).toContain('permission');
   });
 });
 

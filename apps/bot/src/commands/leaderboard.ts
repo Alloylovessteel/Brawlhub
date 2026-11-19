@@ -181,6 +181,7 @@ export async function handleLeaderboard(interaction: ChatInputCommandInteraction
   }
 
   try {
+    await interaction.deferReply();
     let resolved = state;
     if (state.kind === 'progression') {
       const rawPeriod = interaction.options.getString('period', false);
@@ -190,11 +191,19 @@ export async function handleLeaderboard(interaction: ChatInputCommandInteraction
     }
 
     const payload = await loadPage(resolved, interaction.guildId, 1);
-    await interaction.reply({ ...payload, allowedMentions: { parse: [] } });
+    await interaction.editReply({ ...payload, content: null, allowedMentions: { parse: [] } });
   } catch (error) {
     logger.error('Global leaderboard command failed', {
       error: error instanceof Error ? error.message : 'unknown error',
     });
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({
+        content: 'Something went wrong. Please try again later.',
+        embeds: [],
+        components: [],
+      }).catch(() => undefined);
+      return;
+    }
     await replyWithSafeError(interaction);
   }
 }

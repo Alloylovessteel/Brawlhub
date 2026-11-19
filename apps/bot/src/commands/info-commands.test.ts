@@ -42,12 +42,17 @@ import { handleHelp, handleHelpComponent, helpCommandData } from './help';
 import { handleStatus, statusCommandData } from './status';
 
 function chat(): ChatInputCommandInteraction {
-  return {
+  const interaction = {
     replied: false,
     deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function button(customId: string): ButtonInteraction {
@@ -233,14 +238,14 @@ describe('/status', () => {
 
     await handleStatus(interaction);
 
-    expect(mocks.loadStatusView).toHaveBeenCalledOnce();
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect(mocks.loadStatusView).toHaveBeenCalledWith({ guildId: undefined });
     expect(mocks.requireGlobalPermission).not.toHaveBeenCalled();
-    const reply = payload(interaction, 'reply');
+    const reply = payload(interaction, 'editReply');
     const text = JSON.stringify(reply.embeds[0].toJSON());
     expect(text).toContain('BrawlHub status: operational');
     expect(text).toContain('Registered clubs: 5');
     expect(text).toContain('completed');
-    expect(reply.ephemeral).not.toBe(true);
   });
 
   it('distinguishes degraded status from online-only health', async () => {
@@ -254,7 +259,8 @@ describe('/status', () => {
 
     await handleStatus(interaction);
 
-    const text = JSON.stringify(payload(interaction, 'reply').embeds[0].toJSON());
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    const text = JSON.stringify(payload(interaction, 'editReply').embeds[0].toJSON());
     expect(text).toContain('BrawlHub status: degraded');
     expect(text).toContain('Unavailable — Official API key is not configured.');
   });
@@ -271,7 +277,8 @@ describe('/status', () => {
 
     await handleStatus(interaction);
 
-    const text = JSON.stringify(payload(interaction, 'reply'));
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    const text = JSON.stringify(payload(interaction, 'editReply'));
     expect(text).not.toMatch(/Bearer/i);
     expect(text).not.toMatch(/SUPABASE_/i);
     expect(text).not.toContain('stack');

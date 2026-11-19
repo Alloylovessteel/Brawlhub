@@ -29,6 +29,7 @@ export async function handleRemoveClub(interaction: ChatInputCommandInteraction)
     await requireGlobalPermission(interaction.user.id, 'clubs:write', {
       guildId: interaction.guildId,
       memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
       isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
       discordUsername: interaction.user.username,
     });
@@ -52,6 +53,7 @@ export async function handleRemoveClubAutocomplete(interaction: AutocompleteInte
     await requireGlobalPermission(interaction.user.id, 'clubs:write', {
       guildId: interaction.guildId,
       memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
       isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
       discordUsername: interaction.user.username,
     });

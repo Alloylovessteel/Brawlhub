@@ -45,7 +45,7 @@ function chatInteraction(
   subcommand: string | null,
   options: Record<string, string | null> = {},
 ) {
-  return {
+  const interaction = {
     guildId: 'guild-1',
     options: {
       getSubcommand: vi.fn(() => subcommand),
@@ -53,9 +53,14 @@ function chatInteraction(
     },
     replied: false,
     deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function buttonInteraction(customId: string) {
@@ -74,7 +79,10 @@ function buttonInteraction(customId: string) {
   return interaction as unknown as ButtonInteraction;
 }
 
-function payload(interaction: ChatInputCommandInteraction | ButtonInteraction, method: 'reply' | 'editReply'): any {
+function payload(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  method: 'reply' | 'editReply' | 'followUp',
+): any {
   return (interaction[method] as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as any;
 }
 
@@ -218,8 +226,9 @@ describe('/leaderboard command', () => {
     const clubs = chatInteraction('clubs');
     await handleLeaderboard(clubs);
 
-    expect(payload(clubs, 'reply').embeds[0].toJSON().fields).toHaveLength(10);
-    expect(payload(clubs, 'reply').components[0].toJSON().components[0].custom_id).toBe(
+    expect(clubs.deferReply).toHaveBeenCalledOnce();
+    expect(payload(clubs, 'editReply').embeds[0].toJSON().fields).toHaveLength(10);
+    expect(payload(clubs, 'editReply').components[0].toJSON().components[0].custom_id).toBe(
       'leaderboard:page:2:clubs',
     );
 
@@ -227,7 +236,8 @@ describe('/leaderboard command', () => {
     const progression = chatInteraction('progression', { period: '7d' });
     await handleLeaderboard(progression);
 
-    expect(payload(progression, 'reply').components[0].toJSON().components[0].custom_id).toBe(
+    expect(progression.deferReply).toHaveBeenCalledOnce();
+    expect(payload(progression, 'editReply').components[0].toJSON().components[0].custom_id).toBe(
       'leaderboard:page:2:progression|7d',
     );
   });
@@ -252,13 +262,15 @@ describe('/leaderboard command', () => {
     mocks.service.loadPlayerLeaderboard.mockResolvedValue(playerView(0));
     const players = chatInteraction('players');
     await handleLeaderboard(players);
-    expect(JSON.stringify(payload(players, 'reply').embeds[0].toJSON())).toContain('No ranked players');
-    expect(payload(players, 'reply').components).toEqual([]);
+    expect(players.deferReply).toHaveBeenCalledOnce();
+    expect(JSON.stringify(payload(players, 'editReply').embeds[0].toJSON())).toContain('No ranked players');
+    expect(payload(players, 'editReply').components).toEqual([]);
 
     mocks.service.loadProgressionLeaderboard.mockResolvedValue(progressionView(0));
     const progression = chatInteraction('progression');
     await handleLeaderboard(progression);
-    expect(JSON.stringify(payload(progression, 'reply').embeds[0].toJSON())).toContain(
+    expect(progression.deferReply).toHaveBeenCalledOnce();
+    expect(JSON.stringify(payload(progression, 'editReply').embeds[0].toJSON())).toContain(
       'Insufficient progression history',
     );
   });
@@ -267,8 +279,9 @@ describe('/leaderboard command', () => {
     mocks.service.loadTrophyLeaderboard.mockRejectedValue(new Error('database unavailable'));
     const initial = chatInteraction('trophies');
     await handleLeaderboard(initial);
-    expect(payload(initial, 'reply')).toEqual(
-      expect.objectContaining({ content: SAFE_USER_ERROR, flags: 64 }),
+    expect(initial.deferReply).toHaveBeenCalledOnce();
+    expect(payload(initial, 'editReply')).toEqual(
+      expect.objectContaining({ content: SAFE_USER_ERROR, embeds: [], components: [] }),
     );
 
     mocks.service.loadClubLeaderboard.mockRejectedValue(new Error('database unavailable'));

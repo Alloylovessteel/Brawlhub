@@ -53,6 +53,22 @@ export const registerClubCommandData = new SlashCommandBuilder()
       .setMaxLength(20),
   );
 
+function safeRegisterClubReason(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const message = error.message.trim();
+  if (message.length === 0 || message === API_FAILURE_MESSAGE) return null;
+
+  const known =
+    message === 'Invalid club tag' ||
+    message === 'A Discord guild id is required to register clubs' ||
+    message.startsWith('Club ') ||
+    message.startsWith('Brawl Stars API ') ||
+    message.startsWith('Could not reach the Brawl Stars API') ||
+    message.startsWith('Official club response');
+
+  return known ? message.replace(/\s+/g, ' ').slice(0, 500) : null;
+}
+
 async function replyRegistrationError(
   interaction: RepliableInteraction,
   error: unknown,
@@ -74,9 +90,9 @@ async function replyRegistrationError(
       return;
     }
 
-    const reason = error instanceof Error ? error.message.trim() : '';
+    const reason = safeRegisterClubReason(error);
     const fallback =
-      reason.length > 0 && reason !== API_FAILURE_MESSAGE
+      reason !== null
         ? `The official Brawl Stars API could not validate that club: ${reason} Nothing was registered.`
             .replace(/\s+/g, ' ')
             .slice(0, 1500)

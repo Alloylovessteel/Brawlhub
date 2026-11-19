@@ -10,12 +10,22 @@ export const statusCommandData = new SlashCommandBuilder()
 /** Public command: it reports only generic health states, never raw errors or configuration. */
 export async function handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
+    await interaction.deferReply();
     const view = await loadStatusView({ guildId: interaction.guildId });
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [buildStatusEmbed(view)],
+      components: [],
       allowedMentions: { parse: [] },
     });
   } catch {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({
+        content: 'Something went wrong. Please try again later.',
+        embeds: [],
+        components: [],
+      }).catch(() => undefined);
+      return;
+    }
     await replyWithSafeError(interaction);
   }
 }
