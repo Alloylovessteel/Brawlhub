@@ -529,8 +529,9 @@ describe('/settings', () => {
 
     await handleSettings(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(mocks.service.loadGuildSettings).not.toHaveBeenCalled();
-    expect(payload(interaction, 'reply').content).toContain('permission');
+    expect(payload(interaction, 'editReply').content).toContain('permission');
   });
 
   it('views the configured guild settings', async () => {
@@ -538,14 +539,16 @@ describe('/settings', () => {
 
     await handleSettings(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(mocks.service.loadGuildSettings).toHaveBeenCalledWith(GUILD_ID);
-    expect(payload(interaction, 'reply').embeds).toEqual([{ kind: 'settings-view' }]);
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'settings-view' }]);
   });
 
   it('requires confirmation before changing a setting', async () => {
     const start = chat('set-primary-club', { club: CLUB_ID });
     await handleSettings(start);
-    const confirmId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    expect(start.deferReply).toHaveBeenCalledWith({ flags: 64 });
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     expect(mocks.service.updateGuildSettings).not.toHaveBeenCalled();
 
@@ -566,7 +569,7 @@ describe('/settings', () => {
   it('passes null to clear a supported setting', async () => {
     const start = chat('clear-announcement-channel');
     await handleSettings(start);
-    const confirmId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     await handleSettingsComponent(button(confirmId));
 
@@ -581,7 +584,7 @@ describe('/settings', () => {
     );
     const start = chat('set-primary-club', { club: CLUB_ID });
     await handleSettings(start);
-    const confirmId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     const confirmation = button(confirmId);
     await handleSettingsComponent(confirmation);
@@ -592,7 +595,7 @@ describe('/settings', () => {
   it('prevents replay of a settings confirmation', async () => {
     const start = chat('set-verified-role', { role: { id: ROLE_ID } });
     await handleSettings(start);
-    const confirmId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     await handleSettingsComponent(button(confirmId));
     const replay = button(confirmId);
@@ -676,8 +679,9 @@ describe('/remove-club blocker', () => {
 
     await handleRemoveClub(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(mocks.embeds.buildClubRemovalUnavailableEmbed).toHaveBeenCalledOnce();
-    expect(payload(interaction, 'reply').embeds).toEqual([{ kind: 'remove-unavailable' }]);
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'remove-unavailable' }]);
     expect(mocks.service.recordAdminAudit).not.toHaveBeenCalled();
   });
 

@@ -70,7 +70,11 @@ async function requireStaffManager(interaction: StaffInteraction): Promise<void>
 async function replyStaffError(interaction: StaffInteraction, error: unknown): Promise<void> {
   if (!(error instanceof StaffServiceError)) throw error;
   const payload = { content: error.message, flags: 64 } as const;
-  if (interaction.replied || interaction.deferred) {
+  if (interaction.deferred) {
+    await interaction.editReply({ content: error.message, embeds: [], components: [] });
+    return;
+  }
+  if (interaction.replied) {
     await interaction.followUp(payload);
     return;
   }
@@ -88,10 +92,11 @@ export async function handleStaff(interaction: ChatInputCommandInteraction): Pro
       return;
     }
 
+    await interaction.deferReply({ flags: 64 });
     await requireStaffManager(interaction);
-    await interaction.reply({
-      ...(await buildListPage(interaction.guildId, 1)),
-      flags: 64,
+    const page = await buildListPage(interaction.guildId, 1);
+    await interaction.editReply({
+      ...page,
       allowedMentions: { parse: [] },
     });
   } catch (error) {

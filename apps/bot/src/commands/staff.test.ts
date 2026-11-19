@@ -93,7 +93,7 @@ function staffView(count: number) {
 }
 
 function chatInteraction(subcommand: string | null) {
-  return {
+  const interaction = {
     user: { id: DISCORD_ID, username: 'actor' },
     guildId: 'guild-1',
     guild: { ownerId: '999999999999999999' },
@@ -104,9 +104,14 @@ function chatInteraction(subcommand: string | null) {
     },
     replied: false,
     deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function buttonInteraction(customId: string, discordUserId = DISCORD_ID) {
@@ -189,8 +194,8 @@ describe('/staff command handlers', () => {
 
     await handleStaff(interaction);
 
-    expect(payload(interaction, 'reply')).toMatchObject({ flags: 64 });
-    expect(payload(interaction, 'reply').content).toContain('permission');
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
+    expect(payload(interaction, 'editReply').content).toContain('permission');
     expect(mocks.service.listStaff).not.toHaveBeenCalled();
   });
 
@@ -201,6 +206,7 @@ describe('/staff command handlers', () => {
 
     await handleStaff(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(mocks.admin.requireGlobalPermission).toHaveBeenCalledWith(
       DISCORD_ID,
       'staff:manage',
@@ -211,8 +217,7 @@ describe('/staff command handlers', () => {
       view,
       expect.objectContaining({ page: 1, pageCount: 2, total: 7 }),
     );
-    const reply = payload(interaction, 'reply');
-    expect(reply.flags).toBe(64);
+    const reply = payload(interaction, 'editReply');
     expect(reply.embeds).toEqual([mocks.embeds.list]);
     expect(reply.components[0].components[0].data.custom_id).toBe('staff:page:2');
   });
@@ -229,9 +234,8 @@ describe('/staff command handlers', () => {
       'staff:manage',
       expect.objectContaining({ guildId: 'guild-1' }),
     );
-    expect(payload(button, 'followUp')).toMatchObject({ flags: 64 });
-    expect(payload(button, 'followUp').content).toContain('permission');
-    expect(button.editReply).not.toHaveBeenCalled();
+    expect(payload(button, 'editReply').content).toContain('permission');
+    expect(button.followUp).not.toHaveBeenCalled();
   });
 
   it('renders the requested page after rechecking access', async () => {

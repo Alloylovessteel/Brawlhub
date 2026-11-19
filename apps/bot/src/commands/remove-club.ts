@@ -26,6 +26,7 @@ export const removeClubCommandData = new SlashCommandBuilder()
 
 export async function handleRemoveClub(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
+    await interaction.deferReply({ flags: 64 });
     await requireGlobalPermission(interaction.user.id, 'clubs:write', {
       guildId: interaction.guildId,
       memberPermissions: interaction.memberPermissions,
@@ -33,9 +34,9 @@ export async function handleRemoveClub(interaction: ChatInputCommandInteraction)
       isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
       discordUsername: interaction.user.username,
     });
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [buildClubRemovalUnavailableEmbed()],
-      flags: 64,
+      components: [],
       allowedMentions: { parse: [] },
     });
   } catch (error) {

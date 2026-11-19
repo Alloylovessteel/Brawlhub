@@ -396,6 +396,9 @@ async function startChange(
   value: string | null,
 ): Promise<void> {
   const guildId = requireGuildId(interaction);
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
   const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write', await permissionContext(interaction));
   const settings = await loadGuildSettings(guildId);
 
@@ -417,10 +420,9 @@ async function startChange(
       { name: 'Current value', value: displayValue(field, currentValue(settings, field)) },
     );
 
-  await interaction.reply({
+  await interaction.editReply({
     embeds: [confirmation],
     components: [buildConfirmationRow(COMMAND_NAME, nonce)],
-    flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });
 }
@@ -430,11 +432,11 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
     const subcommand = interaction.options.getSubcommand(false);
     if (subcommand === 'view') {
       const guildId = requireGuildId(interaction);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await requireGlobalPermission(interaction.user.id, 'clubs:write', await permissionContext(interaction));
       const [settings, mappings] = await Promise.all([loadGuildSettings(guildId), listGuildRoleMappings(guildId)]);
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [buildSettingsViewEmbed(settings, mappings)],
-        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -442,22 +444,22 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
 
     if (subcommand === 'setup') {
       const guildId = requireGuildId(interaction);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await requireGlobalPermission(interaction.user.id, 'clubs:write', await permissionContext(interaction));
       const nonce = createSetupSession(interaction.user.id, guildId);
-      await interaction.reply({
+      await interaction.editReply({
         ...(await buildSetupRoot(nonce, guildId)),
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     if (subcommand === 'roles-view') {
       const guildId = requireGuildId(interaction);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await requireGlobalPermission(interaction.user.id, 'clubs:write', await permissionContext(interaction));
       const mappings = await listGuildRoleMappings(guildId);
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [buildRoleMappingsEmbed(guildId, mappings)],
-        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -465,6 +467,7 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
 
     if (subcommand === 'set-role-mapping') {
       const guildId = requireGuildId(interaction);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write', await permissionContext(interaction));
       const discordRole = interaction.options.getRole('discord_role', true);
       const brawlhubRole = interaction.options.getString('brawlhub_role', true) as Role;
@@ -474,9 +477,8 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
         discordRoleId: discordRole.id,
         brawlhubRole,
       });
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [buildRoleMappingsEmbed(guildId, mappings, `Mapped <@&${discordRole.id}> to **${brawlhubRole}**.`)],
-        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -484,12 +486,12 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
 
     if (subcommand === 'clear-role-mapping') {
       const guildId = requireGuildId(interaction);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write', await permissionContext(interaction));
       const discordRole = interaction.options.getRole('discord_role', true);
       const mappings = await clearGuildRoleMapping({ actor, guildId, discordRoleId: discordRole.id });
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [buildRoleMappingsEmbed(guildId, mappings, `Removed mapping for <@&${discordRole.id}>.`)],
-        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -523,8 +525,15 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
     await interaction.reply({ content: 'Choose a settings subcommand.', flags: MessageFlags.Ephemeral });
   } catch (error) {
     if (error instanceof AdminServiceError && error.code === 'forbidden') {
+      const message = FORBIDDEN_MESSAGE;
       try {
-        await interaction.reply({ content: FORBIDDEN_MESSAGE, flags: MessageFlags.Ephemeral });
+        if (interaction.deferred) {
+          await interaction.editReply({ content: message, embeds: [], components: [] });
+        } else if (interaction.replied) {
+          await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral });
+        } else {
+          await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
+        }
       } catch (replyError) {
         if (!isIgnorableInteractionError(replyError)) throw replyError;
       }
