@@ -199,7 +199,7 @@ describe('/competition command registration', () => {
 
     const create = json.options.find((option: any) => option.name === 'create');
     expect(create.options.map((option: any) => option.name)).toEqual([
-      'name', 'description', 'start', 'end', 'club', 'goal',
+      'name', 'start', 'end', 'description', 'club', 'goal',
     ]);
     const submit = json.options.find((option: any) => option.name === 'submit');
     expect(submit.options.find((option: any) => option.name === 'trophies').min_value).toBe(0);
