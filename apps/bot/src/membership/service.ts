@@ -298,22 +298,27 @@ export async function searchTrackedMembersByPlayer(
     if (guildClubIds.length === 0) {
       players = [];
     } else {
-      const { data: memberRows, error: memberError } = await db
-        .from('club_memberships')
-        .select('player_id')
-        .in('club_id', guildClubIds)
-        .in('player_id', players.map((p) => p.id).filter((id): id is string => id !== null))
-        .limit(10000);
-      requireOk(memberError, 'Read guild member players');
-      const allowed = new Set(
-        (memberRows ?? [])
-          .map((row: unknown) => {
-            const rec = record(row);
-            return typeof rec?.['player_id'] === 'string' ? (rec['player_id'] as string) : null;
-          })
-          .filter((id): id is string => id !== null),
-      );
-      players = players.filter((player) => player.id !== null && allowed.has(player.id));
+      const playerIds = players.map((p) => p.id).filter((id): id is string => id !== null);
+      if (playerIds.length === 0) {
+        players = [];
+      } else {
+        const { data: memberRows, error: memberError } = await db
+          .from('club_memberships')
+          .select('player_id')
+          .in('club_id', guildClubIds)
+          .in('player_id', playerIds)
+          .limit(10000);
+        requireOk(memberError, 'Read guild member players');
+        const allowed = new Set(
+          (memberRows ?? [])
+            .map((row: unknown) => {
+              const rec = record(row);
+              return typeof rec?.['player_id'] === 'string' ? (rec['player_id'] as string) : null;
+            })
+            .filter((id): id is string => id !== null),
+        );
+        players = players.filter((player) => player.id !== null && allowed.has(player.id));
+      }
     }
   }
   return {
@@ -427,22 +432,27 @@ export async function searchTrackedMembersByDiscord(
     if (guildClubIds.length === 0) {
       players = [];
     } else {
-      const { data: memberRows, error: memberError } = await db
-        .from('club_memberships')
-        .select('player_id')
-        .in('club_id', guildClubIds)
-        .in('player_id', players.map((p) => p.id).filter((id): id is string => id !== null))
-        .limit(10000);
-      requireOk(memberError, 'Read guild member players');
-      const allowed = new Set(
-        (memberRows ?? [])
-          .map((row: unknown) => {
-            const rec = record(row);
-            return typeof rec?.['player_id'] === 'string' ? (rec['player_id'] as string) : null;
-          })
-          .filter((id): id is string => id !== null),
-      );
-      players = players.filter((player) => player.id !== null && allowed.has(player.id));
+      const playerIds = players.map((p) => p.id).filter((id): id is string => id !== null);
+      if (playerIds.length === 0) {
+        players = [];
+      } else {
+        const { data: memberRows, error: memberError } = await db
+          .from('club_memberships')
+          .select('player_id')
+          .in('club_id', guildClubIds)
+          .in('player_id', playerIds)
+          .limit(10000);
+        requireOk(memberError, 'Read guild member players');
+        const allowed = new Set(
+          (memberRows ?? [])
+            .map((row: unknown) => {
+              const rec = record(row);
+              return typeof rec?.['player_id'] === 'string' ? (rec['player_id'] as string) : null;
+            })
+            .filter((id): id is string => id !== null),
+        );
+        players = players.filter((player) => player.id !== null && allowed.has(player.id));
+      }
     }
   }
   if (players.length === 0) return { kind: 'no-identity-link', message: NO_IDENTITY_LINK_MESSAGE };
