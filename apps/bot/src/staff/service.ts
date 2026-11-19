@@ -46,6 +46,8 @@ export class StaffServiceError extends Error {
 
 export interface StaffServiceOptions {
   readonly db?: DatabaseClient;
+  /** When set, restrict club-scoped role assignments to clubs in this guild. */
+  readonly guildId?: string | null;
 }
 
 function isRole(value: unknown): value is Role {
@@ -141,13 +143,18 @@ function compareMembers(first: StaffMember, second: StaffMember): number {
   return first.profileId.localeCompare(second.profileId);
 }
 
-/** Load all global and club staff assignments for the paginated `/staff list` view. */
+/** Load global and club staff assignments for the paginated `/staff list` view. */
 export async function listStaff(options: StaffServiceOptions = {}): Promise<StaffListView> {
   const db = options.db ?? createTrustedClient();
+  const guildId = options.guildId?.trim() || null;
+  let clubQuery = db.from('clubs').select('id, tag, name, guild_id');
+  if (guildId !== null) {
+    clubQuery = clubQuery.eq('guild_id', guildId);
+  }
   const [roleRows, profileRows, clubRows, discordRows] = await Promise.all([
     db.from('user_roles').select('user_id, scope, club_id, role, created_at'),
     db.from('profiles').select('id, discord_user_id'),
-    db.from('clubs').select('id, tag, name'),
+    clubQuery,
     db.from('discord_users').select('discord_user_id, username'),
   ]);
   requireOk(roleRows.error, 'Read user roles');
@@ -174,11 +181,13 @@ export async function listStaff(options: StaffServiceOptions = {}): Promise<Staf
   }
 
   const clubsById = new Map<string, ClubRef>();
+  const allowedClubIds = new Set<string>();
   for (const value of clubRows.data ?? []) {
     const row = record(value);
     const clubId = asString(row?.['id']);
     if (clubId === null) continue;
     clubsById.set(clubId, { tag: asString(row?.['tag']), name: asString(row?.['name']) });
+    allowedClubIds.add(clubId);
   }
 
   const rolesByProfile = new Map<string, StaffRoleEntry[]>();
@@ -194,6 +203,7 @@ export async function listStaff(options: StaffServiceOptions = {}): Promise<Staf
 
     const clubId = scope === 'club' ? asString(row['club_id']) : null;
     if (scope === 'club' && clubId === null) continue;
+    if (scope === 'club' && guildId !== null && !allowedClubIds.has(clubId!)) continue;
     const club = clubId === null ? null : clubsById.get(clubId) ?? null;
     const entry: StaffRoleEntry = {
       scope,

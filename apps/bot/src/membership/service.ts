@@ -24,11 +24,12 @@ type DatabaseClient = ReturnType<typeof createTrustedClient>;
 
 const DEFAULT_STALE_AFTER_MS = 15 * 60_000;
 
+const PLAYER_COLUMNS = 'id, tag, name, trophies, highest_trophies, exp_level, last_synced_at';
+
 const MEMBERSHIP_SELECT =
   'id, club_id, player_id, role, valid_from, valid_to, ' +
-  'club:clubs!club_memberships_club_id_fkey(id, tag, name)';
-
-const PLAYER_COLUMNS = 'id, tag, name, trophies, highest_trophies, exp_level, last_synced_at';
+  'club:clubs!club_memberships_club_id_fkey(id, tag, name), ' +
+  'player:players!club_memberships_player_id_fkey(' + PLAYER_COLUMNS + ')';
 
 const INVALID_TAG_MESSAGE =
   'That club tag is not valid. Brawl Stars tags use 3–10 characters from 0, 2, 8, 9, C, G, J, L, P, Q, R, U, V and Y.';

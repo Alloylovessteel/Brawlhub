@@ -10,7 +10,7 @@ export const statusCommandData = new SlashCommandBuilder()
 /** Public command: it reports only generic health states, never raw errors or configuration. */
 export async function handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
-    const view = await loadStatusView();
+    const view = await loadStatusView({ guildId: interaction.guildId });
     await interaction.reply({
       embeds: [buildStatusEmbed(view)],
       allowedMentions: { parse: [] },

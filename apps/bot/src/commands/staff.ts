@@ -34,8 +34,8 @@ export const staffCommandData = new SlashCommandBuilder()
       .setDescription('List registered BrawlHub staff (authorised staff only)'),
   );
 
-async function buildListPage(pageNumber: number): Promise<PagePayload> {
-  const view = await listStaff();
+async function buildListPage(guildId: string | null, pageNumber: number): Promise<PagePayload> {
+  const view = await listStaff({ guildId });
   const page = paginate(view.entries, pageNumber, LIST_PAGE_SIZE);
   const row = buildPaginationRow(COMMAND_NAME, page.page, page.pageCount);
   return {
@@ -90,7 +90,7 @@ export async function handleStaff(interaction: ChatInputCommandInteraction): Pro
 
     await requireStaffManager(interaction);
     await interaction.reply({
-      ...(await buildListPage(1)),
+      ...(await buildListPage(interaction.guildId, 1)),
       flags: 64,
       allowedMentions: { parse: [] },
     });
@@ -107,7 +107,7 @@ export async function handleStaffComponent(interaction: CommandComponentInteract
     await interaction.deferUpdate();
     await requireStaffManager(interaction);
     await interaction.editReply({
-      ...(await buildListPage(pageNumber)),
+      ...(await buildListPage(interaction.guildId, pageNumber)),
       content: null,
       allowedMentions: { parse: [] },
     });

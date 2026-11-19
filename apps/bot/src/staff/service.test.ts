@@ -250,4 +250,35 @@ describe('staff listing', () => {
     expect(view).toMatchObject({ entries: [], globalCount: 0, clubCount: 0 });
     expect(view.generatedAt).toBeInstanceOf(Date);
   });
+
+  it('scopes club role assignments to the requested guild', async () => {
+    const foreignClub = 'club-foreign';
+    const tables = baseTables();
+    tables['clubs'] = [
+      { id: ALPHA_CLUB, tag: 'ALPHA', name: 'Alpha', guild_id: 'guild-a' },
+      { id: BRAVO_CLUB, tag: 'BRAVO', name: 'Bravo', guild_id: 'guild-b' },
+      { id: foreignClub, tag: 'FOREIGN', name: 'Foreign', guild_id: 'guild-b' },
+    ];
+    tables['user_roles'] = [
+      roleRow(OWNER_PROFILE, 'global', 'owner'),
+      roleRow(CLUB_OWNER_PROFILE, 'club', 'owner', ALPHA_CLUB),
+      roleRow(CLUB_ADMIN_PROFILE, 'club', 'admin', foreignClub),
+      roleRow(CLUB_STAFF_PROFILE, 'club', 'staff', BRAVO_CLUB),
+    ];
+    const db: any = createFakeDb(tables);
+
+    const view = await listStaff({ db, guildId: 'guild-a' });
+
+    expect(view.entries.map((entry) => entry.profileId)).toEqual(
+      expect.arrayContaining([OWNER_PROFILE, CLUB_OWNER_PROFILE]),
+    );
+    expect(view.entries.some((entry) => entry.profileId === CLUB_ADMIN_PROFILE)).toBe(false);
+    expect(view.entries.some((entry) => entry.profileId === CLUB_STAFF_PROFILE)).toBe(false);
+    const clubOwner = view.entries.find((entry) => entry.profileId === CLUB_OWNER_PROFILE);
+    expect(clubOwner?.roles).toEqual([
+      expect.objectContaining({ scope: 'club', clubId: ALPHA_CLUB, clubTag: 'ALPHA' }),
+    ]);
+    expect(view.globalCount).toBe(1);
+    expect(view.clubCount).toBe(1);
+  });
 });

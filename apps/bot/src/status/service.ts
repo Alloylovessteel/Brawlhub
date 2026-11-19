@@ -50,6 +50,8 @@ export interface StatusServiceOptions {
   readonly apiCacheMs?: number;
   readonly loadSync?: () => Promise<SyncStatusView>;
   readonly isSyncInFlight?: () => boolean;
+  /** When set, scope database/sync checks to this guild for per-server isolation. */
+  readonly guildId?: string | null;
 }
 
 const DEFAULT_API_TIMEOUT_MS = 5_000;
@@ -102,8 +104,14 @@ async function checkDatabase(
     };
   }
 
+  const guildId = options.guildId?.trim() || null;
+
   try {
-    const result = await db.from('clubs').select('tag', { count: 'exact' }).limit(1);
+    let query = db.from('clubs').select('tag', { count: 'exact' });
+    if (guildId !== null) {
+      query = query.eq('guild_id', guildId);
+    }
+    const result = await query.limit(1);
     if (result.error !== null && result.error !== undefined) {
       return {
         check: { state: 'error', detail: 'Database check failed.', clubCount: null },
@@ -141,7 +149,13 @@ async function checkBrawlApi(
     return { state: 'unavailable', detail: 'Official API key is not configured.' };
   }
   if (sampleTag === null) {
-    return { state: 'unavailable', detail: 'No registered club is available for a lightweight API check.' };
+    const guildScoped = (options.guildId?.trim() || null) !== null;
+    return {
+      state: 'unavailable',
+      detail: guildScoped
+        ? 'No registered club is available in this server for a lightweight API check.'
+        : 'No registered club is available for a lightweight API check.',
+    };
   }
 
   const cacheMs = options.apiCacheMs ?? DEFAULT_API_CACHE_MS;
@@ -178,8 +192,9 @@ const NO_SYNC_VIEW = (): SyncStatusView => ({
 
 async function checkSync(db: DatabaseClient | null, options: StatusServiceOptions): Promise<SyncCheck> {
   try {
+    const guildId = options.guildId?.trim() || null;
     const view = await (options.loadSync ??
-      (() => loadSyncStatus(null, db === null ? {} : { db })))();
+      (() => loadSyncStatus(guildId, db === null ? {} : { db })))();
     const latest = view.latestRun;
     if (latest === null) {
       return {

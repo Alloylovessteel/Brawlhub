@@ -206,6 +206,7 @@ describe('/staff command handlers', () => {
       'staff:manage',
       expect.objectContaining({ guildId: 'guild-1' }),
     );
+    expect(mocks.service.listStaff).toHaveBeenCalledWith({ guildId: 'guild-1' });
     expect(mocks.embed.buildStaffListEmbed).toHaveBeenCalledWith(
       view,
       expect.objectContaining({ page: 1, pageCount: 2, total: 7 }),
@@ -238,6 +239,7 @@ describe('/staff command handlers', () => {
 
     await handleStaffComponent(button);
 
+    expect(mocks.service.listStaff).toHaveBeenCalledWith({ guildId: 'guild-1' });
     expect(mocks.embed.buildStaffListEmbed).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ page: 2, pageCount: 3, total: 12 }),
