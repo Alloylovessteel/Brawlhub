@@ -170,7 +170,7 @@ function auditEntries(count: number) {
 }
 
 function chat(subcommand: string | null, options: Record<string, unknown> = {}, userId = ACTOR_ID) {
-  return {
+  const interaction = {
     user: { id: userId },
     guildId: GUILD_ID,
     options: {
@@ -182,9 +182,14 @@ function chat(subcommand: string | null, options: Record<string, unknown> = {}, 
     },
     replied: false,
     deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function button(customId: string, userId = ACTOR_ID) {
@@ -412,7 +417,9 @@ describe('/sync', () => {
     await handleSync(interaction);
 
     expect(mocks.guard.runManagedSync).not.toHaveBeenCalled();
-    expect(payload(interaction, 'reply').ephemeral).toBe(true);
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(payload(interaction, 'editReply').content).toContain('permission');
+    expect(interaction.followUp).not.toHaveBeenCalled();
   });
 
   it('enforces the existing three-per-minute rate limit', async () => {
@@ -422,7 +429,7 @@ describe('/sync', () => {
     await handleSync(interaction);
 
     expect(mocks.guard.runManagedSync).not.toHaveBeenCalled();
-    expect(payload(interaction, 'reply').content).toContain('12 second');
+    expect(payload(interaction, 'editReply').content).toContain('12 second');
   });
 
   it('refuses an overlapping sync run', async () => {
@@ -431,7 +438,7 @@ describe('/sync', () => {
 
     await handleSync(interaction);
 
-    expect(payload(interaction, 'reply').content).toContain('already running');
+    expect(payload(interaction, 'editReply').content).toContain('already running');
     expect(mocks.service.recordSyncRunAudit).not.toHaveBeenCalled();
   });
 
@@ -449,6 +456,7 @@ describe('/sync', () => {
     expect(mocks.service.recordSyncRunAudit).toHaveBeenCalledWith(actor(), failed);
     expect(mocks.service.loadSyncRun).toHaveBeenCalledWith('run-1');
     expect(mocks.embeds.buildSyncResultEmbed).toHaveBeenCalledWith(failed, syncRun());
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
   });
 });
 
@@ -551,7 +559,7 @@ describe('/settings', () => {
     const confirmation = button(confirmId);
     await handleSettingsComponent(confirmation);
 
-    expect(payload(confirmation, 'followUp').content).toContain('not registered');
+    expect(payload(confirmation, 'editReply').content).toContain('not registered');
   });
 
   it('prevents replay of a settings confirmation', async () => {
@@ -564,7 +572,7 @@ describe('/settings', () => {
     await handleSettingsComponent(replay);
 
     expect(mocks.service.updateGuildSettings).toHaveBeenCalledOnce();
-    expect(payload(replay, 'followUp').content).toContain('no longer valid');
+    expect(payload(replay, 'editReply').content).toContain('no longer valid');
   });
 
   it('provides registered club autocomplete only to authorised users', async () => {
@@ -614,7 +622,7 @@ describe('/audit', () => {
     const page = button(nextId);
     await handleAuditComponent(page);
 
-    expect(payload(page, 'followUp').content).toContain('permission');
+    expect(payload(page, 'editReply').content).toContain('permission');
     expect(mocks.service.listAuditLogs).toHaveBeenCalledOnce();
   });
 

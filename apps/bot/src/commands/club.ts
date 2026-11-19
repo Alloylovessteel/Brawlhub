@@ -38,37 +38,46 @@ function apiNotice(issue: ApiIssue | null): string | undefined {
 
 /** Handle `/club` and `/club tag:<tag>` without registering unknown clubs. */
 export async function handleClub(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
+
   const rawTag = interaction.options.getString('tag', false) ?? undefined;
-  const result = await loadClubView({ tag: rawTag, guildId: interaction.guildId });
+  const config = getBotConfig();
+  const now = new Date();
+  const result = await loadClubView({
+    tag: rawTag,
+    guildId: interaction.guildId,
+    now,
+    seasonStartIso: config.seasonStartIso,
+  });
 
   if (result.kind === 'invalid-tag') {
-    await interaction.reply({ content: INVALID_TAG_MESSAGE, ephemeral: true });
+    await interaction.editReply({ content: INVALID_TAG_MESSAGE, allowedMentions: { parse: [] } });
     return;
   }
 
   if (result.kind === 'unregistered') {
-    await interaction.reply({
+    await interaction.editReply({
       content:
         `Club #${result.tag} is not registered with BrawlHub. ` +
         'An authorised user must register/link the club first.',
-      ephemeral: true,
+      allowedMentions: { parse: [] },
     });
     return;
   }
 
   if (result.kind === 'no-default') {
-    await interaction.reply({
+    await interaction.editReply({
       content:
         'No default club is configured for this server and more than one club is registered. ' +
         'Use `/club tag:<tag>` to choose one.',
-      ephemeral: true,
+      allowedMentions: { parse: [] },
     });
     return;
   }
 
-  const embed = buildClubEmbed(result.view, getBotConfig());
+  const embed = buildClubEmbed(result.view, config, now);
   const content = apiNotice(result.view.apiIssue);
-  await interaction.reply({
+  await interaction.editReply({
     ...(content === undefined ? {} : { content }),
     embeds: [embed],
     allowedMentions: { parse: [] },

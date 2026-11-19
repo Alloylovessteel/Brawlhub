@@ -36,14 +36,19 @@ import { handleClubAutocomplete, handleClub } from './club';
 import { handleClubs, handleClubsComponent } from './clubs';
 
 function chatInteraction(tag: string | null = null, guildId: string | null = 'guild-1') {
-  return {
+  const interaction = {
     guildId,
     options: { getString: vi.fn(() => tag) },
     replied: false,
     deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function autocompleteInteraction(focused: string) {
@@ -87,6 +92,10 @@ function okView(overrides: Record<string, unknown> = {}) {
       currentAt: new Date().toISOString(),
       description: 'Description',
       requiredTrophies: 500,
+      type: null,
+      badgeId: null,
+      matchActivity: null,
+      megaPigEstimate: null,
       latestSyncAt: null,
       liveStatus: 'live',
       apiIssue: null,
@@ -128,11 +137,14 @@ describe('/club command', () => {
 
     await handleClub(interaction);
 
-    expect(mocks.service.loadClubView).toHaveBeenCalledWith({
-      tag: undefined,
-      guildId: 'guild-1',
-    });
-    expect(interaction.reply).toHaveBeenCalledWith(
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect(mocks.service.loadClubView).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tag: undefined,
+        guildId: 'guild-1',
+      }),
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({ embeds: expect.any(Array) }),
     );
   });
@@ -143,11 +155,13 @@ describe('/club command', () => {
 
     await handleClub(interaction);
 
-    expect(mocks.service.loadClubView).toHaveBeenCalledWith({
-      tag: '#2c0y',
-      guildId: 'guild-1',
-    });
-    const payload = (interaction.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(mocks.service.loadClubView).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tag: '#2c0y',
+        guildId: 'guild-1',
+      }),
+    );
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(payload.embeds[0].toJSON().title).toContain('#2C0Y');
   });
 
@@ -157,8 +171,8 @@ describe('/club command', () => {
 
     await handleClub(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith(
-      expect.objectContaining({ content: expect.stringContaining('not valid'), ephemeral: true }),
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('not valid') }),
     );
   });
 
@@ -168,10 +182,9 @@ describe('/club command', () => {
 
     await handleClub(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith(
+    expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining('authorised user must register/link'),
-        ephemeral: true,
       }),
     );
   });
@@ -184,6 +197,10 @@ describe('/club command', () => {
         currentTrophies: null,
         description: null,
         requiredTrophies: null,
+        type: null,
+        badgeId: null,
+        matchActivity: null,
+        megaPigEstimate: null,
         liveStatus: 'sync-only',
       }),
     );
@@ -191,7 +208,7 @@ describe('/club command', () => {
 
     await handleClub(interaction);
 
-    const payload = (interaction.reply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(payload.embeds[0].toJSON().fields).toBeUndefined();
     expect(JSON.stringify(payload)).not.toContain('Unavailable');
   });
@@ -204,7 +221,7 @@ describe('/club command', () => {
 
     await handleClub(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith(
+    expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining('rate limited') }),
     );
   });

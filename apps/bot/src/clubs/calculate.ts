@@ -4,6 +4,8 @@ import type {
   HistoryPeriod,
   HistoryPoint,
   LeaderboardEntry,
+  MatchActivity,
+  MegaPigEstimate,
   MemberDetail,
   RosterMember,
   TrophyProgression,
@@ -205,5 +207,60 @@ export function calculateHistoryChange(
     trophies: difference(last.trophies, first.trophies),
     averageTrophies: difference(last.averageTrophies, first.averageTrophies),
     memberCount: difference(last.memberCount, first.memberCount),
+  };
+}
+
+function averageRounded(values: readonly number[]): number | null {
+  if (values.length === 0) return null;
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+export function calculateAverageMatches(input: {
+  readonly countsByPlayer: ReadonlyMap<string, { today: number; week: number; season: number }>;
+  readonly memberPlayerIds: readonly string[];
+  readonly lastBattleAt: string | null;
+}): MatchActivity | null {
+  if (input.memberPlayerIds.length === 0) return null;
+  const today: number[] = [];
+  const week: number[] = [];
+  const season: number[] = [];
+  for (const playerId of input.memberPlayerIds) {
+    const counts = input.countsByPlayer.get(playerId) ?? { today: 0, week: 0, season: 0 };
+    today.push(counts.today);
+    week.push(counts.week);
+    season.push(counts.season);
+  }
+  return {
+    today: averageRounded(today),
+    week: averageRounded(week),
+    season: averageRounded(season),
+    sampleSize: input.memberPlayerIds.length,
+    lastBattleAt: input.lastBattleAt,
+  };
+}
+
+export function calculateMegaPigEstimate(input: {
+  readonly rows: readonly { matches: number; wins: number; trophyChange: number }[];
+  readonly windowStart: string | null;
+  readonly windowEnd: string | null;
+}): MegaPigEstimate | null {
+  if (input.windowStart === null || input.windowEnd === null) return null;
+  if (input.rows.length === 0) {
+    return {
+      matches: 0,
+      wins: 0,
+      trophyChange: 0,
+      sampleSize: 0,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+    };
+  }
+  return {
+    matches: input.rows.reduce((sum, row) => sum + row.matches, 0),
+    wins: input.rows.reduce((sum, row) => sum + row.wins, 0),
+    trophyChange: input.rows.reduce((sum, row) => sum + row.trophyChange, 0),
+    sampleSize: input.rows.length,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
   };
 }

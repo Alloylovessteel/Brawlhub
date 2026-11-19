@@ -73,13 +73,6 @@ export const competitionCommandData = new SlashCommandBuilder()
       )
       .addStringOption((option) =>
         option
-          .setName('description')
-          .setDescription('Rules shown on the competition')
-          .setRequired(false)
-          .setMaxLength(1000),
-      )
-      .addStringOption((option) =>
-        option
           .setName('start')
           .setDescription('Start date/time, e.g. 2026-11-25T18:00Z')
           .setRequired(true)
@@ -91,6 +84,13 @@ export const competitionCommandData = new SlashCommandBuilder()
           .setDescription('End date/time, e.g. 2026-11-26T21:00Z')
           .setRequired(true)
           .setMaxLength(40),
+      )
+      .addStringOption((option) =>
+        option
+          .setName('description')
+          .setDescription('Rules shown on the competition')
+          .setRequired(false)
+          .setMaxLength(1000),
       )
       .addStringOption((option) =>
         option

@@ -45,6 +45,23 @@ export interface SyncRunRecord {
 export type RosterSource = 'live' | 'snapshot' | 'memberships' | 'none';
 export type ApiIssue = 'rate-limit' | 'unauthorized' | 'error';
 
+export interface MatchActivity {
+  readonly today: number | null;
+  readonly week: number | null;
+  readonly season: number | null;
+  readonly sampleSize: number;
+  readonly lastBattleAt: string | null;
+}
+
+export interface MegaPigEstimate {
+  readonly matches: number;
+  readonly wins: number;
+  readonly trophyChange: number;
+  readonly sampleSize: number;
+  readonly windowStart: string;
+  readonly windowEnd: string;
+}
+
 export interface ClubView {
   readonly club: ClubRecord;
   readonly roster: readonly RosterMember[];
@@ -55,6 +72,10 @@ export interface ClubView {
   readonly currentAt: string;
   readonly description: string | null;
   readonly requiredTrophies: number | null;
+  readonly type: string | null;
+  readonly badgeId: number | null;
+  readonly matchActivity: MatchActivity | null;
+  readonly megaPigEstimate: MegaPigEstimate | null;
   readonly latestSyncAt: string | null;
   readonly liveStatus: 'live' | 'sync-only';
   readonly apiIssue: ApiIssue | null;
@@ -121,6 +142,23 @@ export interface MemberView extends SyncedClubView {
 
 export interface LeaderboardView extends SyncedClubView {
   readonly entries: readonly LeaderboardEntry[];
+}
+
+export type ClubLogPeriod = 'today' | 'week' | 'season';
+
+export interface ClubLogRow {
+  readonly rank: number;
+  readonly member: MemberDetail;
+  readonly change: number;
+}
+
+export interface ClubLogView {
+  readonly club: ClubRecord;
+  readonly period: ClubLogPeriod;
+  readonly rows: readonly ClubLogRow[];
+  readonly unavailable: number;
+  readonly latestSnapshotAt: string | null;
+  readonly latestSyncAt: string | null;
 }
 
 export type HistoryPeriod = '7d' | '30d' | '90d' | 'all';

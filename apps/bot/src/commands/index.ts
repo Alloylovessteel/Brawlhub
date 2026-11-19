@@ -39,6 +39,12 @@ import {
   handleClubLeaderboardComponent,
 } from './club-leaderboard.js';
 import {
+  clubLogCommandData,
+  handleClubLog,
+  handleClubLogAutocomplete,
+  handleClubLogComponent,
+} from './club-log.js';
+import {
   clubHistoryCommandData,
   handleClubHistory,
   handleClubHistoryAutocomplete,
@@ -187,6 +193,12 @@ export const commands: readonly CommandDefinition[] = [
     handleComponent: handleClubLeaderboardComponent,
   },
   {
+    data: clubLogCommandData,
+    handle: handleClubLog,
+    autocomplete: handleClubLogAutocomplete,
+    handleComponent: handleClubLogComponent,
+  },
+  {
     data: clubHistoryCommandData,
     handle: handleClubHistory,
     autocomplete: handleClubHistoryAutocomplete,
@@ -282,6 +294,11 @@ export const commands: readonly CommandDefinition[] = [
     handleComponent: handleAuditComponent,
   },
   {
+    data: removeClubCommandData,
+    handle: handleRemoveClub,
+    autocomplete: handleRemoveClubAutocomplete,
+  },
+  {
     data: helpCommandData,
     handle: handleHelp,
     handleComponent: handleHelpComponent,
@@ -298,9 +315,7 @@ export const commands: readonly CommandDefinition[] = [
 
 /**
  * Implemented but intentionally not registered. `blacklist` calls RPCs added by
- * 0009_moderation_blacklists.sql, which remains unapplied. `remove-club` has no
- * safe archival mechanism in the current schema and would cascade-delete
- * historical data, so destructive removal is intentionally disabled.
+ * 0009_moderation_blacklists.sql, which remains unapplied.
  * registerCommands() and handleInteraction() only use `commands`, so these
  * definitions are never deployed or dispatched.
  */
@@ -310,11 +325,6 @@ export const pendingCommands: readonly CommandDefinition[] = [
     handle: handleBlacklist,
     autocomplete: handleBlacklistAutocomplete,
     handleComponent: handleBlacklistComponent,
-  },
-  {
-    data: removeClubCommandData,
-    handle: handleRemoveClub,
-    autocomplete: handleRemoveClubAutocomplete,
   },
 ];
 

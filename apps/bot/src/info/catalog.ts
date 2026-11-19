@@ -40,6 +40,12 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         description: 'Rank registered clubs by trophies.',
       },
       {
+        name: 'club-log',
+        usage: '/club-log tag:2UG9UGQJY period:Daily (Today)',
+        description:
+          'Show daily or weekly per-member trophy changes for a registered club from stored sync snapshots.',
+      },
+      {
         name: 'club-history',
         usage: '/club-history tag:2UG9UGQJY',
         description: 'Show stored history for a registered club.',
@@ -144,6 +150,13 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         name: 'register-club',
         usage: '/register-club tag:2UG9UGQJY',
         description: 'Preview and register a club after official API validation.',
+        permission: 'clubs:write',
+      },
+      {
+        name: 'remove-club',
+        usage: '/remove-club club:2UG9UGQJY',
+        description:
+          'Explain that safe club removal/archival is currently unavailable; no club data is deleted.',
         permission: 'clubs:write',
       },
       {

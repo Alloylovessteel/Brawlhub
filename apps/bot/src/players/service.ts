@@ -58,7 +58,25 @@ const PLAYER_COLUMNS = [
   'trophies',
   'highest_trophies',
   'exp_level',
+  'exp_points',
   'last_synced_at',
+  'last_battle_at',
+  'fame',
+  'fame_tier_name',
+  'total_prestige_level',
+  'three_vs_three_victories',
+  'solo_victories',
+  'duo_victories',
+  'best_robo_rumble_time',
+  'best_time_as_big_brawler',
+  'ranked_rank_name',
+  'ranked_elo',
+  'highest_season_ranked_rank_name',
+  'highest_season_ranked_elo',
+  'highest_all_time_ranked_rank_name',
+  'highest_all_time_ranked_elo',
+  'is_qualified_from_championship_challenge',
+  'profile_extra',
 ].join(', ');
 
 const PLAYER_SNAPSHOT_COLUMNS =
@@ -106,6 +124,43 @@ function isNotFound(error: unknown): boolean {
   return error instanceof BrawlStarsApiError && error.status === 404;
 }
 
+function asBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function numberOrNullFromExtra(extra: unknown, key: string): number | null {
+  const source = record(extra);
+  if (source === null) return null;
+  return asNumber(source[key]);
+}
+
+function stringOrNullFromExtra(extra: unknown, key: string): string | null {
+  const source = record(extra);
+  if (source === null) return null;
+  return asString(source[key]);
+}
+
+function parseMegaPig(extra: unknown): PlayerIdentity['megaPig'] {
+  const source = record(extra);
+  const raw = record(source?.['megaPig']);
+  if (raw === null) return null;
+  const date = asString(raw['date']) ?? asString(raw['week']);
+  const wins = asNumber(raw['wins']);
+  const draws = asNumber(raw['draws']);
+  const losses = asNumber(raw['losses']);
+  const ticketsUsed = asNumber(raw['ticketsUsed']) ?? asNumber(raw['tickets']);
+  if (
+    date === null &&
+    wins === null &&
+    draws === null &&
+    losses === null &&
+    ticketsUsed === null
+  ) {
+    return null;
+  }
+  return { date, wins, draws, losses, ticketsUsed };
+}
+
 export function parsePlayerRow(value: unknown): PlayerIdentity | null {
   const row = record(value);
   if (row === null) return null;
@@ -114,6 +169,8 @@ export function parsePlayerRow(value: unknown): PlayerIdentity | null {
   const name = asString(row['name']);
   if (id === null || !parsedTag.success || name === null) return null;
 
+  const extra = row['profile_extra'];
+
   return {
     id,
     tag: parsedTag.data,
@@ -121,7 +178,29 @@ export function parsePlayerRow(value: unknown): PlayerIdentity | null {
     trophies: asNumber(row['trophies']),
     highestTrophies: asNumber(row['highest_trophies']),
     expLevel: asNumber(row['exp_level']),
+    expPoints: asNumber(row['exp_points']) ?? numberOrNullFromExtra(extra, 'expPoints'),
     lastSyncedAt: asString(row['last_synced_at']),
+    lastBattleAt: asString(row['last_battle_at']),
+    fame: asNumber(row['fame']) ?? numberOrNullFromExtra(extra, 'fame'),
+    fameTierName: asString(row['fame_tier_name']) ?? stringOrNullFromExtra(extra, 'fameTierName'),
+    totalPrestigeLevel: asNumber(row['total_prestige_level']) ?? numberOrNullFromExtra(extra, 'totalPrestigeLevel'),
+    threeVsThreeVictories: asNumber(row['three_vs_three_victories']) ?? numberOrNullFromExtra(extra, '3vs3Victories'),
+    soloVictories: asNumber(row['solo_victories']) ?? numberOrNullFromExtra(extra, 'soloVictories'),
+    duoVictories: asNumber(row['duo_victories']) ?? numberOrNullFromExtra(extra, 'duoVictories'),
+    bestRoboRumbleTime: asNumber(row['best_robo_rumble_time']) ?? numberOrNullFromExtra(extra, 'bestRoboRumbleTime'),
+    bestTimeAsBigBrawler: asNumber(row['best_time_as_big_brawler']) ?? numberOrNullFromExtra(extra, 'bestTimeAsBigBrawler'),
+    rankedRankName: asString(row['ranked_rank_name']) ?? stringOrNullFromExtra(extra, 'rankedRankName'),
+    rankedElo: asNumber(row['ranked_elo']) ?? numberOrNullFromExtra(extra, 'rankedElo'),
+    highestSeasonRankedRankName: asString(row['highest_season_ranked_rank_name']) ?? stringOrNullFromExtra(extra, 'highestSeasonRankedRankName'),
+    highestSeasonRankedElo: asNumber(row['highest_season_ranked_elo']) ?? numberOrNullFromExtra(extra, 'highestSeasonRankedElo'),
+    highestAllTimeRankedRankName: asString(row['highest_all_time_ranked_rank_name']) ?? stringOrNullFromExtra(extra, 'highestAllTimeRankedRankName'),
+    highestAllTimeRankedElo: asNumber(row['highest_all_time_ranked_elo']) ?? numberOrNullFromExtra(extra, 'highestAllTimeRankedElo'),
+    isQualifiedFromChampionshipChallenge:
+      asBoolean(row['is_qualified_from_championship_challenge']) ??
+      (typeof record(extra)?.['isQualifiedFromChampionshipChallenge'] === 'boolean'
+        ? (record(extra)?.['isQualifiedFromChampionshipChallenge'] as boolean)
+        : null),
+    megaPig: parseMegaPig(extra),
   };
 }
 
@@ -347,24 +426,69 @@ async function fetchLivePlayer(
   }
 }
 
-function profileFromLive(live: Player, stored: PlayerIdentity | null, tag: string): PlayerIdentity {
+function identityFromLive(live: Player, stored: PlayerIdentity | null, tag: string): PlayerIdentity {
   const base = stored ?? {
     id: null,
     tag,
+    name: live.name,
     trophies: null,
     highestTrophies: null,
     expLevel: null,
+    expPoints: null,
     lastSyncedAt: null,
-    name: live.name,
+    lastBattleAt: null,
+    fame: null,
+    fameTierName: null,
+    totalPrestigeLevel: null,
+    threeVsThreeVictories: null,
+    soloVictories: null,
+    duoVictories: null,
+    bestRoboRumbleTime: null,
+    bestTimeAsBigBrawler: null,
+    rankedRankName: null,
+    rankedElo: null,
+    highestSeasonRankedRankName: null,
+    highestSeasonRankedElo: null,
+    highestAllTimeRankedRankName: null,
+    highestAllTimeRankedElo: null,
+    isQualifiedFromChampionshipChallenge: null,
+    megaPig: null,
   };
+
+  const liveMegaPig = parseMegaPig(live as unknown);
+  const highest = live.highestTrophies ?? live.highscore ?? base.highestTrophies;
   return {
     ...base,
     tag,
     name: live.name,
     trophies: live.trophies,
-    highestTrophies: live.highscore ?? base.highestTrophies,
+    highestTrophies: highest ?? null,
     expLevel: live.expLevel ?? base.expLevel,
+    expPoints: live.expPoints ?? base.expPoints,
+    fame: live.fame ?? base.fame,
+    fameTierName: live.fameTierName ?? base.fameTierName,
+    totalPrestigeLevel: live.totalPrestigeLevel ?? base.totalPrestigeLevel,
+    threeVsThreeVictories: live['3vs3Victories'] ?? base.threeVsThreeVictories,
+    soloVictories: live.soloVictories ?? base.soloVictories,
+    duoVictories: live.duoVictories ?? base.duoVictories,
+    bestRoboRumbleTime: live.bestRoboRumbleTime ?? base.bestRoboRumbleTime,
+    bestTimeAsBigBrawler: live.bestTimeAsBigBrawler ?? base.bestTimeAsBigBrawler,
+    rankedRankName: live.rankedRankName ?? base.rankedRankName,
+    rankedElo: live.rankedElo ?? base.rankedElo,
+    highestSeasonRankedRankName: live.highestSeasonRankedRankName ?? base.highestSeasonRankedRankName,
+    highestSeasonRankedElo: live.highestSeasonRankedElo ?? base.highestSeasonRankedElo,
+    highestAllTimeRankedRankName: live.highestAllTimeRankedRankName ?? base.highestAllTimeRankedRankName,
+    highestAllTimeRankedElo: live.highestAllTimeRankedElo ?? base.highestAllTimeRankedElo,
+    isQualifiedFromChampionshipChallenge:
+      typeof live.isQualifiedFromChampionshipChallenge === 'boolean'
+        ? live.isQualifiedFromChampionshipChallenge
+        : base.isQualifiedFromChampionshipChallenge,
+    megaPig: liveMegaPig ?? base.megaPig,
   };
+}
+
+function profileFromLive(live: Player, stored: PlayerIdentity | null, tag: string): PlayerIdentity {
+  return identityFromLive(live, stored, tag);
 }
 
 function liveClubRef(club: Player['club']): PlayerClubRef | null {
@@ -432,7 +556,7 @@ export async function loadPlayerProfile(
   }
 
   const effective = live.profile !== null
-    ? profileFromLive(live.profile, stored, normalized.tag)
+    ? identityFromLive(live.profile, stored, normalized.tag)
     : stored;
   if (effective === null) return { kind: 'not-found', tag: normalized.tag };
 
@@ -443,10 +567,33 @@ export async function loadPlayerProfile(
         readMemberships(storedPlayerId(stored), db, stored.lastSyncedAt, staleAfterMs, now),
       ]);
 
-  const brawlers = (live.profile?.brawlers ?? [])
-    .map((brawler) => ({ name: brawler.name, trophies: brawler.trophies }))
+  const liveBrawlers = live.profile?.brawlers ?? [];
+  const brawlers = liveBrawlers
+    .map((brawler) => ({
+      name: brawler.name,
+      trophies: brawler.trophies,
+      highestTrophies: brawler.highestTrophies ?? null,
+      power: brawler.power ?? null,
+      rank: brawler.rank ?? null,
+      prestigeLevel: brawler.prestigeLevel ?? null,
+      currentWinStreak: brawler.currentWinStreak ?? null,
+      maxWinStreak: brawler.maxWinStreak ?? null,
+      gadgets: Array.isArray(brawler.gadgets) ? brawler.gadgets.length : 0,
+      starPowers: Array.isArray(brawler.starPowers) ? brawler.starPowers.length : 0,
+      gears: Array.isArray(brawler.gears) ? brawler.gears.length : 0,
+      hyperCharges: Array.isArray(brawler.hyperCharges) ? brawler.hyperCharges.length : 0,
+    }))
     .sort((a, b) => b.trophies - a.trophies)
-    .slice(0, 5);
+    .slice(0, 8);
+
+  const stats = live.profile !== null
+    ? {
+        brawlerCount: liveBrawlers.length,
+        totalPrestigeLevels: live.profile.totalPrestigeLevel ?? null,
+        maxedBrawlers: liveBrawlers.filter((b) => (b.power ?? 0) >= 11).length,
+      }
+    : null;
+
   const apiIssue: PlayerProfileView['apiIssue'] = live.notFound
     ? 'not-found'
     : live.issue;
@@ -457,6 +604,7 @@ export async function loadPlayerProfile(
       player: effective,
       currentClub: liveClubRef(live.profile?.club) ?? selectCurrentClub(memberships),
       brawlers,
+      stats,
       latestSnapshotAt: latestSnapshot(history.snapshots)?.capturedAt ?? null,
       source: live.profile !== null ? 'live' : 'stored',
       apiIssue,
@@ -548,6 +696,7 @@ export async function loadPlayerClubs(
       memberships,
       events,
       latestSyncAt: player.lastSyncedAt,
+      lastBattleAt: player.lastBattleAt,
     },
   };
 }

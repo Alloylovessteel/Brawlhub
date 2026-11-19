@@ -25,8 +25,13 @@ const PERMISSION_ORDER: readonly Permission[] = [
   ]),
 ];
 
-const PROFILE_NOT_LINKED_MESSAGE =
-  'Your Discord account is not linked to BrawlHub. Sign in to the website first.';
+export function getProfileNotLinkedMessage(): string {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL?.trim() || process.env.BRAWLHUB_WEB_URL?.trim();
+  const link = appUrl && /^https?:\/\//i.test(appUrl) ? ` ${appUrl.replace(/\/$/, '')}` : '';
+  return `Your Discord account is not linked to BrawlHub. Sign in to the website first.${link}`;
+}
+
+const PROFILE_NOT_LINKED_MESSAGE = getProfileNotLinkedMessage();
 
 /** Expected, user-facing staff failures; raw database errors remain hidden. */
 export class StaffServiceError extends Error {

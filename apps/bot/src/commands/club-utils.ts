@@ -27,40 +27,40 @@ export function tagFromPaginationState(state: string): string | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+/** Map a club lookup failure to a safe user-facing message. */
+export function mapClubLookupFailureMessage(failure: ClubLookupFailure): string {
+  switch (failure.kind) {
+    case 'invalid-tag':
+      return INVALID_CLUB_TAG_MESSAGE;
+    case 'unregistered':
+      return (
+        `Club #${failure.tag} is not registered with BrawlHub. ` +
+        'An authorised user must register/link the club first.'
+      );
+    case 'no-default':
+      return (
+        'No default club is configured for this server and more than one club is registered. ' +
+        'Use a command with `tag:<tag>` to choose one.'
+      );
+    case 'same-club':
+      return 'Choose two different registered clubs to compare.';
+    default:
+      return 'That club could not be loaded right now.';
+  }
+}
+
 /** Reply with the shared user-facing message for a failed club lookup. */
 export async function replyClubLookupFailure(
   interaction: ChatInputCommandInteraction,
   failure: ClubLookupFailure,
 ): Promise<boolean> {
-  switch (failure.kind) {
-    case 'invalid-tag':
-      await interaction.reply({ content: INVALID_CLUB_TAG_MESSAGE, ephemeral: true });
-      return true;
-    case 'unregistered':
-      await interaction.reply({
-        content:
-          `Club #${failure.tag} is not registered with BrawlHub. ` +
-          'An authorised user must register/link the club first.',
-        ephemeral: true,
-      });
-      return true;
-    case 'no-default':
-      await interaction.reply({
-        content:
-          'No default club is configured for this server and more than one club is registered. ' +
-          'Use a command with `tag:<tag>` to choose one.',
-        ephemeral: true,
-      });
-      return true;
-    case 'same-club':
-      await interaction.reply({
-        content: 'Choose two different registered clubs to compare.',
-        ephemeral: true,
-      });
-      return true;
-    default:
-      return false;
+  const content = mapClubLookupFailureMessage(failure);
+  if (interaction.deferred) {
+    await interaction.editReply({ content, allowedMentions: { parse: [] } });
+    return true;
   }
+  await interaction.reply({ content, ephemeral: true, allowedMentions: { parse: [] } });
+  return true;
 }
 
 /** Respond with registered-club suggestions for the focused option. */

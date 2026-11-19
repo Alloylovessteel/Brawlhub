@@ -93,6 +93,10 @@ function view(overrides: Partial<ClubView> = {}): ClubView {
     currentAt: NOW.toISOString(),
     description: 'Club description',
     requiredTrophies: 500,
+    type: null,
+    badgeId: null,
+    matchActivity: null,
+    megaPigEstimate: null,
     latestSyncAt: '2026-11-17T10:00:00.000Z',
     liveStatus: 'live',
     apiIssue: null,
@@ -226,15 +230,16 @@ describe('club embeds', () => {
       'Description',
     ]);
     expect(json.title).toBe('Alpha • #2C0Y');
-    expect(json.fields?.[0]?.value).toContain('Total: 1,300');
-    expect(json.fields?.[0]?.value).toContain('Average: 733');
+    expect(json.fields?.[0]?.value).toContain('1,300');
+    expect(json.fields?.[0]?.value).toContain('Average');
+    expect(json.fields?.[0]?.value).toContain('733');
     expect(json.fields?.[2]?.value).toBe('[Leader](https://brawlify.com/player/G2P9)');
-    expect(json.fields?.[4]?.value).toContain(`Current: 3 / ${CLUB_MEMBER_CAPACITY}`);
-    expect(json.fields?.[4]?.value).toContain('Vice-Presidents: 1');
-    expect(json.fields?.[4]?.value).toContain('Seniors: 1');
-    expect(json.fields?.[5]?.value).toContain('Today: +100');
-    expect(json.fields?.[5]?.value).toContain('Week: +200');
-    expect(json.fields?.[5]?.value).toContain('Season: +300');
+    expect(json.fields?.[4]?.value).toContain(`3/${CLUB_MEMBER_CAPACITY}`);
+    expect(json.fields?.[4]?.value).toContain('Vice-Presidents 1');
+    expect(json.fields?.[4]?.value).toContain('Seniors 1');
+    expect(json.fields?.[5]?.value).toContain('Today +100');
+    expect(json.fields?.[5]?.value).toContain('Week +200');
+    expect(json.fields?.[5]?.value).toContain('Season +300');
   });
 
   it('omits unsupported and unavailable fields instead of showing placeholders', () => {

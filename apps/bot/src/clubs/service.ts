@@ -7,7 +7,9 @@ import { createTrustedClient } from '@brawlhub/database';
 import { brawlTagSchema } from '@brawlhub/shared';
 import {
   calculateAverage,
+  calculateAverageMatches,
   calculateHistoryChange,
+  calculateMegaPigEstimate,
   calculateTrophyProgression,
   calculateTrophyRange,
   filterSnapshotsByPeriod,
@@ -30,6 +32,8 @@ import type {
   LeaderboardEntry,
   LeaderboardView,
   LoadClubResult,
+  MatchActivity,
+  MegaPigEstimate,
   MemberDetail,
   MemberView,
   MembershipChange,
@@ -49,6 +53,8 @@ interface LiveClubData {
   readonly roster: RosterMember[];
   readonly description: string | null;
   readonly requiredTrophies: number | null;
+  readonly type: string | null;
+  readonly badgeId: number | null;
 }
 
 interface LiveClubFetchResult {
@@ -120,6 +126,160 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : [];
+}
+
+const ACTIVITY_DAY_MS = 24 * 60 * 60 * 1000;
+
+function utcMidnightMs(date: Date): number {
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function utcWeekStartMs(date: Date): number {
+  const midnight = utcMidnightMs(date);
+  const mondayOffset = (new Date(midnight).getUTCDay() + 6) % 7;
+  return midnight - mondayOffset * ACTIVITY_DAY_MS;
+}
+
+function parseIsoMs(value: string | null | undefined): number | null {
+  if (value === undefined || value === null || value.trim() === '') return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function readMegaPigWindow(): { start: string; end: string } | null {
+  const start = process.env.BRAWL_MEGA_PIG_START_ISO?.trim();
+  const end = process.env.BRAWL_MEGA_PIG_END_ISO?.trim();
+  if (!start || !end) return null;
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) return null;
+  return { start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
+}
+
+async function readPlayerIdsByTags(
+  tags: readonly string[],
+  db: DatabaseClient,
+): Promise<Map<string, { id: string; lastBattleAt: string | null }>> {
+  const unique = [...new Set(tags.filter((tag) => tag.length > 0))];
+  if (unique.length === 0) return new Map();
+  const { data, error } = await db
+    .from('players')
+    .select('id, tag, last_battle_at')
+    .in('tag', unique);
+  requireOk(error, 'Read player ids for activity');
+  const map = new Map<string, { id: string; lastBattleAt: string | null }>();
+  for (const row of data ?? []) {
+    const source = record(row);
+    const id = asString(source?.['id']);
+    const tag = asString(source?.['tag']);
+    if (id === null || tag === null) continue;
+    map.set(tag, { id, lastBattleAt: asString(source?.['last_battle_at']) });
+  }
+  return map;
+}
+
+async function readBattleActivityForRoster(
+  roster: readonly RosterMember[],
+  now: Date,
+  seasonStartIso: string | undefined,
+  db: DatabaseClient,
+): Promise<{ matchActivity: MatchActivity | null; megaPigEstimate: MegaPigEstimate | null }> {
+  const tags = roster.map((member) => member.tag);
+  const playerMap = await readPlayerIdsByTags(tags, db);
+  const memberPlayerIds = tags
+    .map((tag) => playerMap.get(tag)?.id)
+    .filter((id): id is string => typeof id === 'string');
+  const lastBattleAt = [...playerMap.values()]
+    .map((entry) => entry.lastBattleAt)
+    .filter((value): value is string => typeof value === 'string')
+    .sort()
+    .at(-1) ?? null;
+
+  if (memberPlayerIds.length === 0) {
+    const megaWindow = readMegaPigWindow();
+    return {
+      matchActivity: null,
+      megaPigEstimate: megaWindow
+        ? calculateMegaPigEstimate({ rows: [], windowStart: megaWindow.start, windowEnd: megaWindow.end })
+        : null,
+    };
+  }
+
+  const todayMs = utcMidnightMs(now);
+  const weekMs = utcWeekStartMs(now);
+  const seasonMs = parseIsoMs(seasonStartIso);
+  const boundaries = [todayMs, weekMs, ...(seasonMs === null ? [] : [seasonMs])];
+  const earliest = Math.min(...boundaries);
+  const earliestIso = new Date(earliest).toISOString();
+
+  const { data, error } = await db
+    .from('player_battles')
+    .select('player_id, battle_time')
+    .in('player_id', memberPlayerIds)
+    .gte('battle_time', earliestIso)
+    .limit(10000);
+  requireOk(error, 'Read player battle activity');
+
+  const countsByPlayer = new Map<string, { today: number; week: number; season: number }>();
+  for (const id of memberPlayerIds) countsByPlayer.set(id, { today: 0, week: 0, season: 0 });
+  for (const row of data ?? []) {
+    const source = record(row);
+    const playerId = asString(source?.['player_id']);
+    const battleTime = asString(source?.['battle_time']);
+    if (playerId === null || battleTime === null) continue;
+    const ms = Date.parse(battleTime);
+    if (Number.isNaN(ms)) continue;
+    const counts = countsByPlayer.get(playerId);
+    if (counts === undefined) continue;
+    if (ms >= todayMs) counts.today += 1;
+    if (ms >= weekMs) counts.week += 1;
+    if (seasonMs !== null && ms >= seasonMs) counts.season += 1;
+  }
+
+  const matchActivity = calculateAverageMatches({
+    countsByPlayer,
+    memberPlayerIds,
+    lastBattleAt,
+  });
+
+  const megaWindow = readMegaPigWindow();
+  let megaPigEstimate: MegaPigEstimate | null = null;
+  if (megaWindow !== null) {
+    const { data: megaData, error: megaError } = await db
+      .from('player_battles')
+      .select('player_id, result, trophy_change')
+      .in('player_id', memberPlayerIds)
+      .gte('battle_time', megaWindow.start)
+      .lte('battle_time', megaWindow.end)
+      .limit(10000);
+    if (megaError) {
+      megaPigEstimate = calculateMegaPigEstimate({
+        rows: [],
+        windowStart: megaWindow.start,
+        windowEnd: megaWindow.end,
+      });
+    } else {
+      const byPlayer = new Map<string, { matches: number; wins: number; trophyChange: number }>();
+      for (const row of megaData ?? []) {
+        const source = record(row);
+        const playerId = asString(source?.['player_id']);
+        if (playerId === null) continue;
+        const current = byPlayer.get(playerId) ?? { matches: 0, wins: 0, trophyChange: 0 };
+        current.matches += 1;
+        if (asString(source?.['result']) === 'victory') current.wins += 1;
+        const trophyChange = asNumber(source?.['trophy_change']);
+        if (trophyChange !== null) current.trophyChange += trophyChange;
+        byPlayer.set(playerId, current);
+      }
+      megaPigEstimate = calculateMegaPigEstimate({
+        rows: [...byPlayer.values()],
+        windowStart: megaWindow.start,
+        windowEnd: megaWindow.end,
+      });
+    }
+  }
+
+  return { matchActivity, megaPigEstimate };
 }
 
 type NormalizedLookupTag =
@@ -257,6 +417,14 @@ function readRawDescription(raw: unknown): string | null {
   return asString(value);
 }
 
+function readRawType(raw: unknown): string | null {
+  return asString(record(raw)?.['type']);
+}
+
+function readRawBadgeId(raw: unknown): number | null {
+  return asNumber(record(raw)?.['badgeId']);
+}
+
 function latestCompletedSnapshot(
   snapshots: readonly ClubSnapshot[],
   completedRunIds: ReadonlySet<string>,
@@ -343,6 +511,10 @@ async function fetchLiveClub(
         roster,
         description: liveClub.description ?? null,
         requiredTrophies: liveClub.requiredTrophies ?? null,
+        type: asString((liveClub as unknown as Record<string, unknown>)['type']) ?? liveClub.type ?? null,
+        badgeId: typeof liveClub.badgeId === 'number' && Number.isFinite(liveClub.badgeId)
+          ? liveClub.badgeId
+          : null,
       },
       issue: null,
     };
@@ -475,6 +647,7 @@ export async function loadClubView(
     readonly tag?: string | undefined;
     readonly guildId?: string | null | undefined;
     readonly now?: Date;
+    readonly seasonStartIso?: string | undefined;
   },
   options: ClubServiceOptions = {},
 ): Promise<LoadClubResult> {
@@ -507,6 +680,8 @@ export async function loadClubView(
     ? club.description
     : (readRawDescription(latestSnapshot.raw) ?? club.description);
   let requiredTrophies = club.requiredTrophies;
+  let type = latestSnapshot === null ? null : readRawType(latestSnapshot.raw);
+  let badgeId = latestSnapshot === null ? null : readRawBadgeId(latestSnapshot.raw);
   let liveStatus: ClubView['liveStatus'] = 'sync-only';
 
   const live = await fetchLiveClub(club.tag, api, now, options.useCache ?? true);
@@ -520,8 +695,17 @@ export async function loadClubView(
     currentAt = now.toISOString();
     description = live.data.description ?? description;
     requiredTrophies = live.data.requiredTrophies ?? requiredTrophies;
+    type = live.data.type ?? type;
+    badgeId = live.data.badgeId ?? badgeId;
     liveStatus = 'live';
   }
+
+  const { matchActivity, megaPigEstimate } = await readBattleActivityForRoster(
+    roster,
+    now,
+    input.seasonStartIso,
+    db,
+  );
 
   return {
     kind: 'ok',
@@ -535,6 +719,10 @@ export async function loadClubView(
       currentAt,
       description,
       requiredTrophies,
+      type,
+      badgeId,
+      matchActivity,
+      megaPigEstimate,
       latestSyncAt: latestSuccessfulSyncAt(club, runs),
       liveStatus,
       apiIssue: live.issue,

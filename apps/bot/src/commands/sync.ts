@@ -1,4 +1,5 @@
 import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { getBotConfig } from '../config';
 import { buildSyncResultEmbed } from '../admin/embed';
 import { replyAdminError } from '../admin/errors';
 import {
@@ -17,8 +18,17 @@ export const syncCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
   .setDescription('Run the existing all-clubs synchronisation pipeline');
 
+function websiteLine(): string | undefined {
+  const appUrl = getBotConfig().appUrl;
+  return appUrl === undefined ? undefined : `BrawlHub website: ${appUrl}`;
+}
+
 export async function handleSync(interaction: ChatInputCommandInteraction): Promise<void> {
+  let deferred = false;
   try {
+    await interaction.deferReply({ ephemeral: true });
+    deferred = true;
+
     const actor = await requireGlobalPermission(interaction.user.id, 'sync:run');
 
     const rateLimit = checkBotRateLimit(
@@ -27,18 +37,28 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
       RATE_WINDOW_MS,
     );
     if (!rateLimit.allowed) {
-      await interaction.reply({
-        content: `Too many sync requests. Try again in ${rateLimit.retryAfterSeconds} second(s).`,
-        ephemeral: true,
+      const site = websiteLine();
+      await interaction.editReply({
+        content: [
+          `Too many sync requests. Try again in ${rateLimit.retryAfterSeconds} second(s).`,
+          site,
+        ]
+          .filter((line): line is string => line !== undefined)
+          .join('\n'),
       });
       return;
     }
 
     const outcome = await runManagedSync();
+    const site = websiteLine();
     if (outcome.kind === 'overlap') {
-      await interaction.reply({
-        content: 'A sync is already running in this bot process. Use `/sync-status` to inspect it.',
-        ephemeral: true,
+      await interaction.editReply({
+        content: [
+          'A sync is already running in this bot process. Use `/sync-status` to inspect it.',
+          site,
+        ]
+          .filter((line): line is string => line !== undefined)
+          .join('\n'),
       });
       return;
     }
@@ -46,12 +66,30 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
     const result = outcome.result;
     await recordSyncRunAudit(actor, result);
     const run = result.syncRunId === '' ? null : await loadSyncRun(result.syncRunId);
-    await interaction.reply({
+    await interaction.editReply({
+      ...(site === undefined ? {} : { content: site }),
       embeds: [buildSyncResultEmbed(result, run)],
-      ephemeral: true,
       allowedMentions: { parse: [] },
     });
   } catch (error) {
-    await replyAdminError(interaction, error);
+    if (!deferred) {
+      await replyAdminError(interaction, error);
+      return;
+    }
+    try {
+      await replyAdminError(interaction, error);
+    } catch {
+      // replyAdminError may try to reply/edit; fall back to a safe edit
+      try {
+        const site = websiteLine();
+        await interaction.editReply({
+          content: ['Sync could not be completed. Check logs for details.', site]
+            .filter((line): line is string => line !== undefined)
+            .join('\n'),
+        });
+      } catch {
+        // ignore
+      }
+    }
   }
 }

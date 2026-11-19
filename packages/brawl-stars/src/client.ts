@@ -1,8 +1,10 @@
 import { z, type ZodType } from 'zod';
 import {
+  battleLogResponseSchema,
   clubMembersResponseSchema,
   clubSchema,
   playerSchema,
+  type BattleLogItem,
   type Club,
   type ClubMember,
   type Player,
@@ -40,6 +42,7 @@ export interface BrawlStarsClient {
   getClub(tag: string): Promise<Club>;
   getClubMembers(tag: string): Promise<ClubMember[]>;
   getPlayer(tag: string): Promise<Player>;
+  getBattleLog(tag: string): Promise<BattleLogItem[]>;
 }
 
 const MAX_ATTEMPTS = 3;
@@ -193,6 +196,13 @@ export function createBrawlStarsClient(options?: BrawlStarsClientOptions): Brawl
     },
     getPlayer(tag) {
       return request(`/players/${encodeURIComponent(normalizeTag(tag))}`, playerSchema);
+    },
+    async getBattleLog(tag) {
+      const response = await request(
+        `/players/${encodeURIComponent(normalizeTag(tag))}/battlelog`,
+        battleLogResponseSchema,
+      );
+      return response.items;
     },
   };
 }

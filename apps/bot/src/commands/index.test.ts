@@ -62,6 +62,7 @@ describe('command registry', () => {
       'clubs',
       'club-members',
       'club-leaderboard',
+      'club-log',
       'club-history',
       'club-compare',
       'player',
@@ -80,6 +81,7 @@ describe('command registry', () => {
       'sync-status',
       'settings',
       'audit',
+      'remove-club',
       'help',
       'about',
       'status',
@@ -93,6 +95,7 @@ describe('command registry', () => {
     for (const name of [
       'club-members',
       'club-leaderboard',
+      'club-log',
       'club-history',
       'club-compare',
       'members',
@@ -101,12 +104,12 @@ describe('command registry', () => {
     ]) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
-    for (const name of ['club-members', 'club-leaderboard', 'club-history', 'members', 'member-history', 'member-search', 'staff', 'register-club', 'settings', 'audit', 'help']) {
+    for (const name of ['club-members', 'club-leaderboard', 'club-log', 'club-history', 'members', 'member-history', 'member-search', 'staff', 'register-club', 'settings', 'audit', 'help']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );
     }
-    for (const name of ['settings']) {
+    for (const name of ['settings', 'remove-club']) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
   });
@@ -119,9 +122,10 @@ describe('command registry', () => {
     expect(blacklist?.handleComponent).toBeTypeOf('function');
   });
 
-  it('keeps club removal unregistered because safe archival is unsupported', () => {
-    expect(commands.map((command) => command.data.name)).not.toContain('remove-club');
-    const removeClub = pendingCommands.find((command) => command.data.name === 'remove-club');
+  it('registers club removal as a safe, non-destructive command', () => {
+    expect(commands.map((command) => command.data.name)).toContain('remove-club');
+    expect(pendingCommands.map((command) => command.data.name)).not.toContain('remove-club');
+    const removeClub = commands.find((command) => command.data.name === 'remove-club');
     expect(removeClub).toBeDefined();
     expect(removeClub?.autocomplete).toBeTypeOf('function');
     expect(removeClub?.handleComponent).toBeUndefined();

@@ -39,7 +39,25 @@ function identity(overrides: Partial<PlayerIdentity> = {}): PlayerIdentity {
     trophies: 5000,
     highestTrophies: 5200,
     expLevel: 35,
+    expPoints: 12345,
     lastSyncedAt: '2026-11-18T11:55:00.000Z',
+    lastBattleAt: null,
+    fame: null,
+    fameTierName: null,
+    totalPrestigeLevel: null,
+    threeVsThreeVictories: null,
+    soloVictories: null,
+    duoVictories: null,
+    bestRoboRumbleTime: null,
+    bestTimeAsBigBrawler: null,
+    rankedRankName: null,
+    rankedElo: null,
+    highestSeasonRankedRankName: null,
+    highestSeasonRankedElo: null,
+    highestAllTimeRankedRankName: null,
+    highestAllTimeRankedElo: null,
+    isQualifiedFromChampionshipChallenge: null,
+    megaPig: null,
     ...overrides,
   };
 }
@@ -55,7 +73,23 @@ function profile(overrides: Partial<PlayerProfileView> = {}): PlayerProfileView 
       validFrom: '2026-11-01T00:00:00.000Z',
       validTo: null,
     },
-    brawlers: [{ name: 'Shelly', trophies: 900 }],
+    brawlers: [
+      {
+        name: 'Shelly',
+        trophies: 900,
+        highestTrophies: 900,
+        power: 11,
+        rank: 35,
+        prestigeLevel: null,
+        currentWinStreak: null,
+        maxWinStreak: 7,
+        gadgets: 2,
+        starPowers: 2,
+        gears: 1,
+        hyperCharges: 1,
+      },
+    ],
+    stats: { brawlerCount: 1, totalPrestigeLevels: null, maxedBrawlers: 1 },
     latestSnapshotAt: '2026-11-17T00:00:00.000Z',
     source: 'live',
     apiIssue: null,
@@ -81,7 +115,7 @@ describe('player embeds', () => {
     expect(data.title).toContain('[Alpha](https://brawlify.com/player/2C0Y)');
     expect(text).toContain('Current Trophies');
     expect(text).toContain('Highest Trophies');
-    expect(text).toContain('Experience Level');
+    expect(text).toContain('Experience');
     expect(text).toContain('[Alpha Club](https://example.test/clubs/8QCL)');
     expect(text).toContain('Top Brawlers (Live API)');
     expect(text).toContain('Snapshot:');
@@ -91,9 +125,10 @@ describe('player embeds', () => {
     const data = json(
       buildPlayerProfileEmbed(
         profile({
-          player: identity({ trophies: null, highestTrophies: null, expLevel: null }),
+          player: identity({ trophies: null, highestTrophies: null, expLevel: null, expPoints: null }),
           currentClub: null,
           brawlers: [],
+          stats: null,
           latestSnapshotAt: null,
           source: 'stored',
           apiIssue: null,
@@ -107,7 +142,7 @@ describe('player embeds', () => {
     expect(text).not.toContain('Unavailable');
     expect(text).not.toContain('Current Trophies');
     expect(text).not.toContain('Highest Trophies');
-    expect(text).not.toContain('Experience Level');
+    expect(text).not.toContain('"name":"Experience"');
     expect(text).not.toContain('Current Club');
     expect(text).toContain('Stored data only');
   });
@@ -144,6 +179,7 @@ describe('player embeds', () => {
       memberships: [],
       events: [],
       latestSyncAt: '2026-11-18T11:55:00.000Z',
+      lastBattleAt: null,
     };
     const memberships: PlayerMembershipRecord[] = [
       {

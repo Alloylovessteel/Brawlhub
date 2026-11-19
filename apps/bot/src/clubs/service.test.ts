@@ -39,6 +39,21 @@ function createFakeDb(handlers: Record<string, Handler>): {
       return this;
     }
 
+    in(column: string, value: unknown): this {
+      this.filters[`${column}__in`] = value;
+      return this;
+    }
+
+    gte(column: string, value: unknown): this {
+      this.filters[`${column}__gte`] = value;
+      return this;
+    }
+
+    lte(column: string, value: unknown): this {
+      this.filters[`${column}__lte`] = value;
+      return this;
+    }
+
     is(column: string, value: unknown): this {
       this.filters[column] = value;
       return this;
@@ -163,6 +178,8 @@ function standardHandlers() {
     'club_memberships:select': () => {
       throw new Error('Membership fallback should not be used when a snapshot roster exists');
     },
+    'players:select': () => ({ data: [] }),
+    'player_battles:select': () => ({ data: [] }),
   };
 }
 
@@ -333,6 +350,8 @@ describe('club data service', () => {
           },
         ],
       }),
+      'players:select': () => ({ data: [] }),
+      'player_battles:select': () => ({ data: [] }),
     });
 
     const summaries = await loadClubSummaries(db);

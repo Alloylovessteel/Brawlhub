@@ -137,9 +137,14 @@ END $$;
 -- as their entry without a trigger.
 DO $$
 BEGIN
-  ALTER TABLE public.competition_entries
-    ADD CONSTRAINT competition_entries_id_competition_key UNIQUE (id, competition_id);
-EXCEPTION WHEN duplicate_object THEN NULL;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'competition_entries_id_competition_key'
+      AND conrelid = 'public.competition_entries'::regclass
+  ) THEN
+    ALTER TABLE public.competition_entries
+      ADD CONSTRAINT competition_entries_id_competition_key UNIQUE (id, competition_id);
+  END IF;
 END $$;
 
 -- ---------------------------------------------------------------------------

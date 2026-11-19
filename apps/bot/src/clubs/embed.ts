@@ -10,6 +10,8 @@ import {
 import { paginate, type Page } from '../discord/pagination';
 import { calculateAverage, calculateTrophyProgression, calculateTrophyRange, countRole } from './calculate';
 import type {
+  ClubLogPeriod,
+  ClubLogView,
   ClubSummary,
   ClubView,
   ComparisonSide,
@@ -41,6 +43,12 @@ const HISTORY_LABELS: Readonly<Record<HistoryPeriod, string>> = {
   '30d': 'Last 30 days',
   '90d': 'Last 90 days',
   all: 'All available history',
+};
+
+const CLUB_LOG_PERIOD_LABELS: Readonly<Record<ClubLogPeriod, string>> = {
+  today: 'Today',
+  week: 'This Week',
+  season: 'This Season',
 };
 
 type EmbedConfig = Pick<
@@ -115,7 +123,25 @@ function president(roster: readonly RosterMember[]): RosterMember | null {
   return roster.find((member) => member.role === 'president' && member.name !== '') ?? null;
 }
 
-function progressionLines(view: ClubView, config: EmbedConfig, now: Date): string[] {
+function formatClubType(value: string | null): string | null {
+  if (value === null) return null;
+  const normalized = value.trim();
+  if (normalized === '') return null;
+  switch (normalized) {
+    case 'open':
+      return 'Open';
+    case 'closed':
+      return 'Closed';
+    case 'inviteOnly':
+      return 'Invite Only';
+    default:
+      return normalized
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/^./, (char) => char.toUpperCase());
+  }
+}
+
+function progressionSummary(view: ClubView, config: EmbedConfig, now: Date): string | null {
   const progression = calculateTrophyProgression({
     snapshots: view.snapshots,
     currentTrophies: view.currentTrophies,
@@ -124,14 +150,14 @@ function progressionLines(view: ClubView, config: EmbedConfig, now: Date): strin
     seasonStartIso: config.seasonStartIso,
   });
 
-  const lines: string[] = [];
-  if (progression.today !== null) lines.push(`Today: ${formatDelta(progression.today)}`);
-  if (progression.week !== null) lines.push(`Week: ${formatDelta(progression.week)}`);
-  if (progression.season !== null) lines.push(`Season: ${formatDelta(progression.season)}`);
-  return lines;
+  const parts: string[] = [];
+  if (progression.today !== null) parts.push(`Today ${formatDelta(progression.today)}`);
+  if (progression.week !== null) parts.push(`Week ${formatDelta(progression.week)}`);
+  if (progression.season !== null) parts.push(`Season ${formatDelta(progression.season)}`);
+  return parts.length === 0 ? null : parts.join('  ');
 }
 
-/** Build the detailed `/club` embed in the required section order. */
+/** Build the detailed `/club` embed. */
 export function buildClubEmbed(
   view: ClubView,
   config: EmbedConfig,
@@ -152,29 +178,36 @@ export function buildClubEmbed(
     .setTitle(truncate(`${escapeMarkdown(view.club.name)} • ${displayTag(view.club.tag)}`, 256))
     .setTimestamp(now);
 
+  if (view.badgeId !== null) {
+    embed.setThumbnail(`https://cdn.brawlify.com/club-badges/regular/${view.badgeId}.png`);
+  }
+
   const total = formatInteger(view.currentTrophies);
   const average = view.rosterAvailable
     ? formatInteger(calculateAverage(view.roster.map((member) => member.trophies)))
     : null;
   if (total !== null || average !== null) {
-    const lines: string[] = [];
-    if (total !== null) lines.push(`Total: ${total}`);
-    if (average !== null) lines.push(`Average: ${average}`);
-    embed.addFields({ name: label(emoji.trophies, 'Trophies'), value: truncate(lines.join('\n'), 1024) });
+    const parts: string[] = [];
+    if (total !== null) parts.push(`${emoji.trophies}${total}`);
+    if (average !== null) parts.push(`Average ${emoji.trophies}${average}`);
+    embed.addFields({
+      name: 'Trophies',
+      value: truncate(parts.join('  '), 1024),
+    });
   }
 
   const range = view.rosterAvailable ? calculateTrophyRange(view.roster) : null;
   if (range !== null) {
     embed.addFields({
-      name: label(emoji.trophyRange, 'Trophy Range'),
-      value: truncate(`Lowest: ${formatInteger(range.low)}\nHighest: ${formatInteger(range.high)}`, 1024),
+      name: 'Trophy Range',
+      value: truncate(`${emoji.trophyRange}${formatInteger(range.low)} - ${formatInteger(range.high)}`, 1024),
     });
   }
 
   const leader = view.rosterAvailable ? president(view.roster) : null;
   if (leader !== null) {
     embed.addFields({
-      name: label(emoji.president, 'President'),
+      name: 'President',
       value: truncate(
         formatPlayerLink(leader.name, leader.tag, config.playerProfileUrlTemplate),
         1024,
@@ -185,34 +218,77 @@ export function buildClubEmbed(
   const required = formatInteger(view.requiredTrophies);
   if (required !== null) {
     embed.addFields({
-      name: label(emoji.requiredTrophies, 'Required Trophies'),
-      value: required,
+      name: 'Required Trophies',
+      value: truncate(`${emoji.requiredTrophies}${required}`, 1024),
+    });
+  }
+
+  const type = formatClubType(view.type);
+  if (type !== null) {
+    embed.addFields({
+      name: 'Type',
+      value: truncate(type, 1024),
     });
   }
 
   if (view.rosterAvailable) {
-    const lines = [`Current: ${view.roster.length} / ${CLUB_MEMBER_CAPACITY}`];
+    const lines = [`${emoji.members}${view.roster.length}/${CLUB_MEMBER_CAPACITY}`];
     const vicePresidents = countRole(view.roster, 'vicePresident');
     const seniors = countRole(view.roster, 'senior');
-    if (vicePresidents !== null) lines.push(`Vice-Presidents: ${vicePresidents}`);
-    if (seniors !== null) lines.push(`Seniors: ${seniors}`);
-    embed.addFields({ name: label(emoji.members, 'Members'), value: truncate(lines.join('\n'), 1024) });
+    if (vicePresidents !== null) lines.push(`${emoji.members}Vice-Presidents ${vicePresidents}`);
+    if (seniors !== null) lines.push(`${emoji.members}Seniors ${seniors}`);
+    embed.addFields({ name: 'Members', value: truncate(lines.join('\n'), 1024) });
   }
 
-  // Average Matches Played and Mega Pig Rank are omitted until reliable data exists.
-
-  const progression = progressionLines(view, config, now);
-  if (progression.length > 0) {
+  const activity = view.matchActivity;
+  if (activity !== null && (activity.today !== null || activity.week !== null || activity.season !== null)) {
+    const parts: string[] = [];
+    if (activity.today !== null) parts.push(`T ${formatInteger(activity.today)}`);
+    if (activity.week !== null) parts.push(`W ${formatInteger(activity.week)}`);
+    if (activity.season !== null) parts.push(`S ${formatInteger(activity.season)}`);
+    const matchesEmoji = formatEmoji(config.emojis.matches, 'matches');
+    const lastBattle = formatSyncTime(activity.lastBattleAt);
+    const lines = [`${matchesEmoji}${parts.join(' | ')}`.trim()];
+    if (lastBattle !== null) lines.push(`Last battle: ${lastBattle}`);
     embed.addFields({
-      name: label(emoji.progression, 'Trophy Progression'),
-      value: truncate(progression.join('\n'), 1024),
+      name: 'Average Matches Played',
+      value: truncate(lines.join('\n'), 1024),
+    });
+  } else if (activity?.lastBattleAt) {
+    const lastBattle = formatSyncTime(activity.lastBattleAt);
+    if (lastBattle !== null) {
+      embed.addFields({
+        name: 'Last Activity',
+        value: truncate(`Last battle: ${lastBattle}`, 1024),
+      });
+    }
+  }
+
+  const progression = progressionSummary(view, config, now);
+  if (progression !== null) {
+    embed.addFields({
+      name: 'Trophy Progression',
+      value: truncate(progression, 1024),
+    });
+  }
+
+  const megaPig = view.megaPigEstimate;
+  if (megaPig !== null && megaPig.sampleSize > 0) {
+    const lines = [
+      `Matches: ${formatInteger(megaPig.matches)}`,
+      `Wins: ${formatInteger(megaPig.wins)}`,
+      `Trophy Δ: ${formatDelta(megaPig.trophyChange)}`,
+    ];
+    embed.addFields({
+      name: 'Mega Pig (estimated)',
+      value: truncate(lines.join(' • '), 1024),
     });
   }
 
   const description = view.description?.trim();
   if (description !== undefined && description !== '') {
     embed.addFields({
-      name: label(emoji.description, 'Description'),
+      name: 'Description',
       value: truncate(escapeMarkdown(description), 1024),
     });
   }
@@ -224,7 +300,7 @@ export function buildClubEmbed(
   if (syncedAt !== null) footer.push(`Synced ${syncedAt}`);
   embed.setFooter({ text: truncate(footer.join(' • '), 2048) });
 
-  return embed;
+  return fitEmbedToDiscordLimits(embed);
 }
 
 /** Build a compact, paginated `/clubs` embed. */
@@ -488,7 +564,8 @@ export function buildHistoryPageEmbed(
           : formatPlayerLink(change.playerName, change.playerTag ?? '', config.playerProfileUrlTemplate);
       const action =
         change.eventType === 'join' ? 'joined' : change.eventType === 'leave' ? 'left' : 'transferred';
-      return `• ${name} ${action} ${formatSyncTime(change.detectedAt) ?? ''}`.trim();
+      const detectedAt = formatSyncTime(change.detectedAt);
+      return `• ${name} ${action}${detectedAt === null ? '' : ` (detected ${detectedAt})`}`;
     });
     embed.addFields({
       name: 'Membership Changes',
@@ -591,6 +668,60 @@ export function buildCompareEmbed(view: ComparisonView, config: EmbedConfig): Em
         : 'Source: latest available completed sync per club',
       2048,
     ),
+  });
+
+  return fitEmbedToDiscordLimits(embed);
+}
+
+/** Build a paginated club trophy-change log for a daily/weekly period. */
+export function buildClubLogPageEmbed(
+  view: ClubLogView,
+  page: Page<ClubLogView['rows'][number]>,
+  config: EmbedConfig,
+): EmbedBuilder {
+  const trophy = formatEmoji(config.emojis.trophies, 'trophies');
+  const periodLabel = CLUB_LOG_PERIOD_LABELS[view.period];
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(
+      truncate(
+        `${escapeMarkdown(view.club.name)} • ${displayTag(view.club.tag)} — Club Log`,
+        256,
+      ),
+    )
+    .setFooter({ text: truncate(pageFooter(page, periodLabel), 2048) });
+
+  const snapshotAt = formatAbsoluteTime(view.latestSnapshotAt);
+  const syncAt = formatSyncTime(view.latestSyncAt);
+  const meta: string[] = [`Trophy Progression • ${periodLabel}`];
+  if (snapshotAt !== null) meta.push(`Snapshot ${snapshotAt}`);
+  if (syncAt !== null) meta.push(`Synced ${syncAt}`);
+  if (view.unavailable > 0) {
+    meta.push(
+      `${view.unavailable} member${view.unavailable === 1 ? '' : 's'} without a stored baseline for this period`,
+    );
+  }
+  embed.setDescription(truncate(meta.join(' • '), 2048));
+
+  if (page.items.length === 0) {
+    embed.addFields({
+      name: 'Trophy Progression',
+      value:
+        view.rows.length === 0
+          ? 'No stored trophy progression is available for this period yet. At least one completed sync snapshot at or before the period boundary is required.'
+          : 'No members on this page.',
+    });
+    return fitEmbedToDiscordLimits(embed);
+  }
+
+  const lines = page.items.map((row) => {
+    const name = memberName(row.member, config);
+    return `${row.rank}. ${name} ${trophy}${formatDelta(row.change)}`;
+  });
+
+  embed.addFields({
+    name: `${periodLabel} Trophy Change`,
+    value: truncate(lines.join('\n'), 1024),
   });
 
   return fitEmbedToDiscordLimits(embed);

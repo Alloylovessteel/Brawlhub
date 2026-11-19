@@ -27,6 +27,8 @@ export interface BotConfig {
   readonly guildId: string | undefined;
   readonly callbackUrl: string | undefined;
   readonly logLevel: string | undefined;
+  /** Public BrawlHub website/app URL shown in bot messages (e.g. sign-in prompts). */
+  readonly appUrl: string | undefined;
   /** Discord custom emoji IDs used in embeds. Names are generated at render time. */
   readonly emojis: BotEmojiConfig;
   /** Template for Brawl Stars player links. Must contain `{tag}`. */
@@ -76,6 +78,18 @@ function readSeasonStartEnv(): string | undefined {
   return new Date(value).toISOString();
 }
 
+function readAppUrl(): string | undefined {
+  const value = readEnv('NEXT_PUBLIC_APP_URL') ?? readEnv('BRAWLHUB_WEB_URL');
+  if (value === undefined) return undefined;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return undefined;
+  }
+}
+
 /** Read the environment lazily on every call so current values are always used. */
 export function getBotConfig(): BotConfig {
   return {
@@ -84,6 +98,7 @@ export function getBotConfig(): BotConfig {
     guildId: readEnv('DISCORD_GUILD_ID'),
     callbackUrl: readEnv('DISCORD_CALLBACK_URL'),
     logLevel: readEnv('LOG_LEVEL'),
+    appUrl: readAppUrl(),
     emojis: {
       trophies: readSnowflakeEnv('DISCORD_EMOJI_TROPHIES'),
       trophyRange: readSnowflakeEnv('DISCORD_EMOJI_TROPHY_RANGE'),

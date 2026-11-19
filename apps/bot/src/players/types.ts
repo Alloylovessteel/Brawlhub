@@ -4,6 +4,14 @@ import type { ApiIssue, HistoryPeriod, TrophyProgression } from '../clubs/types'
 
 export type PlayerApiIssue = ApiIssue | 'not-found';
 
+export interface PlayerMegaPig {
+  readonly date: string | null;
+  readonly wins: number | null;
+  readonly draws: number | null;
+  readonly losses: number | null;
+  readonly ticketsUsed: number | null;
+}
+
 export interface PlayerIdentity {
   /** Null when the player was resolved only from a live API response. */
   readonly id: string | null;
@@ -12,7 +20,25 @@ export interface PlayerIdentity {
   readonly trophies: number | null;
   readonly highestTrophies: number | null;
   readonly expLevel: number | null;
+  readonly expPoints: number | null;
   readonly lastSyncedAt: string | null;
+  readonly lastBattleAt: string | null;
+  readonly fame: number | null;
+  readonly fameTierName: string | null;
+  readonly totalPrestigeLevel: number | null;
+  readonly threeVsThreeVictories: number | null;
+  readonly soloVictories: number | null;
+  readonly duoVictories: number | null;
+  readonly bestRoboRumbleTime: number | null;
+  readonly bestTimeAsBigBrawler: number | null;
+  readonly rankedRankName: string | null;
+  readonly rankedElo: number | null;
+  readonly highestSeasonRankedRankName: string | null;
+  readonly highestSeasonRankedElo: number | null;
+  readonly highestAllTimeRankedRankName: string | null;
+  readonly highestAllTimeRankedElo: number | null;
+  readonly isQualifiedFromChampionshipChallenge: boolean | null;
+  readonly megaPig: PlayerMegaPig | null;
 }
 
 export interface PlayerClubRef {
@@ -30,12 +56,29 @@ export type ClubMembershipStatus = 'current' | 'last-recorded' | 'past' | 'incom
 export interface PlayerBrawler {
   readonly name: string;
   readonly trophies: number;
+  readonly highestTrophies: number | null;
+  readonly power: number | null;
+  readonly rank: number | null;
+  readonly prestigeLevel: number | null;
+  readonly currentWinStreak: number | null;
+  readonly maxWinStreak: number | null;
+  readonly gadgets: number;
+  readonly starPowers: number;
+  readonly gears: number;
+  readonly hyperCharges: number;
+}
+
+export interface PlayerProfileStats {
+  readonly brawlerCount: number | null;
+  readonly totalPrestigeLevels: number | null;
+  readonly maxedBrawlers: number | null;
 }
 
 export interface PlayerProfileView {
   readonly player: PlayerIdentity;
   readonly currentClub: PlayerClubRef | null;
   readonly brawlers: readonly PlayerBrawler[];
+  readonly stats: PlayerProfileStats | null;
   readonly latestSnapshotAt: string | null;
   readonly source: 'live' | 'stored';
   readonly apiIssue: PlayerApiIssue | null;
@@ -85,6 +128,7 @@ export interface PlayerClubsView {
   readonly memberships: readonly PlayerMembershipRecord[];
   readonly events: readonly PlayerMembershipEvent[];
   readonly latestSyncAt: string | null;
+  readonly lastBattleAt: string | null;
 }
 
 export interface PlayerComparisonSide {

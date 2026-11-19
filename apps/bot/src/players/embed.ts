@@ -114,6 +114,21 @@ function eventLines(event: PlayerMembershipEvent, config: PlayerEmbedConfig): st
   return `• ${action} — ${formatAbsoluteTime(event.detectedAt) ?? event.detectedAt}`;
 }
 
+function formatBestTime(seconds: number | null): string | null {
+  if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return null;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatRankedLine(name: string | null, elo: number | null): string | null {
+  if (name === null && elo === null) return null;
+  const parts = [name, elo === null ? null : `${formatInteger(elo)} Elo`].filter(
+    (part): part is string => part !== null && part.length > 0,
+  );
+  return parts.length === 0 ? null : parts.join(' • ');
+}
+
 /** Build the detailed `/player` embed. */
 export function buildPlayerProfileEmbed(
   view: PlayerProfileView,
@@ -135,15 +150,72 @@ export function buildPlayerProfileEmbed(
     embed.addFields({
       name: `${formatEmoji(config.emojis.trophies, 'trophies')}Current Trophies`.trim(),
       value: trophies,
+      inline: true,
     });
   }
   const highest = formatInteger(view.player.highestTrophies);
   if (highest !== null) {
-    embed.addFields({ name: 'Highest Trophies', value: highest });
+    embed.addFields({ name: 'Highest Trophies', value: highest, inline: true });
   }
   const expLevel = formatInteger(view.player.expLevel);
   if (expLevel !== null) {
-    embed.addFields({ name: 'Experience Level', value: expLevel });
+    const expPoints = formatInteger(view.player.expPoints);
+    embed.addFields({
+      name: 'Experience',
+      value: expPoints === null ? `Level ${expLevel}` : `Level ${expLevel} • ${expPoints} XP`,
+      inline: true,
+    });
+  }
+
+  const fameParts: string[] = [];
+  if (view.player.fameTierName !== null) fameParts.push(view.player.fameTierName);
+  if (view.player.fame !== null) fameParts.push(`${formatInteger(view.player.fame)} fame`);
+  if (view.player.totalPrestigeLevel !== null) {
+    fameParts.push(`Prestige ${formatInteger(view.player.totalPrestigeLevel)}`);
+  }
+  if (fameParts.length > 0) {
+    embed.addFields({ name: 'Fame & Prestige', value: truncate(fameParts.join(' • '), 1024) });
+  }
+
+  const rankedCurrent = formatRankedLine(view.player.rankedRankName, view.player.rankedElo);
+  const rankedSeasonHigh = formatRankedLine(
+    view.player.highestSeasonRankedRankName,
+    view.player.highestSeasonRankedElo,
+  );
+  const rankedAllTimeHigh = formatRankedLine(
+    view.player.highestAllTimeRankedRankName,
+    view.player.highestAllTimeRankedElo,
+  );
+  const rankedLines = [
+    rankedCurrent === null ? null : `Current: ${rankedCurrent}`,
+    rankedSeasonHigh === null ? null : `Season high: ${rankedSeasonHigh}`,
+    rankedAllTimeHigh === null ? null : `All-time high: ${rankedAllTimeHigh}`,
+    view.player.isQualifiedFromChampionshipChallenge === true ? 'Championship Challenge: Qualified' : null,
+  ].filter((line): line is string => line !== null);
+  if (rankedLines.length > 0) {
+    embed.addFields({ name: 'Ranked', value: truncate(rankedLines.join('\n'), 1024) });
+  }
+
+  const victoryLines = [
+    view.player.threeVsThreeVictories === null
+      ? null
+      : `3v3: ${formatInteger(view.player.threeVsThreeVictories)}`,
+    view.player.soloVictories === null ? null : `Solo: ${formatInteger(view.player.soloVictories)}`,
+    view.player.duoVictories === null ? null : `Duo: ${formatInteger(view.player.duoVictories)}`,
+  ].filter((line): line is string => line !== null);
+  const recordLines = [
+    formatBestTime(view.player.bestRoboRumbleTime) === null
+      ? null
+      : `Best Robo Rumble: ${formatBestTime(view.player.bestRoboRumbleTime)}`,
+    formatBestTime(view.player.bestTimeAsBigBrawler) === null
+      ? null
+      : `Best Big Brawler: ${formatBestTime(view.player.bestTimeAsBigBrawler)}`,
+  ].filter((line): line is string => line !== null);
+  if (victoryLines.length > 0 || recordLines.length > 0) {
+    embed.addFields({
+      name: 'Victories & Records',
+      value: truncate([...victoryLines, ...recordLines].join('\n'), 1024),
+    });
   }
 
   if (view.currentClub !== null) {
@@ -180,12 +252,31 @@ export function buildPlayerProfileEmbed(
   }
 
   if (view.brawlers.length > 0) {
+    const statsPrefix = view.stats === null
+      ? ''
+      : `Brawlers: ${formatInteger(view.stats.brawlerCount) ?? view.brawlers.length}` +
+        (view.stats.maxedBrawlers === null ? '' : ` • Maxed: ${formatInteger(view.stats.maxedBrawlers)}`) +
+        '\n';
     embed.addFields({
-      name: 'Top Brawlers (Live API)',
+      name: view.source === 'live' ? 'Top Brawlers (Live API)' : 'Top Brawlers',
       value: truncate(
-        view.brawlers
-          .map((brawler) => `• ${escapeMarkdown(brawler.name)} — ${formatInteger(brawler.trophies) ?? 0}`)
-          .join('\n'),
+        statsPrefix +
+          view.brawlers
+            .map((brawler) => {
+              const parts = [
+                `${formatInteger(brawler.trophies) ?? 0}🏆`,
+                brawler.power === null ? null : `P${brawler.power}`,
+                brawler.rank === null ? null : `R${brawler.rank}`,
+                brawler.prestigeLevel !== null && brawler.prestigeLevel > 0
+                  ? `Prestige ${brawler.prestigeLevel}`
+                  : null,
+                brawler.maxWinStreak !== null && brawler.maxWinStreak > 0
+                  ? `Streak ${formatInteger(brawler.maxWinStreak)}`
+                  : null,
+              ].filter((part): part is string => part !== null);
+              return `• ${escapeMarkdown(brawler.name)} — ${parts.join(' • ')}`;
+            })
+            .join('\n'),
         1024,
       ),
     });
@@ -331,6 +422,33 @@ export function buildPlayerClubsPageEmbed(
       2048,
     ),
   );
+
+  if (page.page === 1) {
+    const lastBattle = formatSyncTime(view.lastBattleAt ?? view.player.lastBattleAt ?? null);
+    const megaPig = view.player.megaPig ?? null;
+    const megaPigLines: string[] = [];
+    if (megaPig != null) {
+      if (megaPig.date != null) megaPigLines.push(`Event: ${escapeMarkdown(megaPig.date)}`);
+      if (megaPig.wins != null) megaPigLines.push(`Wins: ${formatInteger(megaPig.wins) ?? megaPig.wins}`);
+      if (megaPig.ticketsUsed != null) megaPigLines.push(`Tickets used: ${formatInteger(megaPig.ticketsUsed) ?? megaPig.ticketsUsed}`);
+      if (megaPig.draws != null) megaPigLines.push(`Draws: ${formatInteger(megaPig.draws) ?? megaPig.draws}`);
+      if (megaPig.losses != null) megaPigLines.push(`Losses: ${formatInteger(megaPig.losses) ?? megaPig.losses}`);
+    }
+    embed.addFields({
+      name: 'Activity & Mega Pig',
+      value: truncate(
+        [
+          lastBattle == null
+            ? 'Last online: not available from the official API • Last observed battle: not recorded'
+            : `Last online: not available from the official API • Last observed battle: ${lastBattle}`,
+          megaPigLines.length > 0
+            ? `Mega Pig (stored profile): ${megaPigLines.join(' • ')}`
+            : 'Past Mega Pig wins: not available in stored BrawlHub/profile data (official API does not expose full historical event wins/tickets).',
+        ].join('\n'),
+        1024,
+      ),
+    });
+  }
 
   if (page.items.length === 0) {
     embed.addFields({

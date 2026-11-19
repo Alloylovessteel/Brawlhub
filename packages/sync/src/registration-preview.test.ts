@@ -7,6 +7,7 @@ function clientReturning(value: unknown): BrawlStarsClient {
     getClub: vi.fn(async () => value as never),
     getClubMembers: vi.fn(async () => []),
     getPlayer: vi.fn(async () => ({}) as never),
+    getBattleLog: vi.fn(async () => []),
   };
 }
 
@@ -60,6 +61,7 @@ describe('previewClubRegistration', () => {
       }),
       getClubMembers: vi.fn(async () => []),
       getPlayer: vi.fn(async () => ({}) as never),
+      getBattleLog: vi.fn(async () => []),
     };
 
     await expect(previewClubRegistration('2UG9', { client })).rejects.toThrow('official API unavailable');

@@ -1,11 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  battleLogResponseSchema,
   clubMembersResponseSchema,
   clubSchema,
   createBrawlStarsClient,
+  type BattleLogItem,
   type BrawlStarsClient,
   type Club,
   type ClubMember,
+  type Player,
 } from '@brawlhub/brawl-stars';
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
@@ -27,6 +30,132 @@ const DEFAULT_NOTIFIER_TIMEOUT_MS = 10_000;
 const MAX_ERROR_LENGTH = 1000;
 
 type EventType = 'join' | 'leave' | 'transfer';
+
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (raw === undefined || raw === '') return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+  return fallback;
+}
+
+function parseBattleTime(value: string): string | null {
+  const direct = Date.parse(value);
+  if (!Number.isNaN(direct)) return new Date(direct).toISOString();
+  const compact = value.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(?:\.(\d{3}))?Z$/);
+  if (!compact) return null;
+  const [, y, m, d, hh, mm, ss, ms] = compact;
+  const iso = `${y}-${m}-${d}T${hh}:${mm}:${ss}.${ms ?? '000'}Z`;
+  const parsed = Date.parse(iso);
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+}
+
+function battleKey(item: BattleLogItem): string {
+  const parts = [
+    item.battleTime,
+    item.event?.id ?? '',
+    item.event?.mode ?? '',
+    item.event?.map ?? '',
+    item.battle?.mode ?? '',
+    item.battle?.type ?? '',
+    item.battle?.result ?? '',
+    item.battle?.duration ?? '',
+    item.battle?.trophyChange ?? '',
+    item.battle?.rank ?? '',
+  ];
+  return createHash('sha256').update(parts.join('|')).digest('hex');
+}
+
+async function collectBattleLogs(
+  db: SupabaseClient,
+  client: BrawlStarsClient,
+  states: ReadonlyArray<{ playerId: string; tag: string }>,
+  syncRunId: string,
+  timeoutMs: number,
+): Promise<number> {
+  const byPlayer = new Map<string, string>();
+  for (const state of states) byPlayer.set(state.playerId, state.tag);
+  let inserted = 0;
+
+  for (const [playerId, tag] of byPlayer) {
+    let items: BattleLogItem[];
+    try {
+      items = await withTimeout(client.getBattleLog(tag), timeoutMs, `Battle log for ${tag}`);
+    } catch (error) {
+      log.warn('Battle log fetch failed', {
+        tag,
+        syncRunId,
+        reason: sanitizeError(error),
+      });
+      continue;
+    }
+
+    const rows = items
+      .map((item) => {
+        const battleTime = parseBattleTime(item.battleTime);
+        if (battleTime === null) return null;
+        return {
+          player_id: playerId,
+          sync_run_id: syncRunId,
+          battle_time: battleTime,
+          battle_key: battleKey(item),
+          mode: item.event?.mode ?? item.battle?.mode ?? null,
+          map: item.event?.map ?? null,
+          battle_type: item.battle?.type ?? null,
+          result: item.battle?.result ?? null,
+          trophy_change:
+            typeof item.battle?.trophyChange === 'number' && Number.isFinite(item.battle.trophyChange)
+              ? item.battle.trophyChange
+              : null,
+          raw: item as unknown as Record<string, unknown>,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+
+    if (rows.length === 0) continue;
+
+    const { error } = await db
+      .from('player_battles')
+      .upsert(rows, { onConflict: 'player_id,battle_key', ignoreDuplicates: true });
+    if (error) {
+      log.warn('Battle log write failed', {
+        tag,
+        syncRunId,
+        reason: error.message,
+      });
+      continue;
+    }
+    inserted += rows.length;
+
+    const latest = rows.reduce<string | null>((max, row) => {
+      if (max === null) return row.battle_time;
+      return row.battle_time > max ? row.battle_time : max;
+    }, null);
+    if (latest !== null) {
+      const { data: current } = await db
+        .from('players')
+        .select('last_battle_at')
+        .eq('id', playerId)
+        .maybeSingle();
+      const currentValue = typeof current?.last_battle_at === 'string' ? current.last_battle_at : null;
+      if (currentValue === null || latest > currentValue) {
+        const { error: updateError } = await db
+          .from('players')
+          .update({ last_battle_at: latest })
+          .eq('id', playerId);
+        if (updateError) {
+          log.warn('Could not update player last_battle_at', {
+            tag,
+            syncRunId,
+            reason: updateError.message,
+          });
+        }
+      }
+    }
+  }
+
+  return inserted;
+}
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -142,6 +271,7 @@ interface Counters {
   snapshotsWritten: number;
   membershipEvents: number;
   notificationsSent: number;
+  battlesCollected: number;
 }
 
 interface EventInput {
@@ -310,6 +440,7 @@ function emptyCounters(): Counters {
     snapshotsWritten: 0,
     membershipEvents: 0,
     notificationsSent: 0,
+    battlesCollected: 0,
   };
 }
 
@@ -629,42 +760,94 @@ async function applyMembershipTransition(
 // Writes
 // ---------------------------------------------------------------------------
 
+function playerProfilePayload(player: Player): Record<string, unknown> {
+  const extra: Record<string, unknown> = {
+    name: player.name,
+    trophies: player.trophies,
+  };
+
+  const highest = player.highestTrophies ?? player.highscore;
+  if (typeof highest === 'number' && Number.isFinite(highest)) extra['highest_trophies'] = highest;
+  if (typeof player.expLevel === 'number' && Number.isFinite(player.expLevel)) extra['exp_level'] = player.expLevel;
+  if (typeof player.expPoints === 'number' && Number.isFinite(player.expPoints)) extra['exp_points'] = player.expPoints;
+  if (typeof player.nameColor === 'string') extra['name_color'] = player.nameColor;
+  else if (typeof player.nameColor === 'number' && Number.isFinite(player.nameColor)) {
+    extra['name_color'] = String(player.nameColor);
+  }
+  const iconId = player.icon && typeof (player.icon as { id?: unknown }).id === 'number'
+    ? (player.icon as { id: number }).id
+    : undefined;
+  if (typeof iconId === 'number' && Number.isFinite(iconId)) extra['icon_id'] = iconId;
+  if (typeof player.totalPrestigeLevel === 'number' && Number.isFinite(player.totalPrestigeLevel)) extra['total_prestige_level'] = player.totalPrestigeLevel;
+  if (typeof player.fame === 'number' && Number.isFinite(player.fame)) extra['fame'] = player.fame;
+  if (typeof player.fameTierName === 'string') extra['fame_tier_name'] = player.fameTierName;
+  if (typeof player.isQualifiedFromChampionshipChallenge === 'boolean') {
+    extra['is_qualified_from_championship_challenge'] = player.isQualifiedFromChampionshipChallenge;
+  }
+  if (typeof player['3vs3Victories'] === 'number' && Number.isFinite(player['3vs3Victories'])) extra['three_vs_three_victories'] = player['3vs3Victories'];
+  if (typeof player.soloVictories === 'number' && Number.isFinite(player.soloVictories)) extra['solo_victories'] = player.soloVictories;
+  if (typeof player.duoVictories === 'number' && Number.isFinite(player.duoVictories)) extra['duo_victories'] = player.duoVictories;
+  if (typeof player.bestRoboRumbleTime === 'number' && Number.isFinite(player.bestRoboRumbleTime)) extra['best_robo_rumble_time'] = player.bestRoboRumbleTime;
+  if (typeof player.bestTimeAsBigBrawler === 'number' && Number.isFinite(player.bestTimeAsBigBrawler)) extra['best_time_as_big_brawler'] = player.bestTimeAsBigBrawler;
+  if (typeof player.rankedSeasonId === 'number' && Number.isFinite(player.rankedSeasonId)) extra['ranked_season_id'] = player.rankedSeasonId;
+  if (typeof player.rankedRank === 'number' && Number.isFinite(player.rankedRank)) extra['ranked_rank'] = player.rankedRank;
+  if (typeof player.rankedRankName === 'string') extra['ranked_rank_name'] = player.rankedRankName;
+  if (typeof player.rankedElo === 'number' && Number.isFinite(player.rankedElo)) extra['ranked_elo'] = player.rankedElo;
+  if (typeof player.highestSeasonRankedRank === 'number' && Number.isFinite(player.highestSeasonRankedRank)) extra['highest_season_ranked_rank'] = player.highestSeasonRankedRank;
+  if (typeof player.highestSeasonRankedRankName === 'string') extra['highest_season_ranked_rank_name'] = player.highestSeasonRankedRankName;
+  if (typeof player.highestSeasonRankedElo === 'number' && Number.isFinite(player.highestSeasonRankedElo)) extra['highest_season_ranked_elo'] = player.highestSeasonRankedElo;
+  if (typeof player.highestAllTimeRankedRank === 'number' && Number.isFinite(player.highestAllTimeRankedRank)) extra['highest_all_time_ranked_rank'] = player.highestAllTimeRankedRank;
+  if (typeof player.highestAllTimeRankedRankName === 'string') extra['highest_all_time_ranked_rank_name'] = player.highestAllTimeRankedRankName;
+  if (typeof player.highestAllTimeRankedElo === 'number' && Number.isFinite(player.highestAllTimeRankedElo)) extra['highest_all_time_ranked_elo'] = player.highestAllTimeRankedElo;
+
+  // Store rich details (brawlers, gadgets/gears, etc.) for display/history.
+  extra['profile_extra'] = player as unknown as Record<string, unknown>;
+
+  return extra;
+}
+
+async function fetchPlayerProfile(
+  apiClient: BrawlStarsClient,
+  tag: string,
+  timeoutMs: number,
+): Promise<Player | undefined> {
+  try {
+    return await withTimeout(apiClient.getPlayer(tag), timeoutMs, `getPlayer(${tag})`);
+  } catch (error) {
+    log.warn('Player profile fetch failed', { tag, reason: sanitizeError(error) });
+    return undefined;
+  }
+}
+
 async function upsertPlayer(
   db: SupabaseClient,
   apiClient: BrawlStarsClient,
   entry: RosterEntry,
   nowIso: string,
   timeoutMs: number,
+  fullProfile?: Player,
 ): Promise<string> {
   const existing = await db.from('players').select('id').eq('tag', entry.tag).maybeSingle();
   requireOk(existing.error, `Read player ${entry.tag}`);
 
   const extra: Record<string, unknown> = {};
-  if (existing.data === null && process.env.SYNC_ENRICH_NEW_PLAYERS === 'true') {
-    try {
-      const player = await withTimeout(
-        apiClient.getPlayer(entry.tag),
-        timeoutMs,
-        `getPlayer(${entry.tag})`,
-      );
-      if (typeof player.highscore === 'number') {
-        extra['highest_trophies'] = player.highscore;
-      }
-      if (typeof player.expLevel === 'number') {
-        extra['exp_level'] = player.expLevel;
-      }
-    } catch (error) {
-      // Optional enrichment only: never invent stats for a new player.
-      log.debug('Player enrichment skipped', { tag: entry.tag, reason: sanitizeError(error) });
+  if (fullProfile !== undefined) {
+    Object.assign(extra, playerProfilePayload(fullProfile));
+  } else if (existing.data === null && process.env.SYNC_ENRICH_NEW_PLAYERS === 'true') {
+    const player = await fetchPlayerProfile(apiClient, entry.tag, timeoutMs);
+    if (player !== undefined) {
+      Object.assign(extra, playerProfilePayload(player));
     }
   }
 
+  // Roster values remain authoritative for current club-member identity.
+  extra['name'] = entry.name;
+  extra['trophies'] = entry.trophies;
+
   const payload: Record<string, unknown> = {
     tag: entry.tag,
-    name: entry.name,
-    trophies: entry.trophies,
-    last_synced_at: nowIso,
     ...extra,
+    last_synced_at: nowIso,
   };
   const result = await db
     .from('players')
@@ -860,6 +1043,7 @@ export async function runSync(options?: {
   const periodStartIso = new Date(Math.floor(nowMs / syncIntervalMs()) * syncIntervalMs()).toISOString();
   const apiTimeoutMs = readPositiveEnv('SYNC_API_TIMEOUT_MS', DEFAULT_API_TIMEOUT_MS);
   const notifierTimeoutMs = readPositiveEnv('SYNC_NOTIFIER_TIMEOUT_MS', DEFAULT_NOTIFIER_TIMEOUT_MS);
+  const collectBattleLogsEnabled = readBooleanEnv('SYNC_COLLECT_BATTLE_LOGS', true);
 
   let clubRows: ClubRow[];
   try {
@@ -912,8 +1096,7 @@ export async function runSync(options?: {
       return skippedResult('', 'Another sync process holds the database lock');
     }
 
-    try {
-      const acquired = await acquireRun(db, periodStartIso, nowIso, nowMs, clubIds, clubTags);
+    const acquired = await acquireRun(db, periodStartIso, nowIso, nowMs, clubIds, clubTags);
     if (acquired.kind === 'skip') {
       return acquired.result;
     }
@@ -931,9 +1114,13 @@ export async function runSync(options?: {
     const roster = buildGlobalRoster(fetched);
 
     // 2. Players.
+    const collectPlayerProfiles = readBooleanEnv('SYNC_COLLECT_PLAYER_PROFILES', true);
     const states: RosterState[] = [];
     for (const entry of roster.values()) {
-      const playerId = await upsertPlayer(db, apiClient, entry, nowIso, apiTimeoutMs);
+      const fullProfile = collectPlayerProfiles
+        ? await fetchPlayerProfile(apiClient, entry.tag, apiTimeoutMs)
+        : undefined;
+      const playerId = await upsertPlayer(db, apiClient, entry, nowIso, apiTimeoutMs, fullProfile);
       states.push({ ...entry, playerId });
       counters.playersUpserted += 1;
     }
@@ -1038,6 +1225,16 @@ export async function runSync(options?: {
       }
     }
 
+    if (collectBattleLogsEnabled && states.length > 0 && runId !== undefined) {
+      counters.battlesCollected = await collectBattleLogs(
+        db,
+        apiClient,
+        states.map((state) => ({ playerId: state.playerId, tag: state.tag })),
+        runId,
+        apiTimeoutMs,
+      );
+    }
+
     // 6. Notifications (only when a notifier and a channel are available).
     if (options?.notifier !== undefined) {
       counters.notificationsSent = await sendNotifications(
@@ -1085,7 +1282,6 @@ export async function runSync(options?: {
       error: message,
       affectedClubIds: clubIds,
     };
-    }
   } finally {
     if (lockHeld) {
       await releaseSyncLock(db, lockToken);
