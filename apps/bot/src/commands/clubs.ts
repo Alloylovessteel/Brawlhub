@@ -21,8 +21,8 @@ export const clubsCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
   .setDescription('List all clubs registered with BrawlHub');
 
-async function buildPage(pageNumber: number) {
-  const summaries = await loadClubSummaries();
+async function buildPage(guildId: string | null, pageNumber: number) {
+  const summaries = await loadClubSummaries(guildId);
   const page = paginateClubs(summaries, pageNumber, CLUBS_PAGE_SIZE);
   const embed = buildClubsPageEmbed(summaries, page);
   const row = buildPaginationRow(COMMAND_NAME, page.page, page.pageCount);
@@ -31,7 +31,7 @@ async function buildPage(pageNumber: number) {
 
 /** Handle `/clubs` with a paginated list of registered clubs. */
 export async function handleClubs(interaction: ChatInputCommandInteraction): Promise<void> {
-  const page = await buildPage(1);
+  const page = await buildPage(interaction.guildId, 1);
   await interaction.reply({ ...page, allowedMentions: { parse: [] } });
 }
 
@@ -43,7 +43,7 @@ export async function handleClubsComponent(interaction: ButtonInteraction): Prom
 
   try {
     await interaction.deferUpdate();
-    const page = await buildPage(requestedPage);
+    const page = await buildPage(interaction.guildId, requestedPage);
     await interaction.editReply({ ...page, content: null, allowedMentions: { parse: [] } });
   } catch (error) {
     logger.error('Clubs pagination failed', {

@@ -200,7 +200,7 @@ describe('/player command', () => {
 
     await handlePlayer(interaction);
 
-    expect(mocks.service.loadPlayerProfile).toHaveBeenCalledWith({ tag: '#2c0y' });
+    expect(mocks.service.loadPlayerProfile).toHaveBeenCalledWith({ tag: '#2c0y', guildId: 'guild-1' });
     expect(JSON.stringify(payload(interaction, 'reply').embeds[0].toJSON())).toContain(
       '[Alpha](https://brawlify.com/player/2C0Y)',
     );
@@ -230,7 +230,7 @@ describe('/player command', () => {
 
     await handlePlayerAutocomplete(interaction);
 
-    expect(mocks.service.searchPlayers).toHaveBeenCalledWith('alp');
+    expect(mocks.service.searchPlayers).toHaveBeenCalledWith('alp', { guildId: undefined });
     expect(interaction.respond).toHaveBeenCalledWith([{ name: 'Alpha (#2C0Y)', value: '2C0Y' }]);
   });
 });
@@ -278,7 +278,7 @@ describe('/player-clubs command', () => {
 
     await handlePlayerClubsComponent(button);
 
-    expect(mocks.service.loadPlayerClubs).toHaveBeenCalledWith({ tag: '2C0Y' });
+    expect(mocks.service.loadPlayerClubs).toHaveBeenCalledWith({ tag: '2C0Y', guildId: 'guild-1' });
     expect(payload(button, 'editReply').embeds[0].toJSON().footer?.text).toContain('Page 2 / 2');
   });
 

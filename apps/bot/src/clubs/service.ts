@@ -761,9 +761,16 @@ export async function loadClubView(
 
 /** Build paginated list rows from registered clubs and existing sync data. */
 export async function loadClubSummaries(
-  db: DatabaseClient = createTrustedClient(),
+  guildIdOrDb?: string | null | DatabaseClient,
+  dbArg?: DatabaseClient,
 ): Promise<ClubSummary[]> {
-  const [clubs, runs] = await Promise.all([readClubs(db), readCompletedRuns(db)]);
+  const isDb =
+    typeof guildIdOrDb === 'object' &&
+    guildIdOrDb !== null &&
+    typeof (guildIdOrDb as { from?: unknown }).from === 'function';
+  const db = isDb ? (guildIdOrDb as DatabaseClient) : (dbArg ?? createTrustedClient());
+  const guildId = isDb ? null : (guildIdOrDb as string | null | undefined);
+  const [clubs, runs] = await Promise.all([readClubs(db, guildId), readCompletedRuns(db)]);
   const completedRunIds = new Set(runs.map((run) => run.id));
 
   return Promise.all(
@@ -1250,6 +1257,7 @@ export async function loadCompareView(
   input: {
     readonly firstTag: string;
     readonly secondTag: string;
+    readonly guildId?: string | null | undefined;
     readonly now?: Date;
     readonly seasonStartIso?: string | undefined;
   },
@@ -1264,8 +1272,8 @@ export async function loadCompareView(
   if (first.tag === second.tag) return { kind: 'same-club' };
 
   const [firstClub, secondClub] = await Promise.all([
-    findClubByTag(first.tag, db),
-    findClubByTag(second.tag, db),
+    findClubByTag(first.tag, db, input.guildId),
+    findClubByTag(second.tag, db, input.guildId),
   ]);
   const firstFailure = clubLookupFailure(firstClub, first.tag);
   if (firstFailure !== null) return firstFailure;

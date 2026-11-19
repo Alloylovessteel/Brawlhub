@@ -1,4 +1,9 @@
-import { runSyncForAllGuilds, type SyncNotifier, type SyncResult } from '@brawlhub/sync';
+import {
+  runSyncForAllGuilds,
+  type RunSyncOptions,
+  type SyncNotifier,
+  type SyncResult,
+} from '@brawlhub/sync';
 
 export type ManagedSyncOutcome =
   | { readonly kind: 'ran'; readonly results: SyncResult[] }
@@ -6,7 +11,10 @@ export type ManagedSyncOutcome =
 
 export interface ManagedSyncOptions {
   readonly notifier?: SyncNotifier;
-  readonly run?: (options?: { readonly notifier?: SyncNotifier }) => Promise<SyncResult[]>;
+  readonly notifierForGuild?: RunSyncOptions['notifierForGuild'];
+  readonly run?: (
+    options?: Pick<RunSyncOptions, 'notifier' | 'notifierForGuild'>,
+  ) => Promise<SyncResult[]>;
 }
 
 let inFlight = false;
@@ -34,10 +42,10 @@ export async function runManagedSync(options: ManagedSyncOptions = {}): Promise<
   inFlight = true;
   try {
     const runner = options.run ?? runSyncForAllGuilds;
-    const results =
-      options.notifier === undefined
-        ? await runner()
-        : await runner({ notifier: options.notifier });
+    const runOptions: Pick<RunSyncOptions, 'notifier' | 'notifierForGuild'> = {};
+    if (options.notifier !== undefined) runOptions.notifier = options.notifier;
+    if (options.notifierForGuild !== undefined) runOptions.notifierForGuild = options.notifierForGuild;
+    const results = await runner(runOptions);
     return { kind: 'ran', results };
   } finally {
     inFlight = false;

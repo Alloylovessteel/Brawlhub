@@ -111,6 +111,7 @@ function preview() {
     description: 'A club',
     trophies: 100,
     memberCount: 20,
+    guildId: GUILD_ID,
   };
 }
 
@@ -288,7 +289,7 @@ beforeEach(() => {
   mocks.clubs.filterRegisteredClubs.mockImplementation((clubs: unknown) => clubs as never);
 
   mocks.guard.runManagedSync.mockReset();
-  mocks.guard.runManagedSync.mockResolvedValue({ kind: 'ran', result: syncResult() });
+  mocks.guard.runManagedSync.mockResolvedValue({ kind: 'ran', results: [syncResult()] });
 
   mocks.rateLimit.checkBotRateLimit.mockReset();
   mocks.rateLimit.checkBotRateLimit.mockReturnValue({ allowed: true, retryAfterSeconds: 0 });
@@ -300,7 +301,7 @@ describe('/register-club', () => {
 
     await handleRegisterClub(interaction);
 
-    expect(mocks.sync.previewClubRegistration).toHaveBeenCalledWith('#2ug9');
+    expect(mocks.sync.previewClubRegistration).toHaveBeenCalledWith('#2ug9', GUILD_ID);
     expect(mocks.sync.registerClubs).not.toHaveBeenCalled();
     const reply = payload(interaction, 'reply');
     expect(reply.ephemeral).toBe(true);
@@ -335,7 +336,7 @@ describe('/register-club', () => {
     const confirmation = button(confirmId);
     await handleRegisterClubComponent(confirmation);
 
-    expect(mocks.sync.registerClubs).toHaveBeenCalledWith(['2UG9']);
+    expect(mocks.sync.registerClubs).toHaveBeenCalledWith(['2UG9'], GUILD_ID);
     expect(mocks.service.recordAdminAudit).toHaveBeenCalledWith(
       expect.objectContaining({
         actor: actor(),
@@ -448,7 +449,7 @@ describe('/sync', () => {
       clubsProcessed: 2,
       error: 'API timeout',
     });
-    mocks.guard.runManagedSync.mockResolvedValueOnce({ kind: 'ran', result: failed });
+    mocks.guard.runManagedSync.mockResolvedValueOnce({ kind: 'ran', results: [failed] });
     const interaction = chat(null);
 
     await handleSync(interaction);

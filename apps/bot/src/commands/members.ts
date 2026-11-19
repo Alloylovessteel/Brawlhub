@@ -57,8 +57,12 @@ async function replyFailure(
   await interaction.reply({ content: failure.message, ephemeral: true });
 }
 
-async function buildPage(tag: string | undefined, pageNumber: number): Promise<BuildResult> {
-  const result = await loadTrackedMembers({ tag });
+async function buildPage(
+  tag: string | undefined,
+  guildId: string | null,
+  pageNumber: number,
+): Promise<BuildResult> {
+  const result = await loadTrackedMembers({ tag, guildId });
   if (result.kind !== 'ok') return { kind: 'failure', failure: result };
 
   const page = paginate(result.value.records, pageNumber, PAGE_SIZE);
@@ -77,7 +81,7 @@ async function buildPage(tag: string | undefined, pageNumber: number): Promise<B
 
 export async function handleMembers(interaction: ChatInputCommandInteraction): Promise<void> {
   const tag = interaction.options.getString('tag', false) ?? undefined;
-  const built = await buildPage(tag, 1);
+  const built = await buildPage(tag, interaction.guildId, 1);
   if (built.kind === 'failure') {
     await replyFailure(interaction, built.failure);
     return;
@@ -92,7 +96,11 @@ export async function handleMembersComponent(interaction: ButtonInteraction): Pr
 
   try {
     await interaction.deferUpdate();
-    const built = await buildPage(tagFromPaginationState(parsed.state), parsed.page);
+    const built = await buildPage(
+      tagFromPaginationState(parsed.state),
+      interaction.guildId,
+      parsed.page,
+    );
     if (built.kind === 'failure') {
       await interaction.editReply({
         content: 'This club is no longer available.',

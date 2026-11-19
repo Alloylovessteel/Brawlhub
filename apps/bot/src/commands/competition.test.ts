@@ -221,6 +221,7 @@ describe('/competition command handlers', () => {
 
     expect(mocks.service.createCompetition).toHaveBeenCalledWith(
       expect.objectContaining({ discordUserId: DISCORD_ID, name: 'Midseason Climb' }),
+      { guildId: 'guild-1' },
     );
     expect(embedText(payload(interaction, 'reply').embeds[0])).toContain('No camping');
   });
@@ -255,7 +256,7 @@ describe('/competition command handlers', () => {
       discordUserId: DISCORD_ID,
       competitionId: COMPETITION_ID,
       playerId: PLAYER_ID,
-    });
+    }, { guildId: 'guild-1' });
 
     mocks.service.submitCompetitionResult.mockResolvedValue({
       submissionId: 'submission-1',
@@ -275,7 +276,7 @@ describe('/competition command handlers', () => {
       competitionId: COMPETITION_ID,
       playerId: PLAYER_ID,
       trophies: 5_000,
-    });
+    }, { guildId: 'guild-1' });
     expect(embedText(payload(submit, 'reply').embeds[0])).toContain('Unverified user submission');
   });
 
@@ -290,7 +291,7 @@ describe('/competition command handlers', () => {
     expect(mocks.service.endCompetition).toHaveBeenCalledWith({
       discordUserId: DISCORD_ID,
       competitionId: COMPETITION_ID,
-    });
+    }, { guildId: 'guild-1' });
     expect(embedText(payload(interaction, 'reply').embeds[0])).toContain(`<@${DISCORD_ID}>`);
   });
 

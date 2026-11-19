@@ -1,5 +1,6 @@
 export interface ClubRow {
   id: string;
+  guild_id: string;
   tag: string;
   name: string;
   description: string | null;
@@ -30,6 +31,7 @@ export interface PlayerRow {
 
 export interface ClubRef {
   id: string;
+  guild_id?: string | null;
   tag: string;
   name: string;
   badge_id: number | null;

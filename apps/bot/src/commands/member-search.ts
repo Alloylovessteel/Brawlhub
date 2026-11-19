@@ -108,13 +108,14 @@ export function decodeMemberSearchState(state: string): SearchState | null {
 async function runSearch(
   state: SearchState,
   actorDiscordUserId: string,
+  guildId: string | null,
 ): Promise<
   | { readonly kind: 'ok'; readonly value: MemberSearchView }
   | { readonly kind: 'failure'; readonly failure: MemberSearchFailure }
 > {
   const result = state.mode === 'player'
-    ? await searchTrackedMembersByPlayer(state.query)
-    : await searchTrackedMembersByDiscord(state.query, actorDiscordUserId);
+    ? await searchTrackedMembersByPlayer(state.query, { guildId })
+    : await searchTrackedMembersByDiscord(state.query, actorDiscordUserId, { guildId });
   return result.kind === 'ok'
     ? { kind: 'ok', value: result.value }
     : { kind: 'failure', failure: result };
@@ -123,9 +124,10 @@ async function runSearch(
 async function buildPage(
   state: SearchState,
   actorDiscordUserId: string,
+  guildId: string | null,
   pageNumber: number,
 ): Promise<BuildResult> {
-  const result = await runSearch(state, actorDiscordUserId);
+  const result = await runSearch(state, actorDiscordUserId, guildId);
   if (result.kind === 'failure') return { kind: 'failure', failure: result.failure };
 
   const page = paginate(result.value.entries, pageNumber, PAGE_SIZE);
@@ -176,7 +178,7 @@ export async function handleMemberSearch(interaction: ChatInputCommandInteractio
     return;
   }
 
-  const built = await buildPage(state, interaction.user.id, 1);
+  const built = await buildPage(state, interaction.user.id, interaction.guildId, 1);
   if (built.kind === 'failure') {
     await replyFailure(interaction, built.failure);
     return;
@@ -193,7 +195,7 @@ export async function handleMemberSearchComponent(interaction: ButtonInteraction
 
   try {
     await interaction.deferUpdate();
-    const built = await buildPage(state, interaction.user.id, parsed.page);
+    const built = await buildPage(state, interaction.user.id, interaction.guildId, parsed.page);
     if (built.kind === 'failure') {
       await interaction.editReply({
         content: 'This search is no longer available.',

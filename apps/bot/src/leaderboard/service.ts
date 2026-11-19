@@ -214,6 +214,7 @@ function clubCompare(a: ClubRecord, b: ClubRecord): number {
 export interface LeaderboardReadOptions {
   readonly db?: DatabaseClient;
   readonly now?: Date;
+  readonly guildId?: string | null;
 }
 
 /** Rank registered clubs by their latest valid completed-sync snapshot. */
@@ -223,7 +224,7 @@ export async function loadClubLeaderboard(
   const db = options.db ?? createTrustedClient();
   const now = options.now ?? new Date();
   const [clubs, runs] = await Promise.all([
-    getRegisteredClubs(db),
+    getRegisteredClubs(options.guildId, db),
     readCompletedRuns(db),
   ]);
   const completedRunIds = new Set(runs.map((run) => run.id));
@@ -265,7 +266,26 @@ export async function loadPlayerLeaderboard(
 ): Promise<PlayerLeaderboardView> {
   const db = options.db ?? createTrustedClient();
   const now = options.now ?? new Date();
-  const [players, runs] = await Promise.all([readPlayers(db), readCompletedRuns(db)]);
+  let players = await readPlayers(db);
+  if (options.guildId !== undefined && options.guildId !== null) {
+    const clubs = await getRegisteredClubs(options.guildId, db);
+    const clubIds = clubs.map((club) => club.id);
+    const allowedPlayerIds = new Set<string>();
+    if (clubIds.length > 0) {
+      const { data, error } = await db
+        .from('club_memberships')
+        .select('player_id')
+        .in('club_id', clubIds)
+        .limit(MAX_ROWS);
+      requireOk(error, 'Read guild player memberships');
+      for (const row of data ?? []) {
+        const id = asString(record(row)?.['player_id']);
+        if (id !== null) allowedPlayerIds.add(id);
+      }
+    }
+    players = players.filter((player) => player.id !== null && allowedPlayerIds.has(player.id));
+  }
+  const [runs] = await Promise.all([readCompletedRuns(db)]);
   const memberships = await readMemberships(db, players, now);
   const validPlayers = players.filter((player) => finiteNumber(player.trophies) !== null);
 
@@ -309,7 +329,26 @@ export async function loadTrophyLeaderboard(
 ): Promise<TrophyLeaderboardView> {
   const db = options.db ?? createTrustedClient();
   const now = options.now ?? new Date();
-  const [players, runs] = await Promise.all([readPlayers(db), readCompletedRuns(db)]);
+  let players = await readPlayers(db);
+  if (options.guildId !== undefined && options.guildId !== null) {
+    const clubs = await getRegisteredClubs(options.guildId, db);
+    const clubIds = clubs.map((club) => club.id);
+    const allowedPlayerIds = new Set<string>();
+    if (clubIds.length > 0) {
+      const { data, error } = await db
+        .from('club_memberships')
+        .select('player_id')
+        .in('club_id', clubIds)
+        .limit(MAX_ROWS);
+      requireOk(error, 'Read guild player memberships');
+      for (const row of data ?? []) {
+        const id = asString(record(row)?.['player_id']);
+        if (id !== null) allowedPlayerIds.add(id);
+      }
+    }
+    players = players.filter((player) => player.id !== null && allowedPlayerIds.has(player.id));
+  }
+  const [runs] = await Promise.all([readCompletedRuns(db)]);
   const completedRunIds = new Set(runs.map((run) => run.id));
   const snapshotGroups = await readPlayerSnapshotGroups(db, completedRunIds);
   const memberships = await readMemberships(db, players, now);
@@ -356,7 +395,26 @@ export async function loadProgressionLeaderboard(
   }
   const db = options.db ?? createTrustedClient();
   const now = input.now ?? options.now ?? new Date();
-  const [players, runs] = await Promise.all([readPlayers(db), readCompletedRuns(db)]);
+  let players = await readPlayers(db);
+  if (options.guildId !== undefined && options.guildId !== null) {
+    const clubs = await getRegisteredClubs(options.guildId, db);
+    const clubIds = clubs.map((club) => club.id);
+    const allowedPlayerIds = new Set<string>();
+    if (clubIds.length > 0) {
+      const { data, error } = await db
+        .from('club_memberships')
+        .select('player_id')
+        .in('club_id', clubIds)
+        .limit(MAX_ROWS);
+      requireOk(error, 'Read guild player memberships');
+      for (const row of data ?? []) {
+        const id = asString(record(row)?.['player_id']);
+        if (id !== null) allowedPlayerIds.add(id);
+      }
+    }
+    players = players.filter((player) => player.id !== null && allowedPlayerIds.has(player.id));
+  }
+  const [runs] = await Promise.all([readCompletedRuns(db)]);
   const completedRunIds = new Set(runs.map((run) => run.id));
   const snapshotGroups = await readPlayerSnapshotGroups(db, completedRunIds);
 

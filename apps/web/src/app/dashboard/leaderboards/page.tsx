@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { getAccessibleReadClubIds, requirePageSession } from '@/lib/auth/session';
 import { getClubs, getClubSummaries, getPlayerClubs, getPlayers } from '@/lib/data/queries';
 import { formatDateTime, formatNumber, formatTag } from '@/lib/utils';
 
@@ -16,10 +17,17 @@ export default async function LeaderboardsPage({
 }: Readonly<{
   searchParams: Promise<{ club?: string | string[] }>;
 }>) {
+  const session = await requirePageSession();
+  const scope = getAccessibleReadClubIds(session);
+  const scopeOptions = scope === null ? {} : { allowedClubIds: [...scope] };
+  const clubScopeOptions = scope === null ? {} : { clubIds: [...scope] };
   const params = await searchParams;
   const selectedParam = Array.isArray(params.club) ? params.club[0] : params.club;
 
-  const [clubSummaries, clubs] = await Promise.all([getClubSummaries(), getClubs({ page: 1, pageSize: 100 })]);
+  const [clubSummaries, clubs] = await Promise.all([
+    getClubSummaries(clubScopeOptions),
+    getClubs({ page: 1, pageSize: 100, ...clubScopeOptions }),
+  ]);
   const validClub =
     selectedParam !== undefined && clubs.rows.some((club) => club.id === selectedParam)
       ? selectedParam
@@ -28,9 +36,10 @@ export default async function LeaderboardsPage({
   const players = await getPlayers({
     page: 1,
     pageSize: 100,
+    ...scopeOptions,
     ...(validClub === undefined ? {} : { clubId: validClub }),
   });
-  const playerClubs = await getPlayerClubs(players.rows.map((player) => player.id));
+  const playerClubs = await getPlayerClubs(players.rows.map((player) => player.id), scopeOptions);
   const chartClub =
     clubSummaries.rows.find((summary) => summary.club.id === validClub) ?? clubSummaries.rows[0];
   const chartData = (chartClub?.snapshots ?? [])

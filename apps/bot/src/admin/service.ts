@@ -149,6 +149,7 @@ export async function loadGuildSettings(
       .from('clubs')
       .select('tag, name')
       .eq('id', row.primary_club_id)
+      .eq('guild_id', parsedGuildId.data)
       .maybeSingle();
     requireOk(club.error, 'Read primary club');
     const clubRow = record(club.data);
@@ -170,6 +171,7 @@ export async function loadGuildSettings(
 async function validateSettingValue(
   field: GuildSettingsField,
   value: string | null,
+  guildId: string,
   db: DatabaseClient,
 ): Promise<string | null> {
   if (value === null) return null;
@@ -179,10 +181,15 @@ async function validateSettingValue(
     if (!UUID_PATTERN.test(normalized)) {
       throw new AdminServiceError('invalid_club', 'Select a registered club from the autocomplete list.');
     }
-    const club = await db.from('clubs').select('id').eq('id', normalized).maybeSingle();
+    const club = await db
+      .from('clubs')
+      .select('id')
+      .eq('id', normalized)
+      .eq('guild_id', guildId)
+      .maybeSingle();
     requireOk(club.error, 'Validate primary club');
     if (club.data === null) {
-      throw new AdminServiceError('invalid_club', 'That club is not registered with BrawlHub.');
+      throw new AdminServiceError('invalid_club', 'That club is not registered with BrawlHub in this server.');
     }
     return normalized;
   }
@@ -208,7 +215,7 @@ export async function updateGuildSettings(
 
   const db = dbFor(options);
   const existing = await readGuildSettingsRow(parsedGuildId.data, db);
-  const value = await validateSettingValue(input.field, input.value, db);
+  const value = await validateSettingValue(input.field, input.value, parsedGuildId.data, db);
 
   const next: GuildSettingsRow = {
     guild_id: parsedGuildId.data,
@@ -331,24 +338,37 @@ export async function loadSyncRun(
 }
 
 export async function loadSyncStatus(
+  guildId?: string | null,
   options: AdminServiceOptions = {},
 ): Promise<SyncStatusView> {
   const db = dbFor(options);
-  const runResult = await db
+  let runQuery = db
     .from('sync_runs')
     .select(SYNC_RUN_COLUMNS)
     .order('period_start', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  const scope = guildId && guildId.trim().length > 0 ? `guild:${guildId.trim()}` : null;
+  if (scope !== null) {
+    runQuery = runQuery.eq('scope', scope);
+  }
+  const runResult = await runQuery.maybeSingle();
   requireOk(runResult.error, 'Read latest sync run');
 
-  const lockResult = await db
+  let lockQuery = db
     .from('sync_locks')
     .select('scope, locked_by, locked_at, locked_until')
     .order('locked_at', { ascending: false, nullsFirst: false })
     .limit(20);
+  if (scope !== null) {
+    lockQuery = lockQuery.eq('scope', scope);
+  }
+  const lockResult = await lockQuery;
   requireOk(lockResult.error, 'Read sync locks');
-  const lockRows = (lockResult.data ?? []) as Array<Record<string, unknown>>;
+  const lockRows: Array<Record<string, unknown>> = Array.isArray(lockResult.data)
+    ? (lockResult.data as Array<Record<string, unknown>>)
+    : lockResult.data === null || lockResult.data === undefined
+      ? []
+      : [lockResult.data as Record<string, unknown>];
   const nowMs = Date.now();
   const activeLockRow =
     lockRows.find((row) => {
@@ -364,7 +384,7 @@ export async function loadSyncStatus(
   const active = lockedBy !== null && (lockedUntilMs === null || lockedUntilMs > nowMs);
 
   const lock: SyncLockSummary = {
-    scope: asString(activeLockRow?.['scope']) ?? 'all',
+    scope: asString(activeLockRow?.['scope']) ?? (scope ?? 'all'),
     lockedBy,
     lockedAt,
     lockedUntil,

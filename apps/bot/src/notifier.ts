@@ -1,3 +1,4 @@
+import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import type { SyncNotifier, SyncNotifierWithChannel } from '@brawlhub/sync';
 import { REST, Routes } from 'discord.js';
@@ -35,7 +36,7 @@ function formatContent(input: Parameters<SyncNotifier['send']>[0]): string {
   }
 }
 
-function readChannelId(): string | undefined {
+function readFallbackChannelId(): string | undefined {
   const raw = process.env.DISCORD_NOTIFICATION_CHANNEL_ID?.trim();
   if (raw === undefined || raw === '' || raw.startsWith('your-')) {
     return undefined;
@@ -50,12 +51,44 @@ const SKIP_NOTIFIER: SyncNotifier = {
   },
 };
 
+async function readGuildAnnouncementChannelId(guildId: string): Promise<string | undefined> {
+  try {
+    const db = createTrustedClient();
+    const { data, error } = await db
+      .from('guild_settings')
+      .select('announcement_channel_id')
+      .eq('guild_id', guildId)
+      .maybeSingle();
+    if (error) return undefined;
+    const value =
+      data !== null &&
+      typeof data === 'object' &&
+      data !== null &&
+      typeof (data as { announcement_channel_id?: unknown }).announcement_channel_id === 'string'
+        ? ((data as { announcement_channel_id: string }).announcement_channel_id.trim() || undefined)
+        : undefined;
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface DiscordNotifierOptions {
+  readonly guildId?: string | null;
+}
+
 /**
  * Creates the notifier passed to runSync(). Missing channel configuration (or a
  * missing bot token) disables notifications instead of failing the sync run.
+ * When guildId is provided, the guild's configured announcement channel is used.
  */
-export function createDiscordNotifier(): SyncNotifierWithChannel {
-  const channelId = readChannelId();
+export async function createDiscordNotifier(
+  options: DiscordNotifierOptions = {},
+): Promise<SyncNotifierWithChannel> {
+  const guildId = options.guildId?.trim();
+  const channelId =
+    (guildId && guildId.length > 0 ? await readGuildAnnouncementChannelId(guildId) : undefined) ??
+    readFallbackChannelId();
   if (channelId === undefined) {
     return SKIP_NOTIFIER;
   }

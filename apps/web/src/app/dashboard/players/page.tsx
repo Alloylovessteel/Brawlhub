@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { getAccessibleReadClubIds, requirePageSession } from '@/lib/auth/session';
 import {
   getClubs,
   getPlayerClubs,
@@ -28,11 +29,15 @@ export default async function PlayersPage({
     pageSize?: string | string[];
   }>;
 }>) {
+  const session = await requirePageSession();
+  const scope = getAccessibleReadClubIds(session);
+  const scopeOptions = scope === null ? {} : { allowedClubIds: [...scope] };
+  const clubScopeOptions = scope === null ? {} : { clubIds: [...scope] };
   const params = await searchParams;
   const { page, pageSize } = parsePagination(params);
   const search = parseSearch(params.search);
   const clubParam = Array.isArray(params.club) ? params.club[0] : params.club;
-  const clubs = await getClubs({ page: 1, pageSize: 100 });
+  const clubs = await getClubs({ page: 1, pageSize: 100, ...clubScopeOptions });
   const clubId =
     clubParam !== undefined && clubs.rows.some((club) => club.id === clubParam) ? clubParam : undefined;
 
@@ -41,8 +46,9 @@ export default async function PlayersPage({
     ...(clubId === undefined ? {} : { clubId }),
     page,
     pageSize,
+    ...scopeOptions,
   });
-  const playerClubs = await getPlayerClubs(players.rows.map((player) => player.id));
+  const playerClubs = await getPlayerClubs(players.rows.map((player) => player.id), scopeOptions);
 
   return (
     <>

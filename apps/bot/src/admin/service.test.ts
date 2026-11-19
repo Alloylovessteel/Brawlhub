@@ -310,12 +310,14 @@ describe('sync status service', () => {
       },
     }));
     setHandler('sync_locks:select', () => ({
-      data: {
-        scope: 'all-clubs',
-        locked_by: 'token-1',
-        locked_at: '2026-11-18T00:04:00.000Z',
-        locked_until: new Date(Date.now() + 60_000).toISOString(),
-      },
+      data: [
+        {
+          scope: 'all-clubs',
+          locked_by: 'token-1',
+          locked_at: '2026-11-18T00:04:00.000Z',
+          locked_until: new Date(Date.now() + 60_000).toISOString(),
+        },
+      ],
     }));
 
     const status = await loadSyncStatus();
@@ -331,12 +333,14 @@ describe('sync status service', () => {
   it('treats an expired lock as inactive', async () => {
     setHandler('sync_runs:select', () => ({ data: null }));
     setHandler('sync_locks:select', () => ({
-      data: {
-        scope: 'all-clubs',
-        locked_by: 'token-1',
-        locked_at: null,
-        locked_until: new Date(Date.now() - 60_000).toISOString(),
-      },
+      data: [
+        {
+          scope: 'all-clubs',
+          locked_by: 'token-1',
+          locked_at: null,
+          locked_until: new Date(Date.now() - 60_000).toISOString(),
+        },
+      ],
     }));
 
     const status = await loadSyncStatus();

@@ -63,7 +63,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   try {
     if (parsedClubId !== undefined) {
-      const club = await db.from('clubs').select('id').eq('id', parsedClubId).maybeSingle();
+      const club = await db
+        .from('clubs')
+        .select('id')
+        .eq('id', parsedClubId)
+        .eq('guild_id', parsed.data.guildId)
+        .maybeSingle();
       if (club.error !== null && club.error !== undefined) throw new Error(club.error.message);
       if (club.data === null) return redirectWith('error');
     }

@@ -121,10 +121,10 @@ function formatBestTime(seconds: number | null): string | null {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
-function formatRankedLine(name: string | null, elo: number | null): string | null {
-  if (name === null && elo === null) return null;
-  const parts = [name, elo === null ? null : `${formatInteger(elo)} Elo`].filter(
-    (part): part is string => part !== null && part.length > 0,
+function formatRankedLine(name: string | null | undefined, elo: number | null): string | null {
+  if ((name === null || name === undefined) && elo === null) return null;
+  const parts = [name ?? null, elo === null ? null : `${formatInteger(elo)} Elo`].filter(
+    (part): part is string => typeof part === 'string' && part.length > 0,
   );
   return parts.length === 0 ? null : parts.join(' • ');
 }

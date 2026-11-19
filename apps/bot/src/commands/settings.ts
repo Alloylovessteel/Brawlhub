@@ -4,7 +4,6 @@ import {
   filterRegisteredClubs,
   getRegisteredClubs,
 } from '../clubs/service';
-import { getBotConfig } from '../config';
 import {
   buildSettingsUpdatedEmbed,
   buildSettingsViewEmbed,
@@ -25,7 +24,7 @@ import { ConfirmationStore } from '../discord/confirmations';
 
 const COMMAND_NAME = 'settings';
 const FORBIDDEN_MESSAGE = 'You do not have permission to manage BrawlHub guild settings.';
-const NO_GUILD_MESSAGE = 'DISCORD_GUILD_ID is not configured, so guild settings cannot be managed.';
+const NO_GUILD_MESSAGE = 'Guild settings can only be managed from within a Discord server.';
 
 interface PendingSettingsChange {
   readonly actor: AdminActor;
@@ -44,7 +43,7 @@ export function clearPendingSettingsChanges(): void {
 
 export const settingsCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
-  .setDescription('View and manage settings for the configured Discord guild')
+  .setDescription('View and manage settings for this Discord server')
   .addSubcommand((subcommand) =>
     subcommand.setName('view').setDescription('Show the current guild settings'),
   )
@@ -101,12 +100,11 @@ const FIELD_LABELS: Readonly<Record<GuildSettingsField, string>> = {
   verifiedRoleId: 'Verified role',
 };
 
-function configuredGuildId(): string {
-  const guildId = getBotConfig().guildId;
-  if (guildId === undefined) {
+function requireGuildId(interaction: { guildId: string | null }): string {
+  if (interaction.guildId === null) {
     throw new AdminServiceError('invalid_guild', NO_GUILD_MESSAGE);
   }
-  return guildId;
+  return interaction.guildId;
 }
 
 function currentValue(
@@ -130,7 +128,7 @@ async function startChange(
   field: GuildSettingsField,
   value: string | null,
 ): Promise<void> {
-  const guildId = configuredGuildId();
+  const guildId = requireGuildId(interaction);
   const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write');
   const settings = await loadGuildSettings(guildId);
 
@@ -164,7 +162,7 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
   try {
     const subcommand = interaction.options.getSubcommand(false);
     if (subcommand === 'view') {
-      const guildId = configuredGuildId();
+      const guildId = requireGuildId(interaction);
       await requireGlobalPermission(interaction.user.id, 'clubs:write');
       const settings = await loadGuildSettings(guildId);
       await interaction.reply({
@@ -217,8 +215,12 @@ export async function handleSettingsAutocomplete(interaction: AutocompleteIntera
     return;
   }
   try {
+    if (interaction.guildId === null) {
+      await interaction.respond([]);
+      return;
+    }
     await requireGlobalPermission(interaction.user.id, 'clubs:write');
-    const clubs = await getRegisteredClubs();
+    const clubs = await getRegisteredClubs(interaction.guildId);
     const choices = filterRegisteredClubs(clubs, String(focused.value)).map((club) => ({
       name: `${club.name} (#${club.tag})`,
       value: club.id,

@@ -104,12 +104,25 @@ export async function previewClubRegistration(
     throw new Error('Official club response could not be validated');
   }
 
+  const returnedTag = brawlTagSchema.safeParse(validated.data.tag);
+  if (!returnedTag.success || returnedTag.data !== tag) {
+    throw new Error('Official club response returned a mismatched club tag');
+  }
+
+  const rawRecord = club as unknown as Record<string, unknown>;
+  const apiMemberCount =
+    typeof rawRecord['memberCount'] === 'number' && Number.isFinite(rawRecord['memberCount'])
+      ? rawRecord['memberCount']
+      : Array.isArray((validated.data as unknown as Record<string, unknown>)['members'])
+        ? ((validated.data as unknown as Record<string, unknown>)['members'] as unknown[]).length
+        : null;
+
   return {
     tag,
     name: validated.data.name,
     description: validated.data.description ?? null,
     trophies: validated.data.trophies,
-    memberCount: Array.isArray(validated.data.members) ? validated.data.members.length : null,
+    memberCount: apiMemberCount,
     guildId: normalizedGuildId,
   };
 }

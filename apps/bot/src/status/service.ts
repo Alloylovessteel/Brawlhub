@@ -178,7 +178,8 @@ const NO_SYNC_VIEW = (): SyncStatusView => ({
 
 async function checkSync(db: DatabaseClient | null, options: StatusServiceOptions): Promise<SyncCheck> {
   try {
-    const view = await (options.loadSync ?? (() => loadSyncStatus(db === null ? {} : { db })))();
+    const view = await (options.loadSync ??
+      (() => loadSyncStatus(null, db === null ? {} : { db })))();
     const latest = view.latestRun;
     if (latest === null) {
       return {

@@ -211,7 +211,7 @@ describe('/members command', () => {
 
     await handleMembers(interaction);
 
-    expect(mocks.memberService.loadTrackedMembers).toHaveBeenCalledWith({ tag: '8QCL' });
+    expect(mocks.memberService.loadTrackedMembers).toHaveBeenCalledWith({ tag: '8QCL', guildId: 'guild-1' });
     const text = embedText(payload(interaction, 'reply'));
     expect(text).toContain('Tracked Members');
     expect(text).toContain('Current: 1');
@@ -247,7 +247,7 @@ describe('/members command', () => {
 
     await handleMembersComponent(interaction);
 
-    expect(mocks.memberService.loadTrackedMembers).toHaveBeenCalledWith({ tag: '8QCL' });
+    expect(mocks.memberService.loadTrackedMembers).toHaveBeenCalledWith({ tag: '8QCL', guildId: 'guild-1' });
     expect(embedText(payload(interaction, 'editReply'))).toContain('Page 2 / 2');
   });
 
@@ -428,7 +428,7 @@ describe('/member-history command', () => {
 
     await handleMemberHistory(interaction);
 
-    expect(mocks.playerService.loadPlayerClubs).toHaveBeenCalledWith({ tag: '#2c0y' });
+    expect(mocks.playerService.loadPlayerClubs).toHaveBeenCalledWith({ tag: '#2c0y', guildId: 'guild-1' });
     const text = embedText(payload(interaction, 'reply'));
     expect(text).toContain('Club History');
     expect(text).toContain('transferred from');
@@ -446,7 +446,7 @@ describe('/member-history command', () => {
     mocks.playerService.loadPlayerClubs.mockResolvedValue({ kind: 'ok', value: historyView(12) });
     const interaction = buttonInteraction('member-history:page:2:2C0Y');
     await handleMemberHistoryComponent(interaction);
-    expect(mocks.playerService.loadPlayerClubs).toHaveBeenCalledWith({ tag: '2C0Y' });
+    expect(mocks.playerService.loadPlayerClubs).toHaveBeenCalledWith({ tag: '2C0Y', guildId: 'guild-1' });
     expect(embedText(payload(interaction, 'editReply'))).toContain('Page 2 / 2');
   });
 
@@ -455,7 +455,7 @@ describe('/member-history command', () => {
       { id: 'p0', tag: '2C0Y', name: 'Alpha', trophies: 5000, highestTrophies: null, expLevel: null, lastSyncedAt: null },
     ]);
     await handleMemberHistoryAutocomplete(autocompleteInteraction('tag', 'alp'));
-    expect(mocks.playerService.searchPlayers).toHaveBeenCalledWith('alp');
+    expect(mocks.playerService.searchPlayers).toHaveBeenCalledWith('alp', { guildId: undefined });
   });
 });
 
@@ -467,12 +467,12 @@ describe('/member-search command', () => {
     });
     const byName = chatInteraction({ query: 'alpha' }, 'player');
     await handleMemberSearch(byName);
-    expect(mocks.memberService.searchTrackedMembersByPlayer).toHaveBeenCalledWith('alpha');
+    expect(mocks.memberService.searchTrackedMembersByPlayer).toHaveBeenCalledWith('alpha', { guildId: 'guild-1' });
     expect(embedText(payload(byName, 'reply'))).toContain('Alpha');
 
     const byTag = chatInteraction({ query: '#2c0y' }, 'player');
     await handleMemberSearch(byTag);
-    expect(mocks.memberService.searchTrackedMembersByPlayer).toHaveBeenCalledWith('#2c0y');
+    expect(mocks.memberService.searchTrackedMembersByPlayer).toHaveBeenCalledWith('#2c0y', { guildId: 'guild-1' });
   });
 
   it('shows empty results and safe validation failures', async () => {
@@ -507,6 +507,7 @@ describe('/member-search command', () => {
     expect(mocks.memberService.searchTrackedMembersByDiscord).toHaveBeenCalledWith(
       TARGET_DISCORD_ID,
       ACTOR_DISCORD_ID,
+      { guildId: 'guild-1' },
     );
     const text = embedText(payload(staff, 'reply'));
     expect(text).toContain('Linked Discord Players');
@@ -534,7 +535,7 @@ describe('/member-search command', () => {
     });
     const interaction = buttonInteraction(`member-search:page:2:${encoded}`);
     await handleMemberSearchComponent(interaction);
-    expect(mocks.memberService.searchTrackedMembersByPlayer).toHaveBeenCalledWith('alpha player');
+    expect(mocks.memberService.searchTrackedMembersByPlayer).toHaveBeenCalledWith('alpha player', { guildId: 'guild-1' });
     expect(embedText(payload(interaction, 'editReply'))).toContain('Page 2 / 2');
   });
 
@@ -543,7 +544,7 @@ describe('/member-search command', () => {
       { id: 'p0', tag: '2C0Y', name: 'Alpha', trophies: 5000, highestTrophies: null, expLevel: null, lastSyncedAt: null },
     ]);
     await handleMemberSearchAutocomplete(autocompleteInteraction('query', 'alp'));
-    expect(mocks.playerService.searchPlayers).toHaveBeenCalledWith('alp');
+    expect(mocks.playerService.searchPlayers).toHaveBeenCalledWith('alp', { guildId: undefined });
 
     await handleMemberSearchAutocomplete(autocompleteInteraction('user', '111'));
     expect(mocks.playerService.searchPlayers).toHaveBeenCalledTimes(1);

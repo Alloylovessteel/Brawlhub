@@ -48,12 +48,13 @@ export const playerClubsCommandData = new SlashCommandBuilder()
 
 async function loadPage(
   tag: string,
+  guildId: string | null,
   pageNumber: number,
 ): Promise<
   | { readonly kind: 'ok'; readonly payload: PagePayload }
   | { readonly kind: 'lookup-failure'; readonly failure: Parameters<typeof replyPlayerLookupFailure>[1] }
 > {
-  const result = await loadPlayerClubs({ tag });
+  const result = await loadPlayerClubs({ tag, guildId });
   if (result.kind !== 'ok') return { kind: 'lookup-failure', failure: result };
 
   const page = paginate(result.value.memberships, pageNumber, PAGE_SIZE);
@@ -75,7 +76,7 @@ async function loadPage(
 
 export async function handlePlayerClubs(interaction: ChatInputCommandInteraction): Promise<void> {
   const tag = interaction.options.getString('tag', true);
-  const built = await loadPage(tag, 1);
+  const built = await loadPage(tag, interaction.guildId, 1);
 
   if (built.kind === 'lookup-failure') {
     await replyPlayerLookupFailure(interaction, built.failure);
@@ -94,7 +95,7 @@ export async function handlePlayerClubsComponent(interaction: ButtonInteraction)
 
   try {
     await interaction.deferUpdate();
-    const built = await loadPage(tag, parsed.page);
+    const built = await loadPage(tag, interaction.guildId, parsed.page);
     if (built.kind === 'lookup-failure') {
       await interaction.editReply({
         content: 'This player is no longer available.',

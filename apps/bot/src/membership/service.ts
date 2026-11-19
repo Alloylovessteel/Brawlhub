@@ -53,6 +53,19 @@ export interface MembershipReadOptions {
   readonly db?: DatabaseClient;
   readonly now?: Date;
   readonly staleAfterMs?: number;
+  readonly guildId?: string | null;
+}
+
+async function readGuildClubIds(guildId: string | null | undefined, db: DatabaseClient): Promise<string[] | null> {
+  if (guildId === undefined || guildId === null || guildId.trim() === '') return null;
+  const { data, error } = await db.from('clubs').select('id').eq('guild_id', guildId.trim());
+  requireOk(error, 'Read guild clubs');
+  return (data ?? [])
+    .map((row: unknown) => {
+      const rec = record(row);
+      return typeof rec?.['id'] === 'string' ? (rec['id'] as string) : null;
+    })
+    .filter((id): id is string => id !== null);
 }
 
 /** Validate the free-text part of a `/member-search` query. */
@@ -107,7 +120,7 @@ function sortTrackedMembers(records: readonly TrackedMemberRecord[]): TrackedMem
 
 /** List stored memberships across registered clubs, optionally filtered by club tag. */
 export async function loadTrackedMembers(
-  input: { readonly tag?: string | undefined },
+  input: { readonly tag?: string | undefined; readonly guildId?: string | null | undefined },
   options: MembershipReadOptions = {},
 ): Promise<ResolvedMembersResult<MemberListView>> {
   const db = options.db ?? createTrustedClient();
@@ -121,7 +134,7 @@ export async function loadTrackedMembers(
     normalizedTag = parsed.data;
   }
 
-  const clubs = await getRegisteredClubs(db);
+  const clubs = await getRegisteredClubs(input.guildId, db);
   const club = normalizedTag === undefined
     ? null
     : clubs.find((candidate) => candidate.tag === normalizedTag) ?? null;
@@ -184,18 +197,25 @@ async function selectCurrentClubForPlayers(
   db: DatabaseClient,
   now: Date,
   staleAfterMs: number,
+  guildClubIds?: readonly string[] | null,
 ): Promise<readonly MembershipWithPlayer[]> {
   const playerIds = players
     .map((player) => player.id)
     .filter((id): id is string => id !== null);
   if (playerIds.length === 0) return [];
 
-  const { data, error } = await db
+  let query = db
     .from('club_memberships')
     .select(MEMBERSHIP_SELECT)
     .in('player_id', playerIds)
     .order('valid_from', { ascending: false })
     .limit(1000);
+  if (guildClubIds && guildClubIds.length > 0) {
+    query = query.in('club_id', [...guildClubIds]);
+  } else if (guildClubIds && guildClubIds.length === 0) {
+    return [];
+  }
+  const { data, error } = await query;
   requireOk(error, 'Read current clubs');
 
   const best = new Map<string, MembershipWithPlayer>();
@@ -230,11 +250,12 @@ function currentClubFor(
 async function buildPlayerEntries(
   players: readonly PlayerIdentity[],
   options: MembershipReadOptions,
+  guildClubIds?: readonly string[] | null,
 ): Promise<readonly TrackedPlayerEntry[]> {
   const db = options.db ?? createTrustedClient();
   const now = options.now ?? new Date();
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
-  const memberships = await selectCurrentClubForPlayers(players, db, now, staleAfterMs);
+  const memberships = await selectCurrentClubForPlayers(players, db, now, staleAfterMs, guildClubIds);
 
   return players.map((player) => ({
     playerId: player.id ?? '',
@@ -254,6 +275,7 @@ export async function searchTrackedMembersByPlayer(
   if (query === null) return { kind: 'invalid-input', message: INVALID_SEARCH_MESSAGE };
 
   const db = options.db ?? createTrustedClient();
+  const guildClubIds = await readGuildClubIds(options.guildId, db);
   const cleaned = query.replace(/^#+/, '');
   const escaped = escapeIlike(cleaned);
   const { data, error } = await db
@@ -264,17 +286,39 @@ export async function searchTrackedMembersByPlayer(
     .limit(200);
   requireOk(error, 'Search tracked players');
 
-  const players = dedupePlayers(
+  let players = dedupePlayers(
     (data ?? [])
       .map((value: unknown) => parsePlayerRow(value))
       .filter((player): player is PlayerIdentity => player !== null),
   );
+  if (guildClubIds !== null) {
+    if (guildClubIds.length === 0) {
+      players = [];
+    } else {
+      const { data: memberRows, error: memberError } = await db
+        .from('club_memberships')
+        .select('player_id')
+        .in('club_id', guildClubIds)
+        .in('player_id', players.map((p) => p.id).filter((id): id is string => id !== null))
+        .limit(10000);
+      requireOk(memberError, 'Read guild member players');
+      const allowed = new Set(
+        (memberRows ?? [])
+          .map((row: unknown) => {
+            const rec = record(row);
+            return typeof rec?.['player_id'] === 'string' ? (rec['player_id'] as string) : null;
+          })
+          .filter((id): id is string => id !== null),
+      );
+      players = players.filter((player) => player.id !== null && allowed.has(player.id));
+    }
+  }
   return {
     kind: 'ok',
     value: {
       mode: 'player',
       query,
-      entries: await buildPlayerEntries(players, options),
+      entries: await buildPlayerEntries(players, options, guildClubIds),
       identityContext: false,
     },
   };
@@ -342,6 +386,7 @@ export async function searchTrackedMembersByDiscord(
   const discordUserId = parsedId.data;
 
   const db = options.db ?? createTrustedClient();
+  const guildClubIds = await readGuildClubIds(options.guildId, db);
   const actor = await resolveMembershipActor(actorDiscordUserId, { db });
   const isSelf = discordUserId === actor.discordUserId;
   if (!isSelf && !canInspectIdentityLinks(actor)) {
@@ -370,11 +415,33 @@ export async function searchTrackedMembersByDiscord(
     .limit(100);
   requireOk(linksError, 'Read identity links');
 
-  const players = dedupePlayers(
+  let players = dedupePlayers(
     (links ?? [])
       .map((value: unknown) => parsePlayerRow(record(value)?.['player']))
       .filter((player): player is PlayerIdentity => player !== null),
   );
+  if (guildClubIds !== null) {
+    if (guildClubIds.length === 0) {
+      players = [];
+    } else {
+      const { data: memberRows, error: memberError } = await db
+        .from('club_memberships')
+        .select('player_id')
+        .in('club_id', guildClubIds)
+        .in('player_id', players.map((p) => p.id).filter((id): id is string => id !== null))
+        .limit(10000);
+      requireOk(memberError, 'Read guild member players');
+      const allowed = new Set(
+        (memberRows ?? [])
+          .map((row: unknown) => {
+            const rec = record(row);
+            return typeof rec?.['player_id'] === 'string' ? (rec['player_id'] as string) : null;
+          })
+          .filter((id): id is string => id !== null),
+      );
+      players = players.filter((player) => player.id !== null && allowed.has(player.id));
+    }
+  }
   if (players.length === 0) return { kind: 'no-identity-link', message: NO_IDENTITY_LINK_MESSAGE };
 
   return {
@@ -382,7 +449,7 @@ export async function searchTrackedMembersByDiscord(
     value: {
       mode: 'discord',
       query: discordUserId,
-      entries: await buildPlayerEntries(players, options),
+      entries: await buildPlayerEntries(players, options, guildClubIds),
       identityContext: true,
     },
   };

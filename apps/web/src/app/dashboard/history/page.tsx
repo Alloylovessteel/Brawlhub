@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select } from '@/components/ui/input';
+import { getAccessibleReadClubIds, requirePageSession } from '@/lib/auth/session';
 import {
   getAllClubSnapshots,
   getAllPlayerSnapshots,
@@ -52,14 +53,18 @@ export default async function HistoryPage({
 }: Readonly<{
   searchParams: Promise<{ range?: string | string[]; club?: string | string[]; player?: string | string[] }>;
 }>) {
+  const session = await requirePageSession();
+  const scope = getAccessibleReadClubIds(session);
+  const scopeOptions = scope === null ? {} : { allowedClubIds: [...scope] };
+  const clubScopeOptions = scope === null ? {} : { clubIds: [...scope] };
   const params = await searchParams;
   const range = selectedRange(params.range);
   const clubParam = firstValue(params.club);
   const playerParam = firstValue(params.player);
 
   const [clubs, players] = await Promise.all([
-    getClubs({ page: 1, pageSize: 100 }),
-    getPlayers({ page: 1, pageSize: 100 }),
+    getClubs({ page: 1, pageSize: 100, ...clubScopeOptions }),
+    getPlayers({ page: 1, pageSize: 100, ...scopeOptions }),
   ]);
   const clubId =
     clubParam !== undefined && clubs.rows.some((club) => club.id === clubParam) ? clubParam : undefined;
@@ -69,8 +74,8 @@ export default async function HistoryPage({
       : undefined;
 
   const [clubSnapshots, playerSnapshots] = await Promise.all([
-    getAllClubSnapshots(range.days),
-    getAllPlayerSnapshots(range.days),
+    getAllClubSnapshots(range.days, clubScopeOptions),
+    getAllPlayerSnapshots(range.days, clubScopeOptions),
   ]);
 
   const relevantClubSnapshots = clubId === undefined

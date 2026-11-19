@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { requirePageSession } from '@/lib/auth/session';
+import { getAccessibleReadClubIds, requirePageSession } from '@/lib/auth/session';
 import {
   getPlayerById,
   getPlayerEvents,
@@ -20,13 +20,15 @@ export const dynamic = 'force-dynamic';
 export default async function PlayerProfilePage({
   params,
 }: Readonly<{ params: Promise<{ playerId: string }> }>) {
-  await requirePageSession();
+  const session = await requirePageSession();
+  const scope = getAccessibleReadClubIds(session);
+  const scopeOptions = scope === null ? {} : { allowedClubIds: [...scope] };
   const { playerId } = await params;
 
   const [playerResult, memberships, events, snapshots] = await Promise.all([
-    getPlayerById(playerId),
-    getPlayerMemberships(playerId),
-    getPlayerEvents(playerId),
+    getPlayerById(playerId, scopeOptions),
+    getPlayerMemberships(playerId, scopeOptions),
+    getPlayerEvents(playerId, scopeOptions),
     getPlayerSnapshots(playerId),
   ]);
 

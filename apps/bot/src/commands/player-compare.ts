@@ -50,6 +50,7 @@ export async function handlePlayerCompare(interaction: ChatInputCommandInteracti
     firstTag: interaction.options.getString('first', true),
     secondTag: interaction.options.getString('second', true),
     period,
+    guildId: interaction.guildId,
     seasonStartIso: getBotConfig().seasonStartIso,
   });
 

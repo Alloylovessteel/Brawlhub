@@ -8,13 +8,20 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { getAccessibleReadClubIds, requirePageSession } from '@/lib/auth/session';
 import { getClubSummaries, getOverview } from '@/lib/data/queries';
 import { formatDate, formatDateTime, formatNumber, formatTag } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
-  const [overview, clubSummaries] = await Promise.all([getOverview(), getClubSummaries()]);
+  const session = await requirePageSession();
+  const scope = getAccessibleReadClubIds(session);
+  const scopeOptions = scope === null ? {} : { clubIds: [...scope] };
+  const [overview, clubSummaries] = await Promise.all([
+    getOverview(scopeOptions),
+    getClubSummaries(scopeOptions),
+  ]);
 
   if (!overview.hasData) {
     return (

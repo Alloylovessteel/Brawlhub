@@ -89,6 +89,30 @@ export class CompetitionServiceError extends Error {
 export interface CompetitionServiceOptions {
   readonly db?: DatabaseClient;
   readonly now?: Date;
+  readonly guildId?: string | null;
+}
+
+async function readGuildClubIds(guildId: string | null | undefined, db: DatabaseClient): Promise<string[] | null> {
+  if (guildId === undefined || guildId === null || guildId.trim() === '') return null;
+  const { data, error } = await db.from('clubs').select('id').eq('guild_id', guildId.trim());
+  requireOk(error, 'Read guild clubs');
+  return (data ?? [])
+    .map((row: unknown) => asString(record(row)?.['id']))
+    .filter((id): id is string => id !== null);
+}
+
+async function assertCompetitionInGuild(
+  competition: CompetitionRecord | null,
+  guildId: string | null | undefined,
+  db: DatabaseClient,
+): Promise<CompetitionRecord> {
+  if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
+  if (guildId === undefined || guildId === null || guildId.trim() === '') return competition;
+  const guildClubIds = await readGuildClubIds(guildId, db);
+  if (competition.clubId !== null && guildClubIds !== null && guildClubIds.includes(competition.clubId)) {
+    return competition;
+  }
+  throw new CompetitionServiceError('not_found', errorMessage('not_found'));
 }
 
 interface RpcResult extends Record<string, unknown> {
@@ -392,7 +416,15 @@ export async function loadCompetitionRecord(
     .maybeSingle();
   requireOk(error, 'Read competition');
   if (data === null || data === undefined) return null;
-  return parseCompetitionRow(data, await readEntryCount(db, competitionId));
+  const competition = parseCompetitionRow(data, await readEntryCount(db, competitionId));
+  if (competition === null) return null;
+  if (options.guildId !== undefined && options.guildId !== null && options.guildId.trim() !== '') {
+    const guildClubIds = await readGuildClubIds(options.guildId, db);
+    if (competition.clubId === null || guildClubIds === null || !guildClubIds.includes(competition.clubId)) {
+      return null;
+    }
+  }
+  return competition;
 }
 
 /** List all competitions for the paginated `/competition list` view. */
@@ -400,12 +432,18 @@ export async function listCompetitions(
   options: CompetitionServiceOptions = {},
 ): Promise<CompetitionRecord[]> {
   const db = options.db ?? createTrustedClient();
+  const guildClubIds = await readGuildClubIds(options.guildId, db);
+  let query = db
+    .from('competitions')
+    .select(COMPETITION_COLUMNS)
+    .order('starts_at', { ascending: false })
+    .limit(500);
+  if (guildClubIds !== null) {
+    if (guildClubIds.length === 0) return [];
+    query = query.in('club_id', guildClubIds);
+  }
   const [competitionsResult, entriesResult] = await Promise.all([
-    db
-      .from('competitions')
-      .select(COMPETITION_COLUMNS)
-      .order('starts_at', { ascending: false })
-      .limit(500),
+    query,
     db.from('competition_entries').select('competition_id').limit(10_000),
   ]);
   requireOk(competitionsResult.error, 'Read competitions');
@@ -441,14 +479,24 @@ export async function createCompetition(
   const goal = parseCompetitionGoal(input.goal);
   if (!goal.ok) failValidation(goal);
   if (input.clubId !== null) requireUuid(input.clubId);
+  const db = options.db ?? createTrustedClient();
+  if (options.guildId !== undefined && options.guildId !== null && options.guildId.trim() !== '') {
+    if (input.clubId === null) {
+      throw new CompetitionServiceError('unknown_club', 'Choose a registered club in this server for the competition.');
+    }
+    const guildClubIds = await readGuildClubIds(options.guildId, db);
+    if (guildClubIds === null || !guildClubIds.includes(input.clubId)) {
+      throw new CompetitionServiceError('unknown_club', errorMessage('unknown_club'));
+    }
+  }
 
-  const actor = await resolveCompetitionActor(input.discordUserId, options);
+  const actor = await resolveCompetitionActor(input.discordUserId, { ...options, db });
   if (!canManageCompetition(actor, input.clubId)) {
     throw new CompetitionServiceError('forbidden', errorMessage('forbidden'));
   }
 
   const result = await runRpc(
-    options.db ?? createTrustedClient(),
+    db,
     'push_create_competition',
     {
       p_name: name.value,
@@ -464,7 +512,7 @@ export async function createCompetition(
 
   const competitionId = asString(result['id']);
   if (competitionId === null) throw new CompetitionServiceError('unknown', errorMessage('not_found'));
-  const competition = await loadCompetitionRecord(competitionId, options);
+  const competition = await loadCompetitionRecord(competitionId, { ...options, db });
   if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
   return competition;
 }
@@ -475,13 +523,18 @@ export async function joinCompetition(
 ): Promise<CompetitionJoinResult> {
   requireUuid(input.competitionId);
   requireUuid(input.playerId);
-  const actor = await resolveCompetitionActor(input.discordUserId, options);
-  if (!(await hasVerifiedPlayerLink(actor.profileId, input.playerId, options))) {
+  const db = options.db ?? createTrustedClient();
+  if (options.guildId !== undefined && options.guildId !== null && options.guildId.trim() !== '') {
+    const competition = await loadCompetitionRecord(input.competitionId, { ...options, db });
+    if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
+  }
+  const actor = await resolveCompetitionActor(input.discordUserId, { ...options, db });
+  if (!(await hasVerifiedPlayerLink(actor.profileId, input.playerId, { ...options, db }))) {
     throw new CompetitionServiceError('not_verified', errorMessage('not_verified'));
   }
 
   const result = await runRpc(
-    options.db ?? createTrustedClient(),
+    db,
     'push_join_competition',
     {
       p_competition_id: input.competitionId,
@@ -511,13 +564,18 @@ export async function submitCompetitionResult(
   const trophies = parseCompetitionTrophies(input.trophies);
   if (!trophies.ok) failValidation(trophies);
 
-  const actor = await resolveCompetitionActor(input.discordUserId, options);
-  if (!(await hasVerifiedPlayerLink(actor.profileId, input.playerId, options))) {
+  const db = options.db ?? createTrustedClient();
+  if (options.guildId !== undefined && options.guildId !== null && options.guildId.trim() !== '') {
+    const competition = await loadCompetitionRecord(input.competitionId, { ...options, db });
+    if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
+  }
+  const actor = await resolveCompetitionActor(input.discordUserId, { ...options, db });
+  if (!(await hasVerifiedPlayerLink(actor.profileId, input.playerId, { ...options, db }))) {
     throw new CompetitionServiceError('not_verified', errorMessage('not_verified'));
   }
 
   const result = await runRpc(
-    options.db ?? createTrustedClient(),
+    db,
     'push_submit_result',
     {
       p_competition_id: input.competitionId,
@@ -547,15 +605,16 @@ export async function endCompetition(
   options: CompetitionServiceOptions = {},
 ): Promise<CompetitionRecord> {
   requireUuid(input.competitionId);
-  const actor = await resolveCompetitionActor(input.discordUserId, options);
-  const competition = await loadCompetitionRecord(input.competitionId, options);
+  const db = options.db ?? createTrustedClient();
+  const actor = await resolveCompetitionActor(input.discordUserId, { ...options, db });
+  const competition = await loadCompetitionRecord(input.competitionId, { ...options, db });
   if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
   if (!canManageCompetition(actor, competition.clubId)) {
     throw new CompetitionServiceError('forbidden', errorMessage('forbidden'));
   }
 
   const result = await runRpc(
-    options.db ?? createTrustedClient(),
+    db,
     'push_end_competition',
     {
       p_competition_id: input.competitionId,
@@ -564,7 +623,7 @@ export async function endCompetition(
   );
   expectOk(result);
 
-  const ended = await loadCompetitionRecord(input.competitionId, options);
+  const ended = await loadCompetitionRecord(input.competitionId, { ...options, db });
   if (ended === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
   return ended;
 }

@@ -73,6 +73,13 @@ export const competitionCommandData = new SlashCommandBuilder()
       )
       .addStringOption((option) =>
         option
+          .setName('description')
+          .setDescription('Rules shown on the competition')
+          .setRequired(false)
+          .setMaxLength(1000),
+      )
+      .addStringOption((option) =>
+        option
           .setName('start')
           .setDescription('Start date/time, e.g. 2026-11-25T18:00Z')
           .setRequired(true)
@@ -84,13 +91,6 @@ export const competitionCommandData = new SlashCommandBuilder()
           .setDescription('End date/time, e.g. 2026-11-26T21:00Z')
           .setRequired(true)
           .setMaxLength(40),
-      )
-      .addStringOption((option) =>
-        option
-          .setName('description')
-          .setDescription('Rules shown on the competition')
-          .setRequired(false)
-          .setMaxLength(1000),
       )
       .addStringOption((option) =>
         option
@@ -230,9 +230,10 @@ async function replyCompetitionError(
 
 async function loadLeaderboardPage(
   competitionId: string,
+  guildId: string | null,
   pageNumber: number,
 ): Promise<{ view: CompetitionLeaderboardView; payload: PagePayload }> {
-  const view = await loadCompetitionLeaderboard(competitionId);
+  const view = await loadCompetitionLeaderboard(competitionId, { guildId });
   const page = paginate(view.rows, pageNumber, LEADERBOARD_PAGE_SIZE);
   const state: CompetitionPageState = { kind: 'leaderboard', competitionId };
   return {
@@ -244,8 +245,8 @@ async function loadLeaderboardPage(
   };
 }
 
-async function loadListPage(pageNumber: number): Promise<PagePayload> {
-  const competitions = await listCompetitions();
+async function loadListPage(guildId: string | null, pageNumber: number): Promise<PagePayload> {
+  const competitions = await listCompetitions({ guildId });
   const page = paginate(competitions, pageNumber, LIST_PAGE_SIZE);
   return {
     embeds: [buildCompetitionListEmbed(competitions, page)],
@@ -273,7 +274,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
         end: optionString(interaction, 'end'),
         clubId: optionString(interaction, 'club') || null,
         goal: optionInteger(interaction, 'goal'),
-      });
+      }, { guildId: interaction.guildId });
       await interaction.reply({
         embeds: [buildCompetitionCreatedEmbed(competition)],
         allowedMentions: { parse: [] },
@@ -288,9 +289,9 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
         discordUserId: interaction.user.id,
         competitionId,
         playerId,
-      });
+      }, { guildId: interaction.guildId });
       const [competition, player] = await Promise.all([
-        loadCompetitionRecord(competitionId),
+        loadCompetitionRecord(competitionId, { guildId: interaction.guildId }),
         requirePlayer(playerId),
       ]);
       if (competition === null) {
@@ -315,9 +316,9 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
         competitionId,
         playerId,
         trophies,
-      });
+      }, { guildId: interaction.guildId });
       const [competition, player] = await Promise.all([
-        loadCompetitionRecord(competitionId),
+        loadCompetitionRecord(competitionId, { guildId: interaction.guildId }),
         requirePlayer(playerId),
       ]);
       if (competition === null) {
@@ -331,7 +332,11 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
     }
 
     if (subcommand === 'leaderboard') {
-      const { payload } = await loadLeaderboardPage(optionString(interaction, 'competition'), 1);
+      const { payload } = await loadLeaderboardPage(
+        optionString(interaction, 'competition'),
+        interaction.guildId,
+        1,
+      );
       await interaction.reply({ ...payload, allowedMentions: { parse: [] } });
       return;
     }
@@ -340,7 +345,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
       const competition = await endCompetition({
         discordUserId: interaction.user.id,
         competitionId: optionString(interaction, 'competition'),
-      });
+      }, { guildId: interaction.guildId });
       await interaction.reply({
         embeds: [buildCompetitionEndedEmbed(competition, interaction.user.id)],
         allowedMentions: { parse: [] },
@@ -349,7 +354,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
     }
 
     if (subcommand === 'list') {
-      await interaction.reply({ ...(await loadListPage(1)), allowedMentions: { parse: [] } });
+      await interaction.reply({ ...(await loadListPage(interaction.guildId, 1)), allowedMentions: { parse: [] } });
       return;
     }
 
@@ -379,8 +384,8 @@ export async function handleCompetitionComponent(interaction: ButtonInteraction)
     await interaction.deferUpdate();
     const payload =
       state.kind === 'list'
-        ? await loadListPage(parsed.page)
-        : (await loadLeaderboardPage(state.competitionId, parsed.page)).payload;
+        ? await loadListPage(interaction.guildId, parsed.page)
+        : (await loadLeaderboardPage(state.competitionId, interaction.guildId, parsed.page)).payload;
     await interaction.editReply({ ...payload, content: null, allowedMentions: { parse: [] } });
   } catch (error) {
     try {
@@ -400,7 +405,7 @@ async function competitionChoices(
   focusedValue: string,
 ): Promise<{ name: string; value: string }[]> {
   const query = focusedValue.trim().toLowerCase();
-  let competitions = await listCompetitions();
+  let competitions = await listCompetitions({ guildId: interaction.guildId });
 
   const subcommand = interaction.options.getSubcommand(false);
   if (subcommand === 'end') {
@@ -448,8 +453,9 @@ async function accountChoices(
 
 async function clubChoices(
   focusedValue: string,
+  guildId: string | null,
 ): Promise<{ name: string; value: string }[]> {
-  const clubs = await getRegisteredClubs();
+  const clubs = await getRegisteredClubs(guildId);
   return filterRegisteredClubs(clubs, focusedValue).slice(0, 25).map((club) => ({
     name: `${club.name} (#${club.tag})`,
     value: club.id,
@@ -461,7 +467,7 @@ export async function handleCompetitionAutocomplete(interaction: AutocompleteInt
     const focused = interaction.options.getFocused(true);
     const choices =
       focused.name === 'club'
-        ? await clubChoices(focused.value)
+        ? await clubChoices(focused.value, interaction.guildId)
         : focused.name === 'competition'
           ? await competitionChoices(interaction, focused.value)
           : focused.name === 'account'

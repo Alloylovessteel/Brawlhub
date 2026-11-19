@@ -1040,6 +1040,7 @@ async function sendNotifications(
 export interface RunSyncOptions {
   now?: Date;
   notifier?: SyncNotifier;
+  notifierForGuild?: (guildId: string) => SyncNotifier | undefined | Promise<SyncNotifier | undefined>;
   client?: BrawlStarsClient;
   guildId?: string;
 }
@@ -1099,7 +1100,14 @@ export async function runSyncForAllGuilds(
 
   const results: SyncResult[] = [];
   for (const guildId of guildIds) {
-    results.push(await runSync({ ...options, guildId }));
+    const notifier =
+      options.notifierForGuild === undefined
+        ? options.notifier
+        : await options.notifierForGuild(guildId);
+    const runOptions: RunSyncOptions = { ...options, guildId };
+    if (notifier !== undefined) runOptions.notifier = notifier;
+    else delete (runOptions as { notifier?: SyncNotifier }).notifier;
+    results.push(await runSync(runOptions));
   }
   return results;
 }

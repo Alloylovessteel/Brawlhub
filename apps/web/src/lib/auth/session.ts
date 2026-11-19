@@ -126,3 +126,18 @@ export async function requirePageClubPermission(
   }
   return session;
 }
+
+/**
+ * Returns club IDs the session may read for dashboard data.
+ * `null` means unrestricted (global read access). An empty array means none.
+ */
+export function getAccessibleReadClubIds(session: AppSession): string[] | null {
+  if (hasGlobalPermission(session, 'clubs:read') || hasGlobalPermission(session, 'players:read')) {
+    return null;
+  }
+  return [...session.clubRoles.keys()];
+}
+
+export function isClubInReadScope(clubId: string, scope: string[] | null): boolean {
+  return scope === null || scope.includes(clubId);
+}

@@ -20,11 +20,11 @@ describe('runManagedSync', () => {
   beforeEach(() => resetManagedSyncGuard());
 
   it('runs the provided pipeline once', async () => {
-    const run = vi.fn(async () => result());
+    const run = vi.fn(async () => [result()]);
 
     const outcome = await runManagedSync({ run });
 
-    expect(outcome).toEqual({ kind: 'ran', result: result() });
+    expect(outcome).toEqual({ kind: 'ran', results: [result()] });
     expect(run).toHaveBeenCalledOnce();
   });
 
@@ -35,7 +35,7 @@ describe('runManagedSync', () => {
     });
     const run = vi.fn(async () => {
       await pending;
-      return result();
+      return [result()];
     });
 
     const first = runManagedSync({ run });
@@ -53,9 +53,9 @@ describe('runManagedSync', () => {
     });
 
     await expect(runManagedSync({ run })).rejects.toThrow('boom');
-    await expect(runManagedSync({ run: vi.fn(async () => result()) })).resolves.toEqual({
+    await expect(runManagedSync({ run: vi.fn(async () => [result()]) })).resolves.toEqual({
       kind: 'ran',
-      result: result(),
+      results: [result()],
     });
   });
 });

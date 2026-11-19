@@ -208,10 +208,13 @@ const defaultMember: ClubMember = {
 };
 
 function apiClient(overrides: Partial<BrawlStarsClient> = {}): BrawlStarsClient {
-  const club: Club = { tag: '#2C0Y', name: 'Alpha', trophies: 12_000 };
+  const clubs: Record<string, Club> = {
+    '2C0Y': { tag: '#2C0Y', name: 'Alpha', trophies: 12_000 },
+    '8GPU': { tag: '#8GPU', name: 'Old Club', trophies: 0 },
+  };
   return {
-    getClub: async () => club,
-    getClubMembers: async () => [defaultMember],
+    getClub: async (tag: string) => clubs[tag] ?? ({ tag: `#${tag}`, name: `Club ${tag}`, trophies: 0 } as Club),
+    getClubMembers: async (tag: string) => (tag === '8GPU' ? [] : [defaultMember]),
     getPlayer: async () => {
       throw new Error('getPlayer should not be called by default');
     },
@@ -219,13 +222,15 @@ function apiClient(overrides: Partial<BrawlStarsClient> = {}): BrawlStarsClient 
   } as BrawlStarsClient;
 }
 
-const CLUB_ROW = { id: 'club-1', tag: '2C0Y', name: 'Alpha' };
+const CLUB_ROW = { id: 'club-1', tag: '2C0Y', name: 'Alpha', guild_id: 'guild-test' };
+const OLD_CLUB_ROW = { id: 'club-old', tag: '8GPU', name: 'Old Club', guild_id: 'guild-test' };
 const T0 = new Date('2026-01-01T00:00:00.000Z');
 
 interface SuccessState {
   firstSnapshotSelect: boolean;
   runSelectCount: number;
   membershipOpen: boolean;
+  membershipClubId: string | null;
   clubHash: string | undefined;
   playerHash: string | undefined;
   events: Map<string, string>;
@@ -239,7 +244,8 @@ function setupSuccessfulSync(options: {
   const state: SuccessState = {
     firstSnapshotSelect: true,
     runSelectCount: 0,
-    membershipOpen: false,
+    membershipOpen: options.forceOldMembership === true,
+    membershipClubId: options.forceOldMembership === true ? 'club-old' : null,
     clubHash: undefined,
     playerHash: undefined,
     events: new Map<string, string>(),
@@ -247,99 +253,91 @@ function setupSuccessfulSync(options: {
 
   setHandlers(
     withInfrastructureHandlers({
-      'clubs:select': () => ({ data: [CLUB_ROW] }),
+      'clubs:select': () => ({
+        data: options.forceOldMembership === true ? [CLUB_ROW, OLD_CLUB_ROW] : [CLUB_ROW],
+      }),
       'sync_runs:select': () => {
-      state.runSelectCount += 1;
-      if (options.earlierRunFailed === true && state.runSelectCount === 2) {
-        return {
-          data: {
-            id: 'run-1',
-            status: 'failed',
-            started_at: T0.toISOString(),
-          },
-        };
-      }
-      return { data: null };
-    },
-    'sync_runs:upsert': () => ({ data: [{ id: 'run-1' }] }),
-    'sync_runs:update': () => ({ data: [{ id: 'run-1' }] }),
-    'players:select': () => ({ data: { id: 'player-1', tag: 'G2P9', name: 'Player One' } }),
-    'players:upsert': () => ({ data: [{ id: 'player-1' }] }),
-    'club_memberships:select': (call) => {
-      if (options.forceOldMembership === true) {
-        return {
-          data: {
-            id: 'membership-old',
-            club_id: 'club-old',
-            player_id: 'player-1',
-            role: 'member',
-          },
-        };
-      }
-      if (call.filters['player_id'] !== undefined) {
-        return state.membershipOpen
+        state.runSelectCount += 1;
+        if (options.earlierRunFailed === true && state.runSelectCount === 2) {
+          return {
+            data: {
+              id: 'run-1',
+              status: 'failed',
+              started_at: T0.toISOString(),
+              scope: 'guild:guild-test',
+              period_start: T0.toISOString(),
+            },
+          };
+        }
+        return { data: null };
+      },
+      'sync_runs:upsert': () => ({ data: [{ id: 'run-1' }] }),
+      'sync_runs:update': () => ({ data: [{ id: 'run-1' }] }),
+      'players:select': () => ({ data: { id: 'player-1', tag: 'G2P9', name: 'Player One' } }),
+      'players:upsert': () => ({ data: [{ id: 'player-1' }] }),
+      'club_memberships:select': (call) => {
+        const openRow = state.membershipOpen
           ? {
-              data: {
-                id: 'membership-1',
-                club_id: 'club-1',
-                player_id: 'player-1',
-                role: 'member',
-              },
+              id: state.membershipClubId === 'club-old' ? 'membership-old' : 'membership-1',
+              club_id: state.membershipClubId ?? 'club-1',
+              player_id: 'player-1',
+              role: 'member',
             }
-          : { data: null };
-      }
-      return {
-        data: state.membershipOpen
-          ? [
-              {
-                id: 'membership-1',
-                club_id: 'club-1',
-                player_id: 'player-1',
-                role: 'member',
-              },
-            ]
-          : [],
-      };
-    },
-    'club_memberships:insert': () => {
-      state.membershipOpen = true;
-      return { data: [{ id: 'membership-1' }] };
-    },
-    'club_memberships:update': () => ({ data: [] }),
-    'rpc:apply_membership_transition': (call) => {
-      if ((call.payload as { p_to_club_id: string | null }).p_to_club_id !== null) {
+          : null;
+        if (call.mode === 'maybeSingle') {
+          return { data: openRow };
+        }
+        const inFilter = call.filters['club_id'];
+        if (Array.isArray(inFilter)) {
+          return { data: openRow && inFilter.includes(openRow.club_id) ? [openRow] : [] };
+        }
+        return { data: openRow ? [openRow] : [] };
+      },
+      'club_memberships:insert': () => {
         state.membershipOpen = true;
-      }
-      return { data: 'event-rpc-1' };
-    },
-    'membership_events:select': () => ({ data: [] }),
-    'membership_events:upsert': (call) => {
-      const key = JSON.stringify([
-        call.payload.player_id,
-        call.payload.event_type,
-        call.payload.from_club_id ?? null,
-        call.payload.to_club_id ?? null,
-        call.payload.source_sync_run_id,
-      ]);
-      if (!state.events.has(key)) {
-        state.events.set(key, `event-${state.events.size + 1}`);
-      }
-      return { data: [{ id: state.events.get(key) }] };
-    },
-    'club_snapshots:select': () => {
-      if (options.failFirstSnapshot === true && state.firstSnapshotSelect) {
-        state.firstSnapshotSelect = false;
-        throw new Error('simulated database outage');
-      }
-      return { data: state.clubHash === undefined ? null : [{ payload_hash: state.clubHash }] };
-    },
-    'club_snapshots:upsert': (call) => {
-      state.clubHash = String(call.payload.payload_hash);
-      return { data: [] };
-    },
-    'player_snapshots:select': () => ({
-      data: state.playerHash === undefined ? null : [{ payload_hash: state.playerHash }],
-    }),
+        state.membershipClubId = 'club-1';
+        return { data: [{ id: 'membership-1' }] };
+      },
+      'club_memberships:update': () => ({ data: [] }),
+      'rpc:apply_membership_transition': (call) => {
+        const to = (call.payload as { p_to_club_id: string | null }).p_to_club_id;
+        if (to !== null) {
+          state.membershipOpen = true;
+          state.membershipClubId = String(to);
+        } else {
+          state.membershipOpen = false;
+          state.membershipClubId = null;
+        }
+        return { data: 'event-rpc-1' };
+      },
+      'membership_events:select': () => ({ data: [] }),
+      'membership_events:upsert': (call) => {
+        const key = JSON.stringify([
+          call.payload.player_id,
+          call.payload.event_type,
+          call.payload.from_club_id ?? null,
+          call.payload.to_club_id ?? null,
+          call.payload.source_sync_run_id,
+        ]);
+        if (!state.events.has(key)) {
+          state.events.set(key, `event-${state.events.size + 1}`);
+        }
+        return { data: [{ id: state.events.get(key) }] };
+      },
+      'club_snapshots:select': () => {
+        if (options.failFirstSnapshot === true && state.firstSnapshotSelect) {
+          state.firstSnapshotSelect = false;
+          throw new Error('simulated database outage');
+        }
+        return { data: state.clubHash === undefined ? null : [{ payload_hash: state.clubHash }] };
+      },
+      'club_snapshots:upsert': (call) => {
+        state.clubHash = String(call.payload.payload_hash);
+        return { data: [] };
+      },
+      'player_snapshots:select': () => ({
+        data: state.playerHash === undefined ? null : [{ payload_hash: state.playerHash }],
+      }),
       'player_snapshots:upsert': (call) => {
         state.playerHash = String(call.payload.payload_hash);
         return { data: [] };
@@ -358,17 +356,26 @@ beforeEach(() => {
 
 describe('registerClubs', () => {
   it('rejects duplicate tags in the input and duplicates already registered', async () => {
+    const guildId = '1488531664962326571';
+    const newTags = ['G2P9', '2GPU', '2GPQ', '2GPR', '2GQU', '2GRU', '2GVL', '2GYC', '2J0U', '2J0V'];
     setHandlers({
-      'clubs:select': () => ({ data: [{ id: 'club-existing', tag: '2C0Y', name: 'Existing' }] }),
+      'clubs:select': (call) => {
+        const tagFilter = call.filters['tag'];
+        const guildFilter = call.filters['guild_id'];
+        if (tagFilter === '2C0Y' && guildFilter === guildId) {
+          return { data: [{ id: 'club-existing', tag: '2C0Y', name: 'Existing', guild_id: guildId }] };
+        }
+        return { data: null };
+      },
       'clubs:insert': (call) => ({ data: [{ id: `club-${String(call.payload.tag)}` }] }),
     });
     fake.api.current = apiClient({
-      getClub: async () => ({ tag: '#G2P9', name: 'Bravo', trophies: 1000 }),
+      getClub: async (tag: string) => ({ tag: `#${tag}`, name: `Club ${tag}`, trophies: 1000 }),
     });
 
-    const result = await registerClubs(['#2c0y', '2C0Y', 'G2P9']);
+    const result = await registerClubs(['#2c0y', '2C0Y', ...newTags], guildId);
 
-    expect(result.registered).toBe(1);
+    expect(result.registered).toBe(newTags.length);
     expect(
       result.rejected.some(
         (item) => item.tag === '2C0Y' && item.reason.toLowerCase().includes('duplicate'),
@@ -376,13 +383,14 @@ describe('registerClubs', () => {
     ).toBe(true);
     expect(
       result.rejected.some(
-        (item) => item.tag === '2C0Y' && item.reason.includes('already registered'),
+        (item) => item.tag === '2C0Y' && item.reason.toLowerCase().includes('already registered'),
       ),
     ).toBe(true);
 
     const inserts = callsFor('clubs', 'insert');
-    expect(inserts).toHaveLength(1);
-    expect(inserts[0]?.payload.tag).toBe('G2P9');
+    expect(inserts).toHaveLength(newTags.length);
+    expect(inserts.map((call) => call.payload.tag)).toEqual(newTags);
+    expect(inserts.every((call) => call.payload.guild_id === guildId)).toBe(true);
   });
 });
 
@@ -419,10 +427,10 @@ describe('runSync', () => {
   it('does not write a new snapshot when the API payload is unchanged', async () => {
     setupSuccessfulSync();
 
-    const first = await runSync({ now: T0 });
+    const first = await runSync({ now: T0, guildId: 'guild-test' });
     expect(first.status).toBe('completed');
 
-    const second = await runSync({ now: new Date(T0.getTime() + 16 * 60_000) });
+    const second = await runSync({ now: new Date(T0.getTime() + 16 * 60_000), guildId: 'guild-test' });
     expect(second.status).toBe('completed');
     expect(second.snapshotsWritten).toBe(0);
 
@@ -437,20 +445,20 @@ describe('runSync', () => {
       forceOldMembership: true,
     });
 
-    const first = await runSync({ now: T0 });
+    const first = await runSync({ now: T0, guildId: 'guild-test' });
     expect(first.status).toBe('failed');
     expect(first.syncRunId).toBe('run-1');
 
-    const second = await runSync({ now: T0 });
+    const second = await runSync({ now: T0, guildId: 'guild-test' });
     expect(second.status).toBe('completed');
     expect(second.syncRunId).toBe('run-1');
 
     const transitions = callsFor('rpc:apply_membership_transition', 'select');
-    expect(transitions.length).toBeGreaterThanOrEqual(2);
+    expect(transitions.length).toBeGreaterThanOrEqual(1);
     expect(
       new Set(transitions.map((call) => (call.payload as { p_run_id: string }).p_run_id)),
     ).toEqual(new Set(['run-1']));
-    // The Postgres dedup constraint makes both attempts resolve to one event.
+    // Membership transition committed before snapshot failure; retry must not duplicate events.
     expect(callsFor('rpc:release_sync_lock', 'select')).toHaveLength(2);
   });
 
@@ -489,11 +497,11 @@ describe('runSync', () => {
       },
     };
 
-    const first = await runSync({ now: T0, notifier });
+    const first = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(first.status).toBe('completed');
     expect(first.notificationsSent).toBe(1);
 
-    const second = await runSync({ now: T0, notifier });
+    const second = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(second.status).toBe('completed');
     expect(second.notificationsSent).toBe(0);
     expect(sends).toBe(1);
@@ -506,7 +514,7 @@ describe('runSync', () => {
     setupSuccessfulSync();
     fake.state.handlers['rpc:try_acquire_sync_lock'] = () => ({ data: null });
 
-    const result = await runSync({ now: T0 });
+    const result = await runSync({ now: T0, guildId: 'guild-test' });
 
     expect(result.status).toBe('skipped');
     expect(result.error).toMatch(/database lock/i);
@@ -568,13 +576,13 @@ describe('runSync', () => {
 
   it('writes a new player snapshot when the API payload changes', async () => {
     const state = setupSuccessfulSync();
-    const first = await runSync({ now: T0 });
+    const first = await runSync({ now: T0, guildId: 'guild-test' });
     expect(first.status).toBe('completed');
 
     fake.api.current = apiClient({
       getClubMembers: async () => [{ ...defaultMember, trophies: 6_000 }],
     });
-    const second = await runSync({ now: new Date(T0.getTime() + 16 * 60_000) });
+    const second = await runSync({ now: new Date(T0.getTime() + 16 * 60_000), guildId: 'guild-test' });
 
     expect(second.status).toBe('completed');
     expect(second.snapshotsWritten).toBeGreaterThan(0);

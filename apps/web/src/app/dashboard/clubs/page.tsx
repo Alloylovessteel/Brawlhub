@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { getAccessibleReadClubIds, requirePageSession } from '@/lib/auth/session';
 import {
   getClubSnapshots,
   getClubs,
@@ -24,10 +25,17 @@ export default async function ClubsPage({
 }: Readonly<{
   searchParams: Promise<{ search?: string | string[]; page?: string | string[]; pageSize?: string | string[] }>;
 }>) {
+  const session = await requirePageSession();
+  const scope = getAccessibleReadClubIds(session);
   const params = await searchParams;
   const { page, pageSize } = parsePagination(params);
   const search = parseSearch(params.search);
-  const clubs = await getClubs({ search, page, pageSize });
+  const clubs = await getClubs({
+    search,
+    page,
+    pageSize,
+    ...(scope === null ? {} : { clubIds: [...scope] }),
+  });
 
   const details = await Promise.all(
     clubs.rows.map(async (club) => {

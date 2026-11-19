@@ -83,6 +83,7 @@ function decodeState(state: string): HistoryState | null {
 async function loadPage(
   tag: string,
   period: HistoryPeriod,
+  guildId: string | null,
   pageNumber: number,
 ): Promise<
   | { readonly kind: 'ok'; readonly payload: PagePayload }
@@ -91,6 +92,7 @@ async function loadPage(
   const result = await loadPlayerHistory({
     tag,
     period,
+    guildId,
     seasonStartIso: getBotConfig().seasonStartIso,
   });
   if (result.kind !== 'ok') return { kind: 'lookup-failure', failure: result };
@@ -116,7 +118,7 @@ export async function handlePlayerHistory(interaction: ChatInputCommandInteracti
   const tag = interaction.options.getString('tag', true);
   const rawPeriod = interaction.options.getString('period', false);
   const period = rawPeriod !== null && isPlayerHistoryPeriod(rawPeriod) ? rawPeriod : DEFAULT_PLAYER_PERIOD;
-  const built = await loadPage(tag, period, 1);
+  const built = await loadPage(tag, period, interaction.guildId, 1);
 
   if (built.kind === 'lookup-failure') {
     await replyPlayerLookupFailure(interaction, built.failure);
@@ -135,7 +137,7 @@ export async function handlePlayerHistoryComponent(interaction: ButtonInteractio
 
   try {
     await interaction.deferUpdate();
-    const built = await loadPage(state.tag, state.period, parsed.page);
+    const built = await loadPage(state.tag, state.period, interaction.guildId, parsed.page);
     if (built.kind === 'lookup-failure') {
       await interaction.editReply({
         content: 'This player is no longer available.',

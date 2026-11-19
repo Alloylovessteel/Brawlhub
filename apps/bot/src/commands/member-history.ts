@@ -53,8 +53,8 @@ export const memberHistoryCommandData = new SlashCommandBuilder()
       .setMaxLength(11),
   );
 
-async function buildPage(tag: string, pageNumber: number): Promise<BuildResult> {
-  const result = await loadPlayerClubs({ tag });
+async function buildPage(tag: string, guildId: string | null, pageNumber: number): Promise<BuildResult> {
+  const result = await loadPlayerClubs({ tag, guildId });
   if (result.kind !== 'ok') return { kind: 'failure', failure: result };
 
   const page = paginate(result.value.memberships, pageNumber, PAGE_SIZE);
@@ -75,7 +75,7 @@ async function buildPage(tag: string, pageNumber: number): Promise<BuildResult> 
 
 export async function handleMemberHistory(interaction: ChatInputCommandInteraction): Promise<void> {
   const tag = interaction.options.getString('tag', true);
-  const built = await buildPage(tag, 1);
+  const built = await buildPage(tag, interaction.guildId, 1);
   if (built.kind === 'failure') {
     await replyPlayerLookupFailure(interaction, built.failure);
     return;
@@ -92,7 +92,7 @@ export async function handleMemberHistoryComponent(interaction: ButtonInteractio
 
   try {
     await interaction.deferUpdate();
-    const built = await buildPage(tag, parsed.page);
+    const built = await buildPage(tag, interaction.guildId, parsed.page);
     if (built.kind === 'failure') {
       await interaction.editReply({
         content: 'This player is no longer available.',

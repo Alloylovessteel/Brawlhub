@@ -4,7 +4,6 @@ import { getBotConfig } from './config.js';
 import { createLogger } from '@brawlhub/logging';
 import { Client, type Interaction } from 'discord.js';
 import { handleInteraction, registerCommands } from './commands/index.js';
-import type { SyncNotifier } from '@brawlhub/sync';
 import { createDiscordNotifier } from './notifier.js';
 import { runManagedSync } from './sync/guard.js';
 import { registerDiscordAuthorizationEvents } from './discord/events.js';
@@ -44,8 +43,9 @@ let syncTimer: ReturnType<typeof setInterval> | undefined;
 /** Run scheduled sync for all guilds, skipping if a previous batch is running. */
 async function executeSync(): Promise<void> {
   try {
-    const notifier: SyncNotifier = createDiscordNotifier();
-    const outcome = await runManagedSync({ notifier });
+    const outcome = await runManagedSync({
+      notifierForGuild: (guildId) => createDiscordNotifier({ guildId }),
+    });
     if (outcome.kind === 'overlap') {
       logger.warn('Scheduled sync skipped: a sync run is already in progress');
       return;

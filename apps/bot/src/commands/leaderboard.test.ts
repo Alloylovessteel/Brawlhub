@@ -197,10 +197,10 @@ describe('/leaderboard command', () => {
     await handleLeaderboard(chatInteraction('trophies'));
     await handleLeaderboard(chatInteraction('progression'));
 
-    expect(mocks.service.loadClubLeaderboard).toHaveBeenCalledOnce();
-    expect(mocks.service.loadPlayerLeaderboard).toHaveBeenCalledOnce();
-    expect(mocks.service.loadTrophyLeaderboard).toHaveBeenCalledOnce();
-    expect(mocks.service.loadProgressionLeaderboard).toHaveBeenCalledWith({ period: '30d' });
+    expect(mocks.service.loadClubLeaderboard).toHaveBeenCalledWith({ guildId: 'guild-1' });
+    expect(mocks.service.loadPlayerLeaderboard).toHaveBeenCalledWith({ guildId: 'guild-1' });
+    expect(mocks.service.loadTrophyLeaderboard).toHaveBeenCalledWith({ guildId: 'guild-1' });
+    expect(mocks.service.loadProgressionLeaderboard).toHaveBeenCalledWith({ period: '30d' }, { guildId: 'guild-1' });
   });
 
   it('uses the selected progression period and defaults to 30 days', async () => {
@@ -209,8 +209,8 @@ describe('/leaderboard command', () => {
     await handleLeaderboard(chatInteraction('progression', { period: '7d' }));
     await handleLeaderboard(chatInteraction('progression', { period: 'invalid' }));
 
-    expect(mocks.service.loadProgressionLeaderboard).toHaveBeenNthCalledWith(1, { period: '7d' });
-    expect(mocks.service.loadProgressionLeaderboard).toHaveBeenNthCalledWith(2, { period: '30d' });
+    expect(mocks.service.loadProgressionLeaderboard).toHaveBeenNthCalledWith(1, { period: '7d' }, { guildId: 'guild-1' });
+    expect(mocks.service.loadProgressionLeaderboard).toHaveBeenNthCalledWith(2, { period: '30d' }, { guildId: 'guild-1' });
   });
 
   it('paginates ten rows at a time and preserves the leaderboard state', async () => {
@@ -239,7 +239,7 @@ describe('/leaderboard command', () => {
     await handleLeaderboardComponent(button);
 
     expect(button.deferUpdate).toHaveBeenCalledOnce();
-    expect(mocks.service.loadProgressionLeaderboard).toHaveBeenCalledWith({ period: '7d' });
+    expect(mocks.service.loadProgressionLeaderboard).toHaveBeenCalledWith({ period: '7d' }, { guildId: 'guild-1' });
     expect(payload(button, 'editReply').embeds[0].toJSON().footer?.text).toContain('Page 2 / 2');
     expect(payload(button, 'editReply').content).toBeNull();
 

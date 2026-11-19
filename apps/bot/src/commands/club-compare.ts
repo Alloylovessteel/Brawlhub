@@ -30,6 +30,7 @@ export async function handleClubCompare(interaction: ChatInputCommandInteraction
   const result = await loadCompareView({
     firstTag,
     secondTag,
+    guildId: interaction.guildId,
     seasonStartIso: getBotConfig().seasonStartIso,
   });
 

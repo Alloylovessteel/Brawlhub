@@ -78,7 +78,7 @@ export async function respondWithPlayerChoices(
       return;
     }
     const query = typeof focused.value === 'string' ? focused.value : '';
-    const players = await searchPlayers(query);
+    const players = await searchPlayers(query, { guildId: interaction.guildId });
     await interaction.respond(
       players.map((player) => ({
         name: `${player.name} (#${player.tag})`,

@@ -19,6 +19,7 @@ export const playerCommandData = new SlashCommandBuilder()
 export async function handlePlayer(interaction: ChatInputCommandInteraction): Promise<void> {
   const result = await loadPlayerProfile({
     tag: interaction.options.getString('tag', true),
+    guildId: interaction.guildId,
   });
 
   if (result.kind !== 'ok') {

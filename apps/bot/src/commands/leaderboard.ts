@@ -133,12 +133,13 @@ function paginationFor(
 
 async function loadPage(
   state: LeaderboardState,
+  guildId: string | null,
   pageNumber: number,
 ): Promise<PagePayload> {
   const config = getBotConfig();
 
   if (state.kind === 'clubs') {
-    const view = await loadClubLeaderboard();
+    const view = await loadClubLeaderboard({ guildId });
     const page = paginate(view.rows, pageNumber, PAGE_SIZE);
     return {
       embeds: [buildClubLeaderboardPageEmbed(view, page, config)],
@@ -147,7 +148,7 @@ async function loadPage(
   }
 
   if (state.kind === 'players') {
-    const view = await loadPlayerLeaderboard();
+    const view = await loadPlayerLeaderboard({ guildId });
     const page = paginate(view.rows, pageNumber, PAGE_SIZE);
     return {
       embeds: [buildPlayerLeaderboardPageEmbed(view, page, config)],
@@ -156,7 +157,7 @@ async function loadPage(
   }
 
   if (state.kind === 'trophies') {
-    const view = await loadTrophyLeaderboard();
+    const view = await loadTrophyLeaderboard({ guildId });
     const page = paginate(view.rows, pageNumber, PAGE_SIZE);
     return {
       embeds: [buildTrophyLeaderboardPageEmbed(view, page, config)],
@@ -164,7 +165,7 @@ async function loadPage(
     };
   }
 
-  const view = await loadProgressionLeaderboard({ period: state.period });
+  const view = await loadProgressionLeaderboard({ period: state.period }, { guildId });
   const page = paginate(view.rows, pageNumber, PAGE_SIZE);
   return {
     embeds: [buildProgressionLeaderboardPageEmbed(view, page, config)],
@@ -188,7 +189,7 @@ export async function handleLeaderboard(interaction: ChatInputCommandInteraction
       }
     }
 
-    const payload = await loadPage(resolved, 1);
+    const payload = await loadPage(resolved, interaction.guildId, 1);
     await interaction.reply({ ...payload, allowedMentions: { parse: [] } });
   } catch (error) {
     logger.error('Global leaderboard command failed', {
@@ -207,7 +208,7 @@ export async function handleLeaderboardComponent(interaction: ButtonInteraction)
 
   try {
     await interaction.deferUpdate();
-    const payload = await loadPage(state, parsed.page);
+    const payload = await loadPage(state, interaction.guildId, parsed.page);
     await interaction.editReply({ ...payload, content: null, allowedMentions: { parse: [] } });
   } catch (error) {
     logger.error('Global leaderboard pagination failed', {
