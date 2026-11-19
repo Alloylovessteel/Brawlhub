@@ -1,3 +1,4 @@
+import type { Role } from '@brawlhub/shared';
 import type { ClubRegistrationPreview } from '@brawlhub/sync';
 import type { StaffActor } from '../staff/types';
 
@@ -13,6 +14,13 @@ export interface GuildSettingsView {
   readonly primaryClubName: string | null;
   readonly announcementChannelId: string | null;
   readonly verifiedRoleId: string | null;
+  readonly updatedAt: string | null;
+}
+
+export interface GuildRoleMappingView {
+  readonly guildId: string;
+  readonly discordRoleId: string;
+  readonly brawlhubRole: Role;
   readonly updatedAt: string | null;
 }
 

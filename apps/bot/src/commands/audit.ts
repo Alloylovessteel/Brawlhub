@@ -1,4 +1,5 @@
 import {
+  MessageFlags,
   SlashCommandBuilder,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
@@ -6,6 +7,7 @@ import {
 import { buildAuditPageEmbed } from '../admin/embed';
 import { replyAdminError } from '../admin/errors';
 import { listAuditLogs, requireGlobalPermission } from '../admin/service';
+import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import { paginate, buildPaginationRow, parsePaginationCustomId } from '../discord/pagination';
 
 const COMMAND_NAME = 'audit';
@@ -28,10 +30,16 @@ async function buildPage(pageNumber: number) {
 
 export async function handleAudit(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
-    await requireGlobalPermission(interaction.user.id, 'audit:read');
-    await interaction.reply({
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await requireGlobalPermission(interaction.user.id, 'audit:read', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
+    await interaction.editReply({
       ...(await buildPage(1)),
-      ephemeral: true,
       allowedMentions: { parse: [] },
     });
   } catch (error) {
@@ -45,7 +53,13 @@ export async function handleAuditComponent(interaction: ButtonInteraction): Prom
 
   try {
     await interaction.deferUpdate();
-    await requireGlobalPermission(interaction.user.id, 'audit:read');
+    await requireGlobalPermission(interaction.user.id, 'audit:read', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
     await interaction.editReply({
       ...(await buildPage(pageNumber)),
       content: null,

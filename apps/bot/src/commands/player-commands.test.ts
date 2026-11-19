@@ -34,7 +34,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
 vi.mock('../players/service', () => mocks.service);
 
-import { handlePlayer, handlePlayerAutocomplete } from './player';
+import { handleMe, handleMeAutocomplete } from './player';
 import {
   handlePlayerHistory,
   handlePlayerHistoryAutocomplete,
@@ -193,12 +193,12 @@ beforeEach(() => {
   for (const fn of Object.values(mocks.service)) fn.mockReset();
 });
 
-describe('/player command', () => {
+describe('/me command', () => {
   it('loads and renders a player profile with a Brawlify link', async () => {
     mocks.service.loadPlayerProfile.mockResolvedValue(profileResult());
     const interaction = chatInteraction({ tag: '#2c0y' });
 
-    await handlePlayer(interaction);
+    await handleMe(interaction);
 
     expect(mocks.service.loadPlayerProfile).toHaveBeenCalledWith({ tag: '#2c0y', guildId: 'guild-1' });
     expect(JSON.stringify(payload(interaction, 'reply').embeds[0].toJSON())).toContain(
@@ -209,17 +209,17 @@ describe('/player command', () => {
   it('handles invalid, unknown and API-unavailable players safely', async () => {
     const invalid = chatInteraction({ tag: '#BAD-TAG!' });
     mocks.service.loadPlayerProfile.mockResolvedValueOnce({ kind: 'invalid-tag' });
-    await handlePlayer(invalid);
+    await handleMe(invalid);
     expect(payload(invalid, 'reply').content).toContain('not valid');
 
     const unknown = chatInteraction({ tag: 'QQQ' });
     mocks.service.loadPlayerProfile.mockResolvedValueOnce({ kind: 'not-found', tag: 'QQQ' });
-    await handlePlayer(unknown);
+    await handleMe(unknown);
     expect(payload(unknown, 'reply').content).toContain('was not found');
 
     const unavailable = chatInteraction({ tag: 'QQQ' });
     mocks.service.loadPlayerProfile.mockResolvedValueOnce({ kind: 'api-unavailable', tag: 'QQQ', issue: 'rate-limit' });
-    await handlePlayer(unavailable);
+    await handleMe(unavailable);
     expect(payload(unavailable, 'reply').content).toContain('could not be verified');
   });
 
@@ -228,7 +228,7 @@ describe('/player command', () => {
     mocks.service.searchPlayers.mockResolvedValue(players);
     const interaction = autocompleteInteraction('tag', 'alp');
 
-    await handlePlayerAutocomplete(interaction);
+    await handleMeAutocomplete(interaction);
 
     expect(mocks.service.searchPlayers).toHaveBeenCalledWith('alp', { guildId: undefined });
     expect(interaction.respond).toHaveBeenCalledWith([{ name: 'Alpha (#2C0Y)', value: '2C0Y' }]);

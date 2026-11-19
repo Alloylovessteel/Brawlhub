@@ -61,8 +61,8 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     name: 'Player',
     entries: [
       {
-        name: 'player',
-        usage: '/player tag:PLAYERTAG',
+        name: 'me',
+        usage: '/me tag:PLAYERTAG',
         description: 'Show a player profile and club context.',
       },
       {

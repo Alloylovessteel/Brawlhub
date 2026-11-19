@@ -5,6 +5,7 @@ import type {
   AuditLogEntry,
   AuditLogView,
   ClubRegistrationPreview,
+  GuildRoleMappingView,
   GuildSettingsView,
   SyncRunSummary,
   SyncStatusView,
@@ -104,7 +105,18 @@ export function buildSyncStatusEmbed(view: SyncStatusView): EmbedBuilder {
   return embed;
 }
 
-export function buildSettingsViewEmbed(settings: GuildSettingsView): EmbedBuilder {
+export function buildSettingsViewEmbed(
+  settings: GuildSettingsView,
+  roleMappings: readonly GuildRoleMappingView[] = [],
+): EmbedBuilder {
+  const mappingValue =
+    roleMappings.length === 0
+      ? 'Not configured. Use `/settings set-role-mapping` to map Discord roles to BrawlHub roles.'
+      : roleMappings
+          .slice(0, 10)
+          .map((mapping) => `<@&${mapping.discordRoleId}> → **${mapping.brawlhubRole}**`)
+          .join('\n');
+
   return new EmbedBuilder()
     .setColor(0x5865_f2)
     .setTitle('Guild settings')
@@ -128,8 +140,45 @@ export function buildSettingsViewEmbed(settings: GuildSettingsView): EmbedBuilde
         value: settings.verifiedRoleId === null ? 'Not configured' : `<@&${settings.verifiedRoleId}>`,
         inline: INLINE,
       },
+      {
+        name: 'Role mappings',
+        value: mappingValue.slice(0, MAX_FIELD_LENGTH),
+      },
       { name: 'Updated', value: timestamp(settings.updatedAt), inline: INLINE },
     );
+}
+
+export function buildRoleMappingsEmbed(
+  guildId: string,
+  roleMappings: readonly GuildRoleMappingView[],
+  notice?: string,
+): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865_f2)
+    .setTitle('Discord role mappings')
+    .setDescription(
+      `Configured BrawlHub role mappings for guild \`${guildId}\`. ${notice ?? 'These mappings grant BrawlHub permissions in this server.'}`.slice(
+        0,
+        4000,
+      ),
+    );
+
+  if (roleMappings.length === 0) {
+    embed.addFields({
+      name: 'Mappings',
+      value: 'None configured. Use `/settings set-role-mapping` to add one (e.g. club leaders role → admin/staff).',
+    });
+    return embed;
+  }
+
+  embed.addFields({
+    name: `Mappings (${roleMappings.length})`,
+    value: roleMappings
+      .map((mapping) => `• <@&${mapping.discordRoleId}> → **${mapping.brawlhubRole}**`)
+      .join('\n')
+      .slice(0, MAX_FIELD_LENGTH),
+  });
+  return embed;
 }
 
 export function buildSettingsUpdatedEmbed(

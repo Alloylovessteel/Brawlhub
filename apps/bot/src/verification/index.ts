@@ -7,7 +7,9 @@ export {
   cancelVerification,
   checkVerification,
   clearVerificationChallengesForTests,
+  ensureBotProfileForDiscordUser,
   getVerificationChallenge,
+  resolveProfileId,
   startVerification,
 } from './service.js';
 export type {

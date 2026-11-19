@@ -5,16 +5,21 @@ import {
   getRegisteredClubs,
 } from '../clubs/service';
 import {
+  buildRoleMappingsEmbed,
   buildSettingsUpdatedEmbed,
   buildSettingsViewEmbed,
 } from '../admin/embed';
 import { replyAdminError } from '../admin/errors';
 import {
   AdminServiceError,
+  clearGuildRoleMapping,
+  listGuildRoleMappings,
   loadGuildSettings,
   requireGlobalPermission,
+  setGuildRoleMapping,
   updateGuildSettings,
 } from '../admin/service';
+import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import type { AdminActor, GuildSettingsField } from '../admin/types';
 import {
   buildConfirmationRow,
@@ -46,6 +51,37 @@ export const settingsCommandData = new SlashCommandBuilder()
   .setDescription('View and manage settings for this Discord server')
   .addSubcommand((subcommand) =>
     subcommand.setName('view').setDescription('Show the current guild settings'),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName('roles-view').setDescription('Show Discord role to BrawlHub role mappings'),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('set-role-mapping')
+      .setDescription('Map a Discord role to a BrawlHub role in this server')
+      .addRoleOption((option) =>
+        option.setName('discord_role').setDescription('Discord role to map').setRequired(true),
+      )
+      .addStringOption((option) =>
+        option
+          .setName('brawlhub_role')
+          .setDescription('BrawlHub role/permission level to grant')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Owner (full access)', value: 'owner' },
+            { name: 'Admin (manage, no audit/staff grant)', value: 'admin' },
+            { name: 'Staff (verify, competitions, notify)', value: 'staff' },
+            { name: 'Member (read-only)', value: 'member' },
+          ),
+      ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('clear-role-mapping')
+      .setDescription('Remove a Discord role to BrawlHub role mapping')
+      .addRoleOption((option) =>
+        option.setName('discord_role').setDescription('Discord role mapping to remove').setRequired(true),
+      ),
   )
   .addSubcommand((subcommand) =>
     subcommand
@@ -129,7 +165,13 @@ async function startChange(
   value: string | null,
 ): Promise<void> {
   const guildId = requireGuildId(interaction);
-  const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write');
+  const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+    guildId: interaction.guildId,
+    memberPermissions: interaction.memberPermissions,
+    memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+    isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+    discordUsername: interaction.user.username,
+  });
   const settings = await loadGuildSettings(guildId);
 
   const nonce = pendingChanges.create(interaction.user.id, {
@@ -163,10 +205,81 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
     const subcommand = interaction.options.getSubcommand(false);
     if (subcommand === 'view') {
       const guildId = requireGuildId(interaction);
-      await requireGlobalPermission(interaction.user.id, 'clubs:write');
-      const settings = await loadGuildSettings(guildId);
+      await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+        guildId: interaction.guildId,
+        memberPermissions: interaction.memberPermissions,
+        memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+        isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+        discordUsername: interaction.user.username,
+      });
+      const [settings, mappings] = await Promise.all([
+        loadGuildSettings(guildId),
+        listGuildRoleMappings(guildId),
+      ]);
       await interaction.reply({
-        embeds: [buildSettingsViewEmbed(settings)],
+        embeds: [buildSettingsViewEmbed(settings, mappings)],
+        ephemeral: true,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    if (subcommand === 'roles-view') {
+      const guildId = requireGuildId(interaction);
+      await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+        guildId: interaction.guildId,
+        memberPermissions: interaction.memberPermissions,
+        memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+        isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+        discordUsername: interaction.user.username,
+      });
+      const mappings = await listGuildRoleMappings(guildId);
+      await interaction.reply({
+        embeds: [buildRoleMappingsEmbed(guildId, mappings)],
+        ephemeral: true,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    if (subcommand === 'set-role-mapping') {
+      const guildId = requireGuildId(interaction);
+      const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+        guildId: interaction.guildId,
+        memberPermissions: interaction.memberPermissions,
+        memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+        isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+        discordUsername: interaction.user.username,
+      });
+      const discordRole = interaction.options.getRole('discord_role', true);
+      const brawlhubRole = interaction.options.getString('brawlhub_role', true) as 'owner' | 'admin' | 'staff' | 'member';
+      const mappings = await setGuildRoleMapping({
+        actor,
+        guildId,
+        discordRoleId: discordRole.id,
+        brawlhubRole,
+      });
+      await interaction.reply({
+        embeds: [buildRoleMappingsEmbed(guildId, mappings, `Mapped <@&${discordRole.id}> to **${brawlhubRole}**.`)],
+        ephemeral: true,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    if (subcommand === 'clear-role-mapping') {
+      const guildId = requireGuildId(interaction);
+      const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+        guildId: interaction.guildId,
+        memberPermissions: interaction.memberPermissions,
+        memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+        isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+        discordUsername: interaction.user.username,
+      });
+      const discordRole = interaction.options.getRole('discord_role', true);
+      const mappings = await clearGuildRoleMapping({ actor, guildId, discordRoleId: discordRole.id });
+      await interaction.reply({
+        embeds: [buildRoleMappingsEmbed(guildId, mappings, `Removed mapping for <@&${discordRole.id}>.`)],
         ephemeral: true,
         allowedMentions: { parse: [] },
       });
@@ -219,7 +332,13 @@ export async function handleSettingsAutocomplete(interaction: AutocompleteIntera
       await interaction.respond([]);
       return;
     }
-    await requireGlobalPermission(interaction.user.id, 'clubs:write');
+    await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
     const clubs = await getRegisteredClubs(interaction.guildId);
     const choices = filterRegisteredClubs(clubs, String(focused.value)).map((club) => ({
       name: `${club.name} (#${club.tag})`,
@@ -244,7 +363,13 @@ export async function handleSettingsComponent(interaction: ButtonInteraction): P
       return;
     }
 
-    await requireGlobalPermission(interaction.user.id, 'clubs:write');
+    await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
     const freshSettings = await loadGuildSettings(pending.guildId);
     const changedFields =
       currentValue(freshSettings, pending.field) === pending.value ? [] : [pending.field];

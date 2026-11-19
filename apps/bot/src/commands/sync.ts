@@ -7,6 +7,7 @@ import {
   recordSyncRunAudit,
   requireGlobalPermission,
 } from '../admin/service';
+import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import { checkBotRateLimit } from '../discord/rate-limit';
 import { runSync } from '@brawlhub/sync';
 import { runManagedSync } from '../sync/guard';
@@ -37,7 +38,13 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
       return;
     }
 
-    const actor = await requireGlobalPermission(interaction.user.id, 'sync:run');
+    const actor = await requireGlobalPermission(interaction.user.id, 'sync:run', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
 
     const rateLimit = checkBotRateLimit(
       `admin-sync:${interaction.user.id}:${interaction.guildId}`,

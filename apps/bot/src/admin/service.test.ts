@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PermissionFlagsBits } from 'discord.js';
 import type { StaffActor } from '../staff/types';
 
 interface Call {
@@ -15,10 +16,29 @@ interface Call {
 
 type Handler = (call: Call) => { data?: unknown; error?: unknown } | Promise<{ data?: unknown; error?: unknown }>;
 
+const staffMocks = vi.hoisted(() => {
+  class MockStaffServiceError extends Error {
+    readonly code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.name = 'StaffServiceError';
+      this.code = code;
+    }
+  }
+  return {
+    resolveStaffActor: vi.fn(),
+    StaffServiceError: MockStaffServiceError,
+  };
+});
+
+const verificationMocks = vi.hoisted(() => ({
+  ensureBotProfileForDiscordUser: vi.fn(),
+  resolveProfileId: vi.fn(),
+}));
+
 const fake = vi.hoisted(() => ({
   handlers: {} as Record<string, Handler | undefined>,
   calls: [] as Call[],
-  resolveStaffActor: vi.fn(),
 }));
 
 vi.mock('@brawlhub/database', () => {
@@ -106,7 +126,12 @@ vi.mock('@brawlhub/database', () => {
   return { createTrustedClient: () => ({ from: (table: string) => new FakeQuery(table) }) };
 });
 
-vi.mock('../staff/service', () => ({ resolveStaffActor: fake.resolveStaffActor }));
+vi.mock('../staff/service', () => ({
+  resolveStaffActor: staffMocks.resolveStaffActor,
+  StaffServiceError: staffMocks.StaffServiceError,
+}));
+
+vi.mock('../verification/service.js', () => verificationMocks);
 
 import {
   AdminServiceError,
@@ -133,27 +158,99 @@ function setHandler(key: string, handler: Handler): void {
 beforeEach(() => {
   fake.handlers = {};
   fake.calls = [];
-  fake.resolveStaffActor.mockReset();
-  fake.resolveStaffActor.mockResolvedValue(actor());
+  setHandler('guild_role_mappings:select', () => ({ data: [] }));
+  staffMocks.resolveStaffActor.mockReset();
+  staffMocks.resolveStaffActor.mockResolvedValue(actor());
+  verificationMocks.ensureBotProfileForDiscordUser.mockReset();
+  verificationMocks.resolveProfileId.mockReset();
+  verificationMocks.resolveProfileId.mockResolvedValue(null);
 });
+
+function discordPerms(bits: bigint[] = []) {
+  const set = new Set(bits);
+  return { has: (permission: bigint) => set.has(permission) };
+}
 
 describe('requireGlobalPermission', () => {
   it('accepts a global role with the shared permission', async () => {
-    fake.resolveStaffActor.mockResolvedValue(actor('admin'));
+    staffMocks.resolveStaffActor.mockResolvedValue(actor('admin'));
     await expect(requireGlobalPermission('111111111111111111', 'sync:run')).resolves.toEqual(actor('admin'));
   });
 
   it('rejects global staff for owner-only audit access', async () => {
-    fake.resolveStaffActor.mockResolvedValue(actor('staff'));
+    staffMocks.resolveStaffActor.mockResolvedValue(actor('staff'));
     await expect(requireGlobalPermission('111111111111111111', 'audit:read')).rejects.toMatchObject({
       code: 'forbidden',
     });
   });
 
   it('rejects users with no global role, including club-role holders', async () => {
-    fake.resolveStaffActor.mockResolvedValue(actor(null));
+    staffMocks.resolveStaffActor.mockResolvedValue(actor(null));
     await expect(requireGlobalPermission('111111111111111111', 'clubs:write')).rejects.toBeInstanceOf(
       AdminServiceError,
+    );
+  });
+
+  it('accepts Discord guild administrators for admin actions', async () => {
+    staffMocks.resolveStaffActor.mockResolvedValue(actor(null));
+    await expect(
+      requireGlobalPermission('111111111111111111', 'clubs:write', {
+        guildId: GUILD_ID,
+        memberPermissions: discordPerms([PermissionFlagsBits.Administrator]),
+      }),
+    ).resolves.toEqual(actor('owner'));
+  });
+
+  it('accepts the Discord guild owner for admin actions', async () => {
+    staffMocks.resolveStaffActor.mockResolvedValue(actor(null));
+    await expect(
+      requireGlobalPermission('111111111111111111', 'sync:run', {
+        guildId: GUILD_ID,
+        isGuildOwner: true,
+      }),
+    ).resolves.toEqual(actor('owner'));
+  });
+
+  it('accepts Discord Manage Guild for configuration permissions', async () => {
+    staffMocks.resolveStaffActor.mockResolvedValue(actor(null));
+    await expect(
+      requireGlobalPermission('111111111111111111', 'clubs:write', {
+        guildId: GUILD_ID,
+        memberPermissions: discordPerms([PermissionFlagsBits.ManageGuild]),
+      }),
+    ).resolves.toEqual(actor('admin'));
+  });
+
+  it('does not grant owner-only audit access via Manage Guild', async () => {
+    staffMocks.resolveStaffActor.mockResolvedValue(actor('member'));
+    await expect(
+      requireGlobalPermission('111111111111111111', 'audit:read', {
+        guildId: GUILD_ID,
+        memberPermissions: discordPerms([PermissionFlagsBits.ManageGuild]),
+      }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('provisions an actor when a Discord admin has no linked profile', async () => {
+    staffMocks.resolveStaffActor.mockRejectedValue(
+      new staffMocks.StaffServiceError('profile_not_linked', 'not linked'),
+    );
+    verificationMocks.ensureBotProfileForDiscordUser.mockResolvedValue('cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+
+    await expect(
+      requireGlobalPermission('111111111111111111', 'clubs:write', {
+        guildId: GUILD_ID,
+        memberPermissions: discordPerms([PermissionFlagsBits.Administrator]),
+        discordUsername: 'AdminUser',
+      }),
+    ).resolves.toEqual({
+      profileId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      discordUserId: '111111111111111111',
+      globalRole: 'owner',
+    });
+    expect(verificationMocks.ensureBotProfileForDiscordUser).toHaveBeenCalledWith(
+      '111111111111111111',
+      'AdminUser',
     );
   });
 });

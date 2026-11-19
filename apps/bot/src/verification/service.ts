@@ -45,7 +45,7 @@ function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-async function resolveProfileId(discordUserId: string): Promise<string | null> {
+export async function resolveProfileId(discordUserId: string): Promise<string | null> {
   const db = createTrustedClient();
   const { data, error } = await db
     .from('profiles')
@@ -83,7 +83,7 @@ async function resolveProfileId(discordUserId: string): Promise<string | null> {
   return null;
 }
 
-async function ensureBotProfileForDiscordUser(
+export async function ensureBotProfileForDiscordUser(
   discordUserId: string,
   discordUsername?: string | null,
 ): Promise<string> {

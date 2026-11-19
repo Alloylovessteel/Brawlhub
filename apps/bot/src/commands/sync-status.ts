@@ -2,6 +2,7 @@ import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.j
 import { buildSyncStatusEmbed } from '../admin/embed';
 import { replyAdminError } from '../admin/errors';
 import { loadSyncStatus, requireGlobalPermission } from '../admin/service';
+import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 
 const COMMAND_NAME = 'sync-status';
 
@@ -11,7 +12,13 @@ export const syncStatusCommandData = new SlashCommandBuilder()
 
 export async function handleSyncStatus(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
-    await requireGlobalPermission(interaction.user.id, 'sync:run');
+    await requireGlobalPermission(interaction.user.id, 'sync:run', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
     const status = await loadSyncStatus(interaction.guildId);
     await interaction.reply({
       embeds: [buildSyncStatusEmbed(status)],

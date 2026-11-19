@@ -129,7 +129,7 @@ function formatRankedLine(name: string | null | undefined, elo: number | null): 
   return parts.length === 0 ? null : parts.join(' • ');
 }
 
-/** Build the detailed `/player` embed. */
+/** Build the detailed `/me` embed. */
 export function buildPlayerProfileEmbed(
   view: PlayerProfileView,
   config: PlayerEmbedConfig,

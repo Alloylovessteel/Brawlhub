@@ -56,9 +56,9 @@ import {
   handleClubCompareAutocomplete,
 } from './club-compare.js';
 import {
-  playerCommandData,
-  handlePlayer,
-  handlePlayerAutocomplete,
+  meCommandData,
+  handleMe,
+  handleMeAutocomplete,
 } from './player.js';
 import {
   playerHistoryCommandData,
@@ -210,9 +210,9 @@ export const commands: readonly CommandDefinition[] = [
     autocomplete: handleClubCompareAutocomplete,
   },
   {
-    data: playerCommandData,
-    handle: handlePlayer,
-    autocomplete: handlePlayerAutocomplete,
+    data: meCommandData,
+    handle: handleMe,
+    autocomplete: handleMeAutocomplete,
   },
   {
     data: playerHistoryCommandData,

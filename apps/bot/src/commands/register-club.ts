@@ -4,6 +4,7 @@ import {
   type ClubRegistrationPreview,
 } from '@brawlhub/sync';
 import {
+  MessageFlags,
   SlashCommandBuilder,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
@@ -13,6 +14,7 @@ import {
   buildClubRegistrationPreviewEmbed,
 } from '../admin/embed';
 import { AdminServiceError, recordAdminAudit, requireGlobalPermission } from '../admin/service';
+import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import type { AdminActor } from '../admin/types';
 import {
   buildConfirmationRow,
@@ -59,43 +61,55 @@ async function replyRegistrationError(
       error instanceof AdminServiceError && error.code === 'forbidden'
         ? FORBIDDEN_MESSAGE
         : error.message;
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content: message, ephemeral: true });
+    if (interaction.deferred) {
+      await interaction.editReply({ content: message, embeds: [], components: [] });
+    } else if (interaction.replied) {
+      await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral });
     } else {
-      await interaction.reply({ content: message, ephemeral: true });
+      await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
     }
     return;
   }
-  if (interaction.replied || interaction.deferred) {
-    await interaction.followUp({ content: API_FAILURE_MESSAGE, ephemeral: true });
+  if (interaction.deferred) {
+    await interaction.editReply({ content: API_FAILURE_MESSAGE, embeds: [], components: [] });
+  } else if (interaction.replied) {
+    await interaction.followUp({ content: API_FAILURE_MESSAGE, flags: MessageFlags.Ephemeral });
   } else {
-    await interaction.reply({ content: API_FAILURE_MESSAGE, ephemeral: true });
+    await interaction.reply({ content: API_FAILURE_MESSAGE, flags: MessageFlags.Ephemeral });
   }
 }
 
 export async function handleRegisterClub(interaction: ChatInputCommandInteraction): Promise<void> {
+  const inGuild = interaction.guildId !== null;
   try {
-    if (interaction.guildId === null) {
+    if (inGuild) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    } else {
       await interaction.reply({
         content: 'Clubs can only be registered from within a Discord server.',
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
-    const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write');
+    const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
     const rawTag = interaction.options.getString('tag', true);
-    const preview = await previewClubRegistration(rawTag, interaction.guildId);
+    const preview = await previewClubRegistration(rawTag, interaction.guildId!);
 
     const nonce = pendingRegistrations.create(interaction.user.id, {
       actor,
       tag: preview.tag,
       preview,
     });
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [buildClubRegistrationPreviewEmbed(preview)],
       components: [buildConfirmationRow(COMMAND_NAME, nonce)],
-      ephemeral: true,
       allowedMentions: { parse: [] },
     });
   } catch (error) {
@@ -116,7 +130,13 @@ export async function handleRegisterClubComponent(interaction: ButtonInteraction
       return;
     }
 
-    await requireGlobalPermission(interaction.user.id, 'clubs:write');
+    await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
     const result = await registerClubs([pending.tag], pending.preview.guildId);
     if (result.registered !== 1) {
       const reason = result.rejected[0]?.reason ?? API_FAILURE_MESSAGE;

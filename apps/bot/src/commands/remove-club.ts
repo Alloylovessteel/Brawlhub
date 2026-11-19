@@ -3,6 +3,7 @@ import type { AutocompleteInteraction, ChatInputCommandInteraction } from 'disco
 import { buildClubRemovalUnavailableEmbed } from '../admin/embed';
 import { replyAdminError } from '../admin/errors';
 import { requireGlobalPermission } from '../admin/service';
+import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
 
 const COMMAND_NAME = 'remove-club';
@@ -25,7 +26,12 @@ export const removeClubCommandData = new SlashCommandBuilder()
 
 export async function handleRemoveClub(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
-    await requireGlobalPermission(interaction.user.id, 'clubs:write');
+    await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
     await interaction.reply({
       embeds: [buildClubRemovalUnavailableEmbed()],
       ephemeral: true,
@@ -43,7 +49,12 @@ export async function handleRemoveClubAutocomplete(interaction: AutocompleteInte
     return;
   }
   try {
-    await requireGlobalPermission(interaction.user.id, 'clubs:write');
+    await requireGlobalPermission(interaction.user.id, 'clubs:write', {
+      guildId: interaction.guildId,
+      memberPermissions: interaction.memberPermissions,
+      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+      discordUsername: interaction.user.username,
+    });
     const clubs = await getRegisteredClubs(interaction.guildId);
     const choices = filterRegisteredClubs(clubs, String(focused.value)).map((club) => ({
       name: `${club.name} (#${club.tag})`,

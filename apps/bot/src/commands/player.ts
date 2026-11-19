@@ -4,8 +4,8 @@ import { loadPlayerProfile } from '../players/service';
 import { getBotConfig } from '../config';
 import { replyPlayerLookupFailure, respondWithPlayerChoices } from './player-utils';
 
-export const playerCommandData = new SlashCommandBuilder()
-  .setName('player')
+export const meCommandData = new SlashCommandBuilder()
+  .setName('me')
   .setDescription('Show a Brawl Stars player profile')
   .addStringOption((option) =>
     option
@@ -16,7 +16,7 @@ export const playerCommandData = new SlashCommandBuilder()
       .setMaxLength(11),
   );
 
-export async function handlePlayer(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function handleMe(interaction: ChatInputCommandInteraction): Promise<void> {
   const result = await loadPlayerProfile({
     tag: interaction.options.getString('tag', true),
     guildId: interaction.guildId,
@@ -33,6 +33,6 @@ export async function handlePlayer(interaction: ChatInputCommandInteraction): Pr
   });
 }
 
-export async function handlePlayerAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+export async function handleMeAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   await respondWithPlayerChoices(interaction, 'tag');
 }

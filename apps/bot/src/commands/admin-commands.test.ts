@@ -29,6 +29,9 @@ const mocks = vi.hoisted(() => {
       requireGlobalPermission: vi.fn(),
       loadGuildSettings: vi.fn(),
       updateGuildSettings: vi.fn(),
+      listGuildRoleMappings: vi.fn(),
+      setGuildRoleMapping: vi.fn(),
+      clearGuildRoleMapping: vi.fn(),
       recordAdminAudit: vi.fn(),
       recordSyncRunAudit: vi.fn(),
       loadSyncRun: vi.fn(),
@@ -42,6 +45,7 @@ const mocks = vi.hoisted(() => {
       buildSyncStatusEmbed: vi.fn(),
       buildSettingsViewEmbed: vi.fn(),
       buildSettingsUpdatedEmbed: vi.fn(),
+      buildRoleMappingsEmbed: vi.fn(),
       buildAuditPageEmbed: vi.fn(),
       buildClubRemovalUnavailableEmbed: vi.fn(),
     },
@@ -247,6 +251,12 @@ beforeEach(() => {
   mocks.service.loadGuildSettings.mockResolvedValue(settings());
   mocks.service.updateGuildSettings.mockReset();
   mocks.service.updateGuildSettings.mockResolvedValue(settings());
+  mocks.service.listGuildRoleMappings.mockReset();
+  mocks.service.listGuildRoleMappings.mockResolvedValue([]);
+  mocks.service.setGuildRoleMapping.mockReset();
+  mocks.service.setGuildRoleMapping.mockResolvedValue([]);
+  mocks.service.clearGuildRoleMapping.mockReset();
+  mocks.service.clearGuildRoleMapping.mockResolvedValue([]);
   mocks.service.recordAdminAudit.mockReset();
   mocks.service.recordAdminAudit.mockResolvedValue(undefined);
   mocks.service.recordSyncRunAudit.mockReset();
@@ -275,6 +285,7 @@ beforeEach(() => {
   mocks.embeds.buildSyncStatusEmbed.mockReturnValue({ kind: 'sync-status' });
   mocks.embeds.buildSettingsViewEmbed.mockReturnValue({ kind: 'settings-view' });
   mocks.embeds.buildSettingsUpdatedEmbed.mockReturnValue({ kind: 'settings-updated' });
+  mocks.embeds.buildRoleMappingsEmbed.mockReturnValue({ kind: 'role-mappings' });
   mocks.embeds.buildAuditPageEmbed.mockReturnValue({ kind: 'audit-page' });
   mocks.embeds.buildClubRemovalUnavailableEmbed.mockReturnValue({ kind: 'remove-unavailable' });
 
@@ -301,10 +312,11 @@ describe('/register-club', () => {
 
     await handleRegisterClub(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.sync.previewClubRegistration).toHaveBeenCalledWith('#2ug9', GUILD_ID);
     expect(mocks.sync.registerClubs).not.toHaveBeenCalled();
-    const reply = payload(interaction, 'reply');
-    expect(reply.ephemeral).toBe(true);
+    expect(interaction.reply).not.toHaveBeenCalled();
+    const reply = payload(interaction, 'editReply');
     expect(buttons(reply)).toHaveLength(2);
   });
 
@@ -314,8 +326,9 @@ describe('/register-club', () => {
 
     await handleRegisterClub(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.sync.previewClubRegistration).not.toHaveBeenCalled();
-    expect(payload(interaction, 'reply').content).toContain('permission');
+    expect(payload(interaction, 'editReply').content).toContain('permission');
   });
 
   it('reports API failures without creating a club', async () => {
@@ -324,14 +337,15 @@ describe('/register-club', () => {
 
     await handleRegisterClub(interaction);
 
-    expect(payload(interaction, 'reply').content).toContain('could not validate');
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect(payload(interaction, 'editReply').content).toContain('could not validate');
     expect(mocks.sync.registerClubs).not.toHaveBeenCalled();
   });
 
   it('registers on confirmation and records the actor', async () => {
     const start = chat(null, { tag: '2UG9' });
     await handleRegisterClub(start);
-    const confirmId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     const confirmation = button(confirmId);
     await handleRegisterClubComponent(confirmation);
@@ -353,7 +367,7 @@ describe('/register-club', () => {
     );
     const start = chat(null, { tag: '2UG9' });
     await handleRegisterClub(start);
-    const confirmId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     const confirmation = button(confirmId);
     await handleRegisterClubComponent(confirmation);
@@ -367,26 +381,26 @@ describe('/register-club', () => {
   it('prevents replay of a confirmation', async () => {
     const start = chat(null, { tag: '2UG9' });
     await handleRegisterClub(start);
-    const confirmId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     await handleRegisterClubComponent(button(confirmId));
     const replay = button(confirmId);
     await handleRegisterClubComponent(replay);
 
     expect(mocks.sync.registerClubs).toHaveBeenCalledOnce();
-    expect(payload(replay, 'followUp').content).toContain('no longer valid');
+    expect(payload(replay, 'editReply').content).toContain('no longer valid');
   });
 
   it('rejects a confirmation pressed by another user', async () => {
     const start = chat(null, { tag: '2UG9' });
     await handleRegisterClub(start);
-    const confirmId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     const wrongActor = button(confirmId, OTHER_ID);
     await handleRegisterClubComponent(wrongActor);
 
     expect(mocks.sync.registerClubs).not.toHaveBeenCalled();
-    expect(payload(wrongActor, 'followUp').content).toContain('another user');
+    expect(payload(wrongActor, 'editReply').content).toContain('another user');
   });
 
   it('reports duplicate registration without writing an audit event', async () => {
@@ -396,7 +410,7 @@ describe('/register-club', () => {
     });
     const start = chat(null, { tag: '2UG9' });
     await handleRegisterClub(start);
-    const confirmId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     const confirmation = button(confirmId);
     await handleRegisterClubComponent(confirmation);
@@ -468,7 +482,11 @@ describe('/sync-status', () => {
 
     await handleSyncStatus(interaction);
 
-    expect(mocks.service.requireGlobalPermission).toHaveBeenCalledWith(ACTOR_ID, 'sync:run');
+    expect(mocks.service.requireGlobalPermission).toHaveBeenCalledWith(
+      ACTOR_ID,
+      'sync:run',
+      expect.objectContaining({ guildId: GUILD_ID }),
+    );
     expect(mocks.service.loadSyncStatus).toHaveBeenCalledOnce();
     expect(payload(interaction, 'reply').embeds).toEqual([{ kind: 'sync-status' }]);
   });
@@ -488,6 +506,9 @@ describe('/settings', () => {
     const json = settingsCommandData.toJSON() as any;
     expect(json.options.map((option: any) => option.name)).toEqual([
       'view',
+      'roles-view',
+      'set-role-mapping',
+      'clear-role-mapping',
       'set-primary-club',
       'clear-primary-club',
       'set-announcement-channel',
@@ -599,7 +620,9 @@ describe('/audit', () => {
 
     await handleAudit(interaction);
 
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
     expect(mocks.service.listAuditLogs).not.toHaveBeenCalled();
+    expect(payload(interaction, 'editReply').content).toContain('permission');
   });
 
   it('checks audit:read and paginates stored entries', async () => {
@@ -607,17 +630,21 @@ describe('/audit', () => {
 
     await handleAudit(interaction);
 
-    expect(mocks.service.requireGlobalPermission).toHaveBeenCalledWith(ACTOR_ID, 'audit:read');
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect(mocks.service.requireGlobalPermission).toHaveBeenCalledWith(
+      ACTOR_ID,
+      'audit:read',
+      expect.objectContaining({ guildId: GUILD_ID }),
+    );
     expect(mocks.service.listAuditLogs).toHaveBeenCalledWith(200);
-    const reply = payload(interaction, 'reply');
-    expect(reply.ephemeral).toBe(true);
+    const reply = payload(interaction, 'editReply');
     expect(buttons(reply)[0]!.data.custom_id).toBe('audit:page:2');
   });
 
   it('rechecks permission on pagination buttons', async () => {
     const start = chat(null);
     await handleAudit(start);
-    const nextId = buttons(payload(start, 'reply'))[0]!.data.custom_id;
+    const nextId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
     mocks.service.requireGlobalPermission.mockRejectedValueOnce(forbidden());
     const page = button(nextId);

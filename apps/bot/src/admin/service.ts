@@ -1,18 +1,23 @@
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import {
+  ROLE_PERMISSIONS,
   discordIdSchema,
   hasPermission,
   type Permission,
+  type Role,
 } from '@brawlhub/shared';
 import { type SyncResult } from '@brawlhub/sync';
+import { PermissionFlagsBits } from 'discord.js';
 import { asNumber, asString, record, requireOk } from '../clubs/service';
 import { safeErrorMessage } from '../discord/errors';
-import { resolveStaffActor } from '../staff/service';
+import { StaffServiceError, resolveStaffActor } from '../staff/service';
+import { ensureBotProfileForDiscordUser, resolveProfileId } from '../verification/service.js';
 import type {
   AdminActor,
   AuditLogEntry,
   AuditLogView,
+  GuildRoleMappingView,
   GuildSettingsField,
   GuildSettingsUpdate,
   GuildSettingsView,
@@ -72,8 +77,144 @@ export interface AdminServiceOptions {
   readonly db?: DatabaseClient;
 }
 
+export interface DiscordPermissionContext {
+  readonly guildId?: string | null;
+  readonly isGuildOwner?: boolean;
+  readonly memberPermissions?: { has: (permission: bigint) => boolean } | null;
+  /** Discord role IDs for the member in this guild, used for configured role mappings. */
+  readonly memberRoleIds?: readonly string[] | null | undefined;
+  readonly discordUsername?: string | null;
+}
+
+export interface AdminPermissionOptions extends AdminServiceOptions, DiscordPermissionContext {}
+
 function dbFor(options: AdminServiceOptions): DatabaseClient {
   return options.db ?? createTrustedClient();
+}
+
+const DISCORD_MANAGE_GUILD_PERMISSIONS = new Set<Permission>(
+  ([
+    'clubs:read',
+    'clubs:write',
+    'players:read',
+    'sync:run',
+    'members:verify',
+    'competitions:manage',
+    'blacklists:manage',
+    'notifications:send',
+  ] as const) satisfies readonly Permission[],
+);
+
+const ROLE_RANK: Readonly<Record<Role, number>> = { owner: 4, admin: 3, staff: 2, member: 1 };
+
+function parseBrawlhubRole(value: unknown): Role | null {
+  return value === 'owner' || value === 'admin' || value === 'staff' || value === 'member'
+    ? value
+    : null;
+}
+
+interface GuildRoleMappingRow {
+  readonly guild_id: string;
+  readonly discord_role_id: string;
+  readonly brawlhub_role: string;
+  readonly updated_at: string | null;
+}
+
+async function readGuildRoleMappings(
+  guildId: string,
+  db: DatabaseClient,
+): Promise<GuildRoleMappingRow[]> {
+  const result = await db
+    .from('guild_role_mappings')
+    .select('guild_id, discord_role_id, brawlhub_role, updated_at')
+    .eq('guild_id', guildId);
+  requireOk(result.error, 'Read guild role mappings');
+  return (Array.isArray(result.data) ? result.data : []) as GuildRoleMappingRow[];
+}
+
+function resolveMappedRole(
+  memberRoleIds: readonly string[] | null | undefined,
+  mappings: readonly GuildRoleMappingRow[],
+): Role | null {
+  if (memberRoleIds === null || memberRoleIds === undefined || memberRoleIds.length === 0) return null;
+  const roleIds = new Set(memberRoleIds);
+  let best: Role | null = null;
+  for (const mapping of mappings) {
+    if (!roleIds.has(mapping.discord_role_id)) continue;
+    const role = parseBrawlhubRole(mapping.brawlhub_role);
+    if (role === null) continue;
+    if (best === null || ROLE_RANK[role] > ROLE_RANK[best]) best = role;
+  }
+  return best;
+}
+
+function hasDiscordBreakglassGrant(
+  permission: Permission,
+  context: DiscordPermissionContext,
+): boolean {
+  if (context.guildId === null || context.guildId === undefined) return false;
+  if (context.isGuildOwner === true) return true;
+  const perms = context.memberPermissions;
+  if (perms == null) return false;
+  if (perms.has(PermissionFlagsBits.Administrator)) return true;
+  if (perms.has(PermissionFlagsBits.ManageGuild)) {
+    return DISCORD_MANAGE_GUILD_PERMISSIONS.has(permission);
+  }
+  return false;
+}
+
+function impliedRoleForDiscordGrant(context: DiscordPermissionContext, mappedRole?: Role | null): Role {
+  if (mappedRole !== null && mappedRole !== undefined) return mappedRole;
+  if (context.isGuildOwner === true) return 'owner';
+  const perms = context.memberPermissions;
+  if (perms != null && perms.has(PermissionFlagsBits.Administrator)) return 'owner';
+  return 'admin';
+}
+
+async function resolveOrProvisionActor(
+  discordUserId: string,
+  context: AdminPermissionOptions,
+  impliedRole: Role,
+): Promise<AdminActor> {
+  const parsedId = discordIdSchema.safeParse(discordUserId);
+  if (!parsedId.success) {
+    throw new AdminServiceError('forbidden', 'A valid Discord user is required.');
+  }
+
+  const db = context.db;
+  try {
+    const actor = await resolveStaffActor(parsedId.data, db === undefined ? undefined : { db });
+    // Preserve a stronger DB/global role if present; otherwise reflect granted role.
+    if (actor.globalRole !== null && ROLE_RANK[actor.globalRole] >= ROLE_RANK[impliedRole]) {
+      return actor;
+    }
+    return { ...actor, globalRole: impliedRole };
+  } catch (error) {
+    const notLinked =
+      error instanceof StaffServiceError && error.code === 'profile_not_linked';
+    if (!notLinked) throw error;
+  }
+
+  let profileId: string | null = await resolveProfileId(parsedId.data);
+  if (profileId === null) {
+    try {
+      profileId = await ensureBotProfileForDiscordUser(parsedId.data, context.discordUsername ?? null);
+    } catch {
+      profileId = await resolveProfileId(parsedId.data);
+    }
+  }
+  if (profileId === null) {
+    throw new AdminServiceError(
+      'profile_unavailable',
+      'BrawlHub could not prepare your Discord-linked account for this action. Please sign in to the website and try again.',
+    );
+  }
+
+  return {
+    profileId,
+    discordUserId: parsedId.data,
+    globalRole: impliedRole,
+  };
 }
 
 function asStringArray(value: unknown): string[] {
@@ -90,15 +231,37 @@ function parseTimestamp(value: unknown): number | null {
 }
 
 /**
- * Resolve the Discord user and require a global permission. Club-scoped roles
- * are deliberately ignored by resolveStaffActor(), so they cannot grant
- * administration access here.
+ * Resolve the Discord user and require a permission in the given guild context.
+ * Precedence: Discord break-glass (owner/Administrator/Manage Guild where
+ * applicable) > configured per-guild Discord role mappings > DB global role.
+ * Club-scoped DB roles are ignored by resolveStaffActor() and do not grant access
+ * here.
  */
 export async function requireGlobalPermission(
   discordUserId: string,
   permission: Permission,
-  options: AdminServiceOptions = {},
+  options: AdminPermissionOptions = {},
 ): Promise<AdminActor> {
+  if (hasDiscordBreakglassGrant(permission, options)) {
+    return resolveOrProvisionActor(discordUserId, options, impliedRoleForDiscordGrant(options));
+  }
+
+  if (options.guildId !== null && options.guildId !== undefined) {
+    const parsedGuildId = discordIdSchema.safeParse(options.guildId);
+    if (parsedGuildId.success) {
+      const db = dbFor(options);
+      const mappings = await readGuildRoleMappings(parsedGuildId.data, db);
+      const mappedRole = resolveMappedRole(options.memberRoleIds, mappings);
+      if (mappedRole !== null && hasPermission(mappedRole, permission)) {
+        return resolveOrProvisionActor(
+          discordUserId,
+          { ...options, db },
+          impliedRoleForDiscordGrant(options, mappedRole),
+        );
+      }
+    }
+  }
+
   const actor =
     options.db === undefined
       ? await resolveStaffActor(discordUserId)
@@ -262,6 +425,108 @@ export async function updateGuildSettings(
   );
 
   return loadGuildSettings(parsedGuildId.data, { db });
+}
+
+export async function listGuildRoleMappings(
+  guildId: string,
+  options: AdminServiceOptions = {},
+): Promise<GuildRoleMappingView[]> {
+  const parsedGuildId = discordIdSchema.safeParse(guildId);
+  if (!parsedGuildId.success) {
+    throw new AdminServiceError('invalid_guild', 'A valid configured Discord guild is required.');
+  }
+  const db = dbFor(options);
+  const rows = await readGuildRoleMappings(parsedGuildId.data, db);
+  return rows
+    .map((row) => {
+      const role = parseBrawlhubRole(row.brawlhub_role);
+      if (role === null) return null;
+      return {
+        guildId: parsedGuildId.data,
+        discordRoleId: row.discord_role_id,
+        brawlhubRole: role,
+        updatedAt: asString(row.updated_at),
+      } satisfies GuildRoleMappingView;
+    })
+    .filter((row): row is GuildRoleMappingView => row !== null)
+    .sort((a, b) => ROLE_RANK[b.brawlhubRole] - ROLE_RANK[a.brawlhubRole] || a.discordRoleId.localeCompare(b.discordRoleId));
+}
+
+export async function setGuildRoleMapping(
+  input: { actor: AdminActor; guildId: string; discordRoleId: string; brawlhubRole: Role },
+  options: AdminServiceOptions = {},
+): Promise<GuildRoleMappingView[]> {
+  const parsedGuildId = discordIdSchema.safeParse(input.guildId);
+  const parsedRoleId = discordIdSchema.safeParse(input.discordRoleId);
+  const role = parseBrawlhubRole(input.brawlhubRole);
+  if (!parsedGuildId.success) {
+    throw new AdminServiceError('invalid_guild', 'A valid configured Discord guild is required.');
+  }
+  if (!parsedRoleId.success) {
+    throw new AdminServiceError('invalid_role', 'Select a valid Discord role.');
+  }
+  if (role === null) {
+    throw new AdminServiceError('invalid_role_mapping', 'Select a valid BrawlHub role.');
+  }
+
+  const db = dbFor(options);
+  const saved = await db.from('guild_role_mappings').upsert(
+    {
+      guild_id: parsedGuildId.data,
+      discord_role_id: parsedRoleId.data,
+      brawlhub_role: role,
+    },
+    { onConflict: 'guild_id,discord_role_id' },
+  );
+  requireOk(saved.error, 'Save guild role mapping');
+
+  await recordAdminAudit(
+    {
+      actor: input.actor,
+      action: 'guild.role_mapping.updated',
+      targetType: 'guild_role_mapping',
+      targetId: `${parsedGuildId.data}:${parsedRoleId.data}`,
+      details: { guildId: parsedGuildId.data, discordRoleId: parsedRoleId.data, brawlhubRole: role },
+    },
+    { db },
+  );
+
+  return listGuildRoleMappings(parsedGuildId.data, { db });
+}
+
+export async function clearGuildRoleMapping(
+  input: { actor: AdminActor; guildId: string; discordRoleId: string },
+  options: AdminServiceOptions = {},
+): Promise<GuildRoleMappingView[]> {
+  const parsedGuildId = discordIdSchema.safeParse(input.guildId);
+  const parsedRoleId = discordIdSchema.safeParse(input.discordRoleId);
+  if (!parsedGuildId.success) {
+    throw new AdminServiceError('invalid_guild', 'A valid configured Discord guild is required.');
+  }
+  if (!parsedRoleId.success) {
+    throw new AdminServiceError('invalid_role', 'Select a valid Discord role.');
+  }
+
+  const db = dbFor(options);
+  const removed = await db
+    .from('guild_role_mappings')
+    .delete()
+    .eq('guild_id', parsedGuildId.data)
+    .eq('discord_role_id', parsedRoleId.data);
+  requireOk(removed.error, 'Remove guild role mapping');
+
+  await recordAdminAudit(
+    {
+      actor: input.actor,
+      action: 'guild.role_mapping.removed',
+      targetType: 'guild_role_mapping',
+      targetId: `${parsedGuildId.data}:${parsedRoleId.data}`,
+      details: { guildId: parsedGuildId.data, discordRoleId: parsedRoleId.data },
+    },
+    { db },
+  );
+
+  return listGuildRoleMappings(parsedGuildId.data, { db });
 }
 
 interface AdminAuditInput {
