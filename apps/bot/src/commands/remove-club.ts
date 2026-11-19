@@ -18,7 +18,7 @@ export const removeClubCommandData = new SlashCommandBuilder()
   .addStringOption((option) =>
     option
       .setName('club')
-      .setDescription('Registered club to archive')
+      .setDescription('Registered club to archive (tag or selection)')
       .setAutocomplete(true)
       .setRequired(true),
   );

@@ -40,7 +40,7 @@ export const playerClubsCommandData = new SlashCommandBuilder()
   .addStringOption((option) =>
     option
       .setName('tag')
-      .setDescription('Player tag, for example #2UG9UGQJY')
+      .setDescription('Player tag, for example #PLAYERTAG')
       .setAutocomplete(true)
       .setRequired(true)
       .setMaxLength(11),

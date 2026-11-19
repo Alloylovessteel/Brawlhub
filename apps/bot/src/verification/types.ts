@@ -4,7 +4,10 @@ export interface VerificationChallenge {
   readonly playerTag: string;
   readonly playerDbId: string;
   readonly playerName: string;
-  readonly originalIconId: number;
+  readonly startingIconId: number;
+  readonly targetIconId: number;
+  readonly targetIconName: string;
+  readonly targetIconUrl: string;
   readonly createdAt: number;
   readonly expiresAt: number;
 }
@@ -25,15 +28,21 @@ export type CheckVerificationResult =
       readonly status: 'verified';
       readonly playerTag: string;
       readonly playerName: string;
-      readonly previousIconId: number;
+      readonly startingIconId: number;
+      readonly targetIconId: number;
+      readonly targetIconName: string;
+      readonly targetIconUrl: string;
       readonly currentIconId: number;
     }
   | {
       readonly ok: true;
-      readonly status: 'unchanged';
+      readonly status: 'pending';
       readonly playerTag: string;
       readonly playerName: string;
-      readonly originalIconId: number;
+      readonly startingIconId: number;
+      readonly targetIconId: number;
+      readonly targetIconName: string;
+      readonly targetIconUrl: string;
       readonly currentIconId: number;
       readonly expiresAt: number;
     }

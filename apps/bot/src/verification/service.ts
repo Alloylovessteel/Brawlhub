@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createTrustedClient } from '@brawlhub/database';
 import { BrawlStarsApiError, createBrawlStarsClient, type BrawlStarsClient } from '@brawlhub/brawl-stars';
 import { brawlTagSchema } from '@brawlhub/shared';
+import { pickRandomVerificationIcon } from './icons.js';
 import type {
   CancelVerificationResult,
   CheckVerificationResult,
@@ -304,6 +305,7 @@ export async function startVerification(
     };
   }
 
+  const targetIcon = pickRandomVerificationIcon(iconId);
   const createdAt = nowMs();
   const challenge: VerificationChallenge = {
     discordUserId: input.discordUserId,
@@ -311,7 +313,10 @@ export async function startVerification(
     playerTag: normalizedTag,
     playerDbId: playerRow.id,
     playerName: player.name,
-    originalIconId: iconId,
+    startingIconId: iconId,
+    targetIconId: targetIcon.id,
+    targetIconName: targetIcon.name,
+    targetIconUrl: targetIcon.imageUrl,
     createdAt,
     expiresAt: createdAt + CHALLENGE_TTL_MS,
   };
@@ -379,13 +384,16 @@ export async function checkVerification(
     };
   }
 
-  if (currentIconId === challenge.originalIconId) {
+  if (currentIconId !== challenge.targetIconId) {
     return {
       ok: true,
-      status: 'unchanged',
+      status: 'pending',
       playerTag: challenge.playerTag,
       playerName: challenge.playerName,
-      originalIconId: challenge.originalIconId,
+      startingIconId: challenge.startingIconId,
+      targetIconId: challenge.targetIconId,
+      targetIconName: challenge.targetIconName,
+      targetIconUrl: challenge.targetIconUrl,
       currentIconId,
       expiresAt: challenge.expiresAt,
     };
@@ -415,7 +423,9 @@ export async function checkVerification(
       type: 'discord_icon_challenge',
       discordUserId: input.discordUserId,
       playerTag: formatTag(challenge.playerTag),
-      fromIconId: challenge.originalIconId,
+      fromIconId: challenge.startingIconId,
+      targetIconId: challenge.targetIconId,
+      targetIconName: challenge.targetIconName,
       toIconId: currentIconId,
       verifiedAt: new Date().toISOString(),
     });
@@ -463,7 +473,10 @@ export async function checkVerification(
     status: 'verified',
     playerTag: challenge.playerTag,
     playerName: challenge.playerName,
-    previousIconId: challenge.originalIconId,
+    startingIconId: challenge.startingIconId,
+    targetIconId: challenge.targetIconId,
+    targetIconName: challenge.targetIconName,
+    targetIconUrl: challenge.targetIconUrl,
     currentIconId,
   };
 }

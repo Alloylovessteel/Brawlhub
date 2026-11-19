@@ -45,7 +45,7 @@ export const registerClubCommandData = new SlashCommandBuilder()
   .addStringOption((option) =>
     option
       .setName('tag')
-      .setDescription('Brawl Stars club tag, for example 2UG9UGQJY')
+      .setDescription('Brawl Stars club tag, for example #ABCD1234')
       .setRequired(true)
       .setMaxLength(20),
   );

@@ -193,7 +193,11 @@ function searchView(count: number, mode: 'player' | 'discord' = 'player') {
 beforeEach(() => {
   for (const fn of Object.values(mocks.memberService)) fn.mockReset();
   for (const fn of Object.values(mocks.playerService)) fn.mockReset();
-  for (const fn of Object.values(mocks.verificationService)) fn.mockReset();
+  for (const fn of Object.values(mocks.verificationService)) {
+    if (typeof (fn as { mockReset?: () => void }).mockReset === 'function') {
+      (fn as { mockReset: () => void }).mockReset();
+    }
+  }
   mocks.config.appUrl = undefined;
 });
 
@@ -254,7 +258,7 @@ describe('/members command', () => {
 });
 
 describe('/member-verify command', () => {
-  it('starts icon verification, defers ephemerally, and gives instructions without inferring ownership', async () => {
+  it('starts icon verification, defers ephemerally, and shows a random required default brawler icon without inferring ownership', async () => {
     mocks.verificationService.startVerification.mockResolvedValue({
       ok: true,
       challenge: {
@@ -263,11 +267,13 @@ describe('/member-verify command', () => {
         playerTag: '2C0Y',
         playerDbId: 'player-db-1',
         playerName: 'Alpha',
-        originalIconId: 28000000,
+        startingIconId: 28000000,
+        targetIconId: 28000016,
+        targetIconName: 'Spike',
+        targetIconUrl: 'https://cdn.brawlify.com/profile-icons/regular/28000016.png',
         createdAt: 1_732_000_000_000,
         expiresAt: 1_732_000_600_000,
       },
-      appUrl: undefined,
     });
     const interaction = chatInteraction({ tag: '#2c0y' }, 'start');
 
@@ -281,19 +287,25 @@ describe('/member-verify command', () => {
     });
     const reply = payload(interaction, 'editReply');
     expect(reply.content).toContain('Verification started for Alpha (#2C0Y)');
-    expect(reply.content).toContain('change your **player icon** to any **different** icon');
+    expect(reply.content).toContain('Spike');
+    expect(reply.content).toContain('default brawler icon');
     expect(reply.content).toContain('/member-verify check');
+    expect(reply.content).toContain('any other icon will not verify');
     expect(reply.content).toContain('will not infer ownership');
+    expect(reply.embeds?.[0]?.toJSON?.().image?.url ?? JSON.stringify(reply.embeds)).toContain('28000016');
   });
 
-  it('reports when icon change is not detected yet', async () => {
+  it('reports when the required default brawler icon is not set yet', async () => {
     mocks.verificationService.checkVerification.mockResolvedValue({
       ok: true,
-      status: 'unchanged',
+      status: 'pending',
       playerTag: '2C0Y',
       playerName: 'Alpha',
-      originalIconId: 28000000,
-      currentIconId: 28000000,
+      startingIconId: 28000000,
+      targetIconId: 28000016,
+      targetIconName: 'Spike',
+      targetIconUrl: 'https://cdn.brawlify.com/profile-icons/regular/28000016.png',
+      currentIconId: 28000003,
       expiresAt: 1_732_000_600_000,
     });
     const interaction = chatInteraction({}, 'check');
@@ -301,18 +313,25 @@ describe('/member-verify command', () => {
     await handleMemberVerify(interaction);
 
     const reply = payload(interaction, 'editReply');
-    expect(reply.content).toContain('Icon change not detected yet');
-    expect(reply.content).toContain('28000000');
+    expect(reply.content).toContain('Required icon not detected yet');
+    expect(reply.content).toContain('Spike');
+    expect(reply.content).toContain('28000003');
+    expect(reply.content).toContain('28000016');
+    expect(reply.content).toContain('any other icon will not verify');
+    expect(reply.embeds?.[0]?.toJSON?.().image?.url ?? JSON.stringify(reply.embeds)).toContain('28000016');
   });
 
-  it('confirms successful verification with API-observed icon change', async () => {
+  it('confirms successful verification only when the exact required default brawler icon is detected', async () => {
     mocks.verificationService.checkVerification.mockResolvedValue({
       ok: true,
       status: 'verified',
       playerTag: '2C0Y',
       playerName: 'Alpha',
-      previousIconId: 28000000,
-      currentIconId: 28000001,
+      startingIconId: 28000000,
+      targetIconId: 28000016,
+      targetIconName: 'Spike',
+      targetIconUrl: 'https://cdn.brawlify.com/profile-icons/regular/28000016.png',
+      currentIconId: 28000016,
     });
     const interaction = chatInteraction({}, 'check');
 
@@ -320,7 +339,8 @@ describe('/member-verify command', () => {
 
     const reply = payload(interaction, 'editReply');
     expect(reply.content).toContain('**Verified:** Alpha (#2C0Y)');
-    expect(reply.content).toContain('Icon changed from `28000000` to `28000001`');
+    expect(reply.content).toContain('Spike');
+    expect(reply.content).toContain('28000016');
     expect(reply.content).toContain('official Brawl Stars API');
   });
 

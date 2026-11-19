@@ -44,7 +44,7 @@ export const membersCommandData = new SlashCommandBuilder()
   .addStringOption((option) =>
     option
       .setName('tag')
-      .setDescription('Optional registered club tag, for example 2UG9UGQJY')
+      .setDescription('Optional registered club tag, for example #ABCD1234')
       .setAutocomplete(true)
       .setRequired(false)
       .setMaxLength(11),

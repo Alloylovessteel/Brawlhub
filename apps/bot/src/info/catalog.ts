@@ -21,7 +21,7 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     entries: [
       {
         name: 'club',
-        usage: '/club tag:2UG9UGQJY',
+        usage: '/club tag:<club-tag>',
         description: 'Show detailed club information with live data when available.',
       },
       {
@@ -31,7 +31,7 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       },
       {
         name: 'club-members',
-        usage: '/club-members tag:2UG9UGQJY',
+        usage: '/club-members tag:<club-tag>',
         description: 'List tracked members of a registered club.',
       },
       {
@@ -41,18 +41,18 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       },
       {
         name: 'club-log',
-        usage: '/club-log tag:2UG9UGQJY period:Daily (Today)',
+        usage: '/club-log tag:<club-tag> period:Daily (Today)',
         description:
           'Show daily or weekly per-member trophy changes for a registered club from stored sync snapshots.',
       },
       {
         name: 'club-history',
-        usage: '/club-history tag:2UG9UGQJY',
+        usage: '/club-history tag:<club-tag>',
         description: 'Show stored history for a registered club.',
       },
       {
         name: 'club-compare',
-        usage: '/club-compare first:2UG9UGQJY second:G2P9',
+        usage: '/club-compare first:<club-tag> second:<club-tag>',
         description: 'Compare two registered clubs using stored data.',
       },
     ],
@@ -109,18 +109,18 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     entries: [
       {
         name: 'members',
-        usage: '/members tag:2UG9UGQJY',
+        usage: '/members tag:<club-tag>',
         description: 'Show tracked members across registered clubs.',
       },
       {
         name: 'member-verify',
         usage: '/member-verify start tag:<tag>',
         description:
-          'Verify player ownership by changing your in-game icon, then run /member-verify check to confirm via the official API.',
+          'Verify player ownership by setting your in-game icon to a random required default brawler icon shown by the bot, then run /member-verify check to confirm via the official API.',
       },
       {
         name: 'member-history',
-        usage: '/member-history tag:2UG9UGQJY',
+        usage: '/member-history tag:<club-tag>',
         description: 'Show membership change history for a registered club.',
       },
       {
@@ -148,13 +148,13 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     entries: [
       {
         name: 'register-club',
-        usage: '/register-club tag:2UG9UGQJY',
+        usage: '/register-club tag:<club-tag>',
         description: 'Preview and register a club after official API validation.',
         permission: 'clubs:write',
       },
       {
         name: 'remove-club',
-        usage: '/remove-club club:2UG9UGQJY',
+        usage: '/remove-club club:<club-tag>',
         description:
           'Explain that safe club removal/archival is currently unavailable; no club data is deleted.',
         permission: 'clubs:write',
@@ -236,6 +236,6 @@ export const ABOUT_SECTIONS: readonly { readonly title: string; readonly body: s
   {
     title: 'Important limitations',
     body:
-      'BrawlHub is not affiliated with, endorsed by, or an official product of Supercell. Player ownership is verified only through an explicit in-game icon-change challenge confirmed via the official Brawl Stars API (not inferred from names, tags, or Discord profiles). Club removal and blacklist commands remain disabled until safe schema support exists. Per-club sync successes and failures are not recorded by the current schema, and data may be stale if synchronisation fails.',
+      'BrawlHub is not affiliated with, endorsed by, or an official product of Supercell. Player ownership is verified only through an explicit in-game icon challenge confirmed via the official Brawl Stars API (players must set the exact required default brawler icon shown by the bot; other icons do not verify, and ownership is never inferred from names, tags, or Discord profiles). Club removal and blacklist commands remain disabled until safe schema support exists. Per-club sync successes and failures are not recorded by the current schema, and data may be stale if synchronisation fails.',
   },
 ];

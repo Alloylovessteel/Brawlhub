@@ -2,7 +2,7 @@
 
 BrawlHub is a private website and Discord bot for managing **11–20 Brawl Stars clubs from one Discord server**. It reads club and roster data from the official Brawl Stars API, stores it in Supabase, and presents real rosters, membership history, trophy progression and sync health in a Next.js dashboard.
 
-Current status: **Phase 1, Phase 2 and Phase 3 implemented**. The website uses the real Phase 2 data already collected for Kuromi Melody, Kuromi Brigade and Kuromi Blaze. No placeholder clubs, players or historical records are generated.
+Current status: **Phase 1, Phase 2 and Phase 3 implemented**. The website and bot work with real clubs you register and synchronise from the official Brawl Stars API. No placeholder clubs, players or historical records are generated.
 
 ## Architecture
 
@@ -94,11 +94,13 @@ npm run db:status
 
 ### 5. Register clubs and collect real data
 
-If the Phase 2 clubs are not already registered:
+Register each club you want BrawlHub to track (after verifying the tag/name in the official Brawl Stars API):
 
 ```sh
-npm run clubs:register -- '#2UG9UGQJY' '#CGJ89PRY' '#82C0QU9QG'
+npm run clubs:register -- '#CLUBTAG1' '#CLUBTAG2'
 ```
+
+You can also register clubs by hand in Discord with `/register-club tag:<club-tag>` (requires `clubs:write` permission); it previews official API data and asks for confirmation before registering anything.
 
 Run a sync:
 
@@ -119,7 +121,7 @@ The guild owner always receives global `owner`. Additional grants require explic
 ```dotenv
 DISCORD_OWNER_ROLE_IDS=123456789012345678
 DISCORD_ADMIN_ROLE_IDS=123456789012345679
-DISCORD_ROLE_MAP={"2UG9UGQJY":{"presidentRoleIds":["123456789012345680"],"staffRoleIds":["123456789012345681"]}}
+DISCORD_ROLE_MAP={"CLUBTAG":{"presidentRoleIds":["123456789012345680"],"staffRoleIds":["123456789012345681"]}}
 ```
 
 Rules:

@@ -332,15 +332,17 @@ export const pendingCommands: readonly CommandDefinition[] = [
 export const commandDefinitions = commands;
 
 /**
- * Register the full command set as guild commands. PUT is idempotent: it is safe
- * to call on every startup. Global registration is never attempted.
+ * Register the full command set. When DISCORD_GUILD_ID is configured, commands
+ * are registered to that guild (fast updates). Otherwise global application
+ * commands are registered so the bot can be invited to servers without extra
+ * config (propagation may take up to about an hour).
  */
 export async function registerCommands(): Promise<void> {
   const { token, clientId, guildId } = getBotConfig();
 
-  if (clientId === undefined || guildId === undefined) {
+  if (clientId === undefined) {
     logger.warn(
-      'Skipping slash command registration: DISCORD_CLIENT_ID and DISCORD_GUILD_ID must both be configured (no global registration attempted)'
+      'Skipping slash command registration: DISCORD_CLIENT_ID must be configured'
     );
     return;
   }
@@ -354,10 +356,17 @@ export async function registerCommands(): Promise<void> {
   const rest = new REST().setToken(token);
 
   try {
-    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body });
-    logger.info(`Registered ${body.length} guild slash command(s)`);
+    if (guildId !== undefined) {
+      await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body });
+      logger.info(`Registered ${body.length} guild slash command(s) for ${guildId}`);
+    } else {
+      await rest.put(Routes.applicationCommands(clientId), { body });
+      logger.info(
+        `Registered ${body.length} global application slash command(s); propagation to servers may take up to ~1 hour`
+      );
+    }
   } catch (error) {
-    logger.error('Failed to register guild slash commands', { error: errorMessage(error) });
+    logger.error('Failed to register slash commands', { error: errorMessage(error) });
   }
 }
 

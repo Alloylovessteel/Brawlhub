@@ -1,4 +1,5 @@
 import {
+  EmbedBuilder,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
@@ -20,13 +21,26 @@ function formatExpiry(expiresAt: number): string {
   return `<t:${unix}:R>`;
 }
 
+function targetIconEmbed(icon: {
+  readonly id: number;
+  readonly name: string;
+  readonly url: string;
+}): EmbedBuilder {
+  return new EmbedBuilder()
+    .setTitle(`Required icon: ${icon.name}`)
+    .setDescription(
+      `Set your Brawl Stars player icon to **${icon.name}** (icon ID \`${icon.id}\`) exactly as shown below. This is a default brawler icon chosen for this verification.`,
+    )
+    .setImage(icon.url);
+}
+
 export const memberVerifyCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
-  .setDescription('Verify ownership of a Brawl Stars player by changing your in-game icon')
+  .setDescription('Verify ownership of a Brawl Stars player by setting a required default brawler icon')
   .addSubcommand((subcommand) =>
     subcommand
       .setName('start')
-      .setDescription('Start icon-change verification for a Brawl Stars player tag')
+      .setDescription('Start verification and get a random required default brawler icon')
       .addStringOption((option) =>
         option
           .setName('tag')
@@ -37,7 +51,7 @@ export const memberVerifyCommandData = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand
       .setName('check')
-      .setDescription('Check whether your in-game icon change has been detected'),
+      .setDescription('Check whether your in-game icon matches the required icon shown at start'),
   )
   .addSubcommand((subcommand) =>
     subcommand
@@ -47,7 +61,7 @@ export const memberVerifyCommandData = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand
       .setName('status')
-      .setDescription('Show your active verification challenge, if any'),
+      .setDescription('Show your active verification challenge and the required icon'),
   );
 
 async function handleStart(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -65,17 +79,23 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   }
 
   const { challenge } = result;
+  const icon = {
+    id: challenge.targetIconId,
+    name: challenge.targetIconName,
+    url: challenge.targetIconUrl,
+  };
   const lines = [
     `**Verification started for ${challenge.playerName} (${formatTag(challenge.playerTag)})**`,
     '',
-    '1. Open Brawl Stars and change your **player icon** to any **different** icon.',
-    '2. Wait a moment for the change to be visible, then run `/member-verify check`.',
+    `1. Open Brawl Stars and change your **player icon** to **${icon.name}** (shown below).`,
+    '2. Wait a moment for the official API to update, then run `/member-verify check`.',
     `3. This challenge expires ${formatExpiry(challenge.expiresAt)}.`,
     '',
-    `Current icon ID detected by the official API: \`${challenge.originalIconId}\``,
-    'BrawlHub only verifies ownership when it detects your icon changed in the official Brawl Stars API. It will not infer ownership from names, tags alone, or Discord profile details.',
+    `Starting icon detected by the official API: \`${challenge.startingIconId}\``,
+    `Required icon: **${icon.name}** (ID \`${icon.id}\`) — default brawler icon (randomly selected)`,
+    'BrawlHub only verifies ownership when the official Brawl Stars API shows this exact required icon. Changing to any other icon will not verify, and BrawlHub will not infer ownership from names, tags, or Discord profile details.',
   ];
-  await interaction.editReply({ content: lines.join('\n') });
+  await interaction.editReply({ content: lines.join('\n'), embeds: [targetIconEmbed(icon)] });
 }
 
 async function handleCheck(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -85,22 +105,34 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
-  if (result.status === 'unchanged') {
+  if (result.status === 'pending') {
+    const icon = {
+      id: result.targetIconId,
+      name: result.targetIconName,
+      url: result.targetIconUrl,
+    };
     const lines = [
-      `**Icon change not detected yet for ${result.playerName} (${formatTag(result.playerTag)})**`,
+      `**Required icon not detected yet for ${result.playerName} (${formatTag(result.playerTag)})**`,
       '',
-      `The official API still shows icon ID \`${result.currentIconId}\` (same as when you started).`,
-      'Change your in-game player icon to a different icon, wait briefly, then run `/member-verify check` again.',
+      `Current icon ID from the official API: \`${result.currentIconId}\``,
+      `Required icon: **${icon.name}** (ID \`${icon.id}\`)`,
+      `Set your in-game player icon to **${icon.name}** (shown below), wait briefly, then run \`/member-verify check\` again.`,
+      'Changing to any other icon will not verify ownership.',
       `Challenge expires ${formatExpiry(result.expiresAt)}.`,
     ];
-    await interaction.editReply({ content: lines.join('\n') });
+    await interaction.editReply({ content: lines.join('\n'), embeds: [targetIconEmbed(icon)] });
     return;
   }
 
+  const icon = {
+    id: result.targetIconId,
+    name: result.targetIconName,
+    url: result.targetIconUrl,
+  };
   await interaction.editReply({
     content:
       `**Verified:** ${result.playerName} (${formatTag(result.playerTag)}) is now linked to your BrawlHub account.\n` +
-      `Icon changed from \`${result.previousIconId}\` to \`${result.currentIconId}\` (confirmed via official Brawl Stars API).`,
+      `Required icon **${icon.name}** (ID \`${icon.id}\`) was confirmed via the official Brawl Stars API (starting icon \`${result.startingIconId}\`, current \`${result.currentIconId}\`).`,
   });
 }
 
@@ -125,13 +157,20 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
     });
     return;
   }
+  const icon = {
+    id: challenge.targetIconId,
+    name: challenge.targetIconName,
+    url: challenge.targetIconUrl,
+  };
   await interaction.editReply({
     content:
       `**Active verification challenge**\n` +
       `Player: ${challenge.playerName} (${formatTag(challenge.playerTag)})\n` +
-      `Original icon ID: \`${challenge.originalIconId}\`\n` +
+      `Starting icon ID: \`${challenge.startingIconId}\`\n` +
+      `Required icon: **${icon.name}** (ID \`${icon.id}\`) — default brawler icon\n` +
       `Expires: ${formatExpiry(challenge.expiresAt)}\n\n` +
-      'Change your in-game icon to a different one, then run `/member-verify check`.',
+      `Set your in-game icon to **${icon.name}** (shown below), then run \`/member-verify check\`. Changing to any other icon will not verify.`,
+    embeds: [targetIconEmbed(icon)],
   });
 }
 
