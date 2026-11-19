@@ -42,6 +42,17 @@ const mocks = vi.hoisted(() => ({
     cancelVerification: vi.fn(),
     getVerificationChallenge: vi.fn(),
   },
+  adminService: {
+    requireGlobalPermission: vi.fn(),
+    AdminServiceError: class AdminServiceError extends Error {
+      readonly code: string;
+      constructor(code: string, message: string) {
+        super(message);
+        this.name = 'AdminServiceError';
+        this.code = code;
+      }
+    },
+  },
 }));
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
@@ -54,6 +65,8 @@ vi.mock('../players/service', async (importOriginal) => {
   return { ...actual, ...mocks.playerService };
 });
 vi.mock('../verification', () => mocks.verificationService);
+vi.mock('../admin/service', () => mocks.adminService);
+vi.mock('../discord/permissions.js', () => ({ getInteractionMemberRoleIds: () => [] }));
 
 import {
   handleMemberHistory,
@@ -83,7 +96,10 @@ function chatInteraction(
 ) {
   const interaction = {
     guildId: 'guild-1',
-    user: { id: ACTOR_DISCORD_ID },
+    guild: { ownerId: '999999999999999999' },
+    user: { id: ACTOR_DISCORD_ID, username: null },
+    member: { roles: { cache: new Map() } },
+    memberPermissions: null,
     options: {
       getString: vi.fn((name: string) => options[name] ?? null),
       getSubcommand: vi.fn(() => subcommand),
@@ -106,7 +122,10 @@ function buttonInteraction(customId: string) {
   return {
     customId,
     guildId: 'guild-1',
-    user: { id: ACTOR_DISCORD_ID },
+    guild: { ownerId: '999999999999999999' },
+    user: { id: ACTOR_DISCORD_ID, username: null },
+    member: { roles: { cache: new Map() } },
+    memberPermissions: null,
     deferred: false,
     replied: false,
     deferUpdate: vi.fn(async () => undefined),
@@ -198,6 +217,12 @@ beforeEach(() => {
       (fn as { mockReset: () => void }).mockReset();
     }
   }
+  mocks.adminService.requireGlobalPermission.mockReset();
+  mocks.adminService.requireGlobalPermission.mockResolvedValue({
+    profileId: 'profile-1',
+    discordUserId: ACTOR_DISCORD_ID,
+    globalRole: 'staff',
+  });
   mocks.config.appUrl = undefined;
 });
 
@@ -504,23 +529,27 @@ describe('/member-search command', () => {
     });
     const staff = chatInteraction({ user: TARGET_DISCORD_ID }, 'discord');
     await handleMemberSearch(staff);
+    expect(mocks.adminService.requireGlobalPermission).toHaveBeenCalledWith(
+      ACTOR_DISCORD_ID,
+      'members:verify',
+      expect.objectContaining({ guildId: 'guild-1' }),
+    );
     expect(mocks.memberService.searchTrackedMembersByDiscord).toHaveBeenCalledWith(
       TARGET_DISCORD_ID,
       ACTOR_DISCORD_ID,
-      { guildId: 'guild-1' },
+      { guildId: 'guild-1', allowInspectOthers: true },
     );
     const text = embedText(payload(staff, 'reply'));
     expect(text).toContain('Linked Discord Players');
     expect(text).toContain(TARGET_DISCORD_ID);
     expect(text).toContain('No ownership is inferred');
 
+    mocks.adminService.requireGlobalPermission.mockRejectedValueOnce(
+      new mocks.adminService.AdminServiceError('forbidden', 'You do not have permission.'),
+    );
     const member = chatInteraction({ user: TARGET_DISCORD_ID }, 'discord');
-    mocks.memberService.searchTrackedMembersByDiscord.mockResolvedValueOnce({
-      kind: 'forbidden',
-      message: 'You do not have permission.',
-    });
     await handleMemberSearch(member);
-    expect(payload(member, 'reply').content).toBe('You do not have permission.');
+    expect(payload(member, 'reply').content).toBe('You do not have permission to look up other Discord users’ linked players.');
     expect(payload(member, 'reply').flags).toBe(64);
   });
 

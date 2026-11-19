@@ -5,19 +5,16 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import { AdminServiceError, requireGlobalPermission } from '../admin/service';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
+import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import {
   buildPaginationRow,
   paginate,
   parsePaginationCustomId,
 } from '../discord/pagination';
 import { buildStaffListEmbed, buildStaffOverviewEmbed } from '../staff/embed';
-import {
-  canManageStaff,
-  listStaff,
-  resolveStaffActor,
-  StaffServiceError,
-} from '../staff/service';
+import { listStaff, StaffServiceError } from '../staff/service';
 
 const COMMAND_NAME = 'staff';
 const LIST_PAGE_SIZE = 5;
@@ -47,17 +44,30 @@ async function buildListPage(pageNumber: number): Promise<PagePayload> {
   };
 }
 
-async function requireStaffManager(discordUserId: string): Promise<void> {
-  const actor = await resolveStaffActor(discordUserId);
-  if (!canManageStaff(actor)) {
-    throw new StaffServiceError('forbidden', FORBIDDEN_MESSAGE);
+type StaffInteraction = ChatInputCommandInteraction | CommandComponentInteraction;
+
+function permissionContext(interaction: StaffInteraction) {
+  return {
+    guildId: interaction.guildId,
+    memberPermissions: interaction.memberPermissions,
+    memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+    isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+    discordUsername: interaction.user.username,
+  };
+}
+
+async function requireStaffManager(interaction: StaffInteraction): Promise<void> {
+  try {
+    await requireGlobalPermission(interaction.user.id, 'staff:manage', permissionContext(interaction));
+  } catch (error) {
+    if (error instanceof AdminServiceError && error.code === 'forbidden') {
+      throw new StaffServiceError('forbidden', FORBIDDEN_MESSAGE);
+    }
+    throw error;
   }
 }
 
-async function replyStaffError(
-  interaction: ChatInputCommandInteraction | CommandComponentInteraction,
-  error: unknown,
-): Promise<void> {
+async function replyStaffError(interaction: StaffInteraction, error: unknown): Promise<void> {
   if (!(error instanceof StaffServiceError)) throw error;
   const payload = { content: error.message, flags: 64 } as const;
   if (interaction.replied || interaction.deferred) {
@@ -78,7 +88,7 @@ export async function handleStaff(interaction: ChatInputCommandInteraction): Pro
       return;
     }
 
-    await requireStaffManager(interaction.user.id);
+    await requireStaffManager(interaction);
     await interaction.reply({
       ...(await buildListPage(1)),
       flags: 64,
@@ -95,7 +105,7 @@ export async function handleStaffComponent(interaction: CommandComponentInteract
 
   try {
     await interaction.deferUpdate();
-    await requireStaffManager(interaction.user.id);
+    await requireStaffManager(interaction);
     await interaction.editReply({
       ...(await buildListPage(pageNumber)),
       content: null,

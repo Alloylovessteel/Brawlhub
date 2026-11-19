@@ -12,8 +12,18 @@ const mocks = vi.hoisted(() => {
     }
   }
 
+  class MockAdminServiceError extends Error {
+    readonly code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.name = 'AdminServiceError';
+      this.code = code;
+    }
+  }
+
   return {
     StaffServiceError: MockStaffServiceError,
+    AdminServiceError: MockAdminServiceError,
     config: {
       token: undefined,
       clientId: undefined,
@@ -34,9 +44,10 @@ const mocks = vi.hoisted(() => {
       buildStaffOverviewEmbed: vi.fn(),
     },
     service: {
-      canManageStaff: vi.fn(),
       listStaff: vi.fn(),
-      resolveStaffActor: vi.fn(),
+    },
+    admin: {
+      requireGlobalPermission: vi.fn(),
     },
   };
 });
@@ -47,6 +58,11 @@ vi.mock('../staff/service', () => ({
   StaffServiceError: mocks.StaffServiceError,
 }));
 vi.mock('../staff/embed', () => mocks.embed);
+vi.mock('../admin/service', () => ({
+  requireGlobalPermission: mocks.admin.requireGlobalPermission,
+  AdminServiceError: mocks.AdminServiceError,
+}));
+vi.mock('../discord/permissions.js', () => ({ getInteractionMemberRoleIds: () => [] }));
 
 import { handleStaff, handleStaffComponent, staffCommandData } from './staff';
 
@@ -78,8 +94,11 @@ function staffView(count: number) {
 
 function chatInteraction(subcommand: string | null) {
   return {
-    user: { id: DISCORD_ID },
+    user: { id: DISCORD_ID, username: 'actor' },
     guildId: 'guild-1',
+    guild: { ownerId: '999999999999999999' },
+    member: { roles: { cache: new Map() } },
+    memberPermissions: null,
     options: {
       getSubcommand: vi.fn(() => subcommand),
     },
@@ -93,7 +112,11 @@ function chatInteraction(subcommand: string | null) {
 function buttonInteraction(customId: string, discordUserId = DISCORD_ID) {
   const interaction = {
     customId,
-    user: { id: discordUserId },
+    user: { id: discordUserId, username: 'actor' },
+    guildId: 'guild-1',
+    guild: { ownerId: '999999999999999999' },
+    member: { roles: { cache: new Map() } },
+    memberPermissions: null,
     replied: false,
     deferred: false,
     deferUpdate: vi.fn(async () => {
@@ -114,13 +137,19 @@ function payload(
 }
 
 function allowStaff() {
-  mocks.service.resolveStaffActor.mockResolvedValue(actor());
-  mocks.service.canManageStaff.mockReturnValue(true);
+  mocks.admin.requireGlobalPermission.mockResolvedValue(actor());
+}
+
+function denyStaff() {
+  mocks.admin.requireGlobalPermission.mockRejectedValue(
+    new mocks.AdminServiceError('forbidden', 'You do not have permission.'),
+  );
 }
 
 beforeEach(() => {
   for (const fn of Object.values(mocks.service)) fn.mockReset();
   for (const fn of Object.values(mocks.embed)) fn.mockReset();
+  mocks.admin.requireGlobalPermission.mockReset();
   mocks.embed.buildStaffOverviewEmbed.mockReturnValue(mocks.embeds.overview);
   mocks.embed.buildStaffListEmbed.mockReturnValue(mocks.embeds.list);
   allowStaff();
@@ -150,13 +179,12 @@ describe('/staff command handlers', () => {
       embeds: [mocks.embeds.overview],
       allowedMentions: { parse: [] },
     });
-    expect(mocks.service.resolveStaffActor).not.toHaveBeenCalled();
+    expect(mocks.admin.requireGlobalPermission).not.toHaveBeenCalled();
     expect(mocks.service.listStaff).not.toHaveBeenCalled();
   });
 
   it('replies ephemerally when staff permission is missing', async () => {
-    mocks.service.resolveStaffActor.mockResolvedValue(actor(null));
-    mocks.service.canManageStaff.mockReturnValue(false);
+    denyStaff();
     const interaction = chatInteraction('list');
 
     await handleStaff(interaction);
@@ -173,8 +201,11 @@ describe('/staff command handlers', () => {
 
     await handleStaff(interaction);
 
-    expect(mocks.service.resolveStaffActor).toHaveBeenCalledWith(DISCORD_ID);
-    expect(mocks.service.canManageStaff).toHaveBeenCalledWith(actor());
+    expect(mocks.admin.requireGlobalPermission).toHaveBeenCalledWith(
+      DISCORD_ID,
+      'staff:manage',
+      expect.objectContaining({ guildId: 'guild-1' }),
+    );
     expect(mocks.embed.buildStaffListEmbed).toHaveBeenCalledWith(
       view,
       expect.objectContaining({ page: 1, pageCount: 2, total: 7 }),
@@ -186,14 +217,17 @@ describe('/staff command handlers', () => {
   });
 
   it('rejects club staff again on a pagination button', async () => {
-    mocks.service.resolveStaffActor.mockResolvedValue(actor(null));
-    mocks.service.canManageStaff.mockReturnValue(false);
+    denyStaff();
     const button = buttonInteraction('staff:page:2');
 
     await handleStaffComponent(button);
 
     expect(button.deferUpdate).toHaveBeenCalled();
-    expect(mocks.service.resolveStaffActor).toHaveBeenCalledWith(DISCORD_ID);
+    expect(mocks.admin.requireGlobalPermission).toHaveBeenCalledWith(
+      DISCORD_ID,
+      'staff:manage',
+      expect.objectContaining({ guildId: 'guild-1' }),
+    );
     expect(payload(button, 'followUp')).toMatchObject({ flags: 64 });
     expect(payload(button, 'followUp').content).toContain('permission');
     expect(button.editReply).not.toHaveBeenCalled();

@@ -11,6 +11,8 @@ import {
 } from 'discord.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
+import { AdminServiceError, requireGlobalPermission } from '../admin/service';
+import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import { replyWithSafeError } from '../discord/errors';
 import {
   buildPaginationRowWithState,
@@ -20,6 +22,7 @@ import {
 } from '../discord/pagination';
 import { buildMemberSearchPageEmbed } from '../membership/embed';
 import {
+  DISCORD_SEARCH_FORBIDDEN_MESSAGE,
   INVALID_SEARCH_MESSAGE,
   normalizeMemberSearchQuery,
   searchTrackedMembersByDiscord,
@@ -106,29 +109,60 @@ export function decodeMemberSearchState(state: string): SearchState | null {
   return null;
 }
 
+type MemberSearchInteraction = ChatInputCommandInteraction | CommandComponentInteraction;
+
+function permissionContext(interaction: MemberSearchInteraction) {
+  return {
+    guildId: interaction.guildId,
+    memberPermissions: interaction.memberPermissions,
+    memberRoleIds: getInteractionMemberRoleIds(interaction.member),
+    isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
+    discordUsername: interaction.user.username,
+  };
+}
+
 async function runSearch(
   state: SearchState,
-  actorDiscordUserId: string,
-  guildId: string | null,
+  interaction: MemberSearchInteraction,
 ): Promise<
   | { readonly kind: 'ok'; readonly value: MemberSearchView }
   | { readonly kind: 'failure'; readonly failure: MemberSearchFailure }
 > {
-  const result = state.mode === 'player'
-    ? await searchTrackedMembersByPlayer(state.query, { guildId })
-    : await searchTrackedMembersByDiscord(state.query, actorDiscordUserId, { guildId });
-  return result.kind === 'ok'
-    ? { kind: 'ok', value: result.value }
-    : { kind: 'failure', failure: result };
+  if (state.mode === 'player') {
+    const result = await searchTrackedMembersByPlayer(state.query, { guildId: interaction.guildId });
+    return result.kind === 'ok' ? { kind: 'ok', value: result.value } : { kind: 'failure', failure: result };
+  }
+
+  const isSelf = state.query === interaction.user.id;
+  let allowInspectOthers = false;
+  if (!isSelf) {
+    try {
+      await requireGlobalPermission(interaction.user.id, 'members:verify', permissionContext(interaction));
+      allowInspectOthers = true;
+    } catch (error) {
+      if (error instanceof AdminServiceError && error.code === 'forbidden') {
+        return {
+          kind: 'failure',
+          failure: { kind: 'forbidden', message: DISCORD_SEARCH_FORBIDDEN_MESSAGE },
+        };
+      }
+      throw error;
+    }
+  }
+
+  const result = await searchTrackedMembersByDiscord(state.query, interaction.user.id, {
+    guildId: interaction.guildId,
+    allowInspectOthers,
+  });
+  return result.kind === 'ok' ? { kind: 'ok', value: result.value } : { kind: 'failure', failure: result };
 }
 
 async function buildPage(
   state: SearchState,
-  actorDiscordUserId: string,
-  guildId: string | null,
+  interaction: MemberSearchInteraction,
   pageNumber: number,
 ): Promise<BuildResult> {
-  const result = await runSearch(state, actorDiscordUserId, guildId);
+  const result = await runSearch(state, interaction);
   if (result.kind === 'failure') return { kind: 'failure', failure: result.failure };
 
   const page = paginate(result.value.entries, pageNumber, PAGE_SIZE);
@@ -179,7 +213,7 @@ export async function handleMemberSearch(interaction: ChatInputCommandInteractio
     return;
   }
 
-  const built = await buildPage(state, interaction.user.id, interaction.guildId, 1);
+  const built = await buildPage(state, interaction, 1);
   if (built.kind === 'failure') {
     await replyFailure(interaction, built.failure);
     return;
@@ -196,7 +230,7 @@ export async function handleMemberSearchComponent(interaction: CommandComponentI
 
   try {
     await interaction.deferUpdate();
-    const built = await buildPage(state, interaction.user.id, interaction.guildId, parsed.page);
+    const built = await buildPage(state, interaction, parsed.page);
     if (built.kind === 'failure') {
       await interaction.editReply({
         content: 'This search is no longer available.',

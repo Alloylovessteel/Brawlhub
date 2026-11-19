@@ -54,6 +54,8 @@ export interface MembershipReadOptions {
   readonly now?: Date;
   readonly staleAfterMs?: number;
   readonly guildId?: string | null;
+  /** When true, the caller has already been authorized to inspect other users' identity links. */
+  readonly allowInspectOthers?: boolean;
 }
 
 async function readGuildClubIds(guildId: string | null | undefined, db: DatabaseClient): Promise<string[] | null> {
@@ -389,7 +391,7 @@ export async function searchTrackedMembersByDiscord(
   const guildClubIds = await readGuildClubIds(options.guildId, db);
   const actor = await resolveMembershipActor(actorDiscordUserId, { db });
   const isSelf = discordUserId === actor.discordUserId;
-  if (!isSelf && !canInspectIdentityLinks(actor)) {
+  if (!isSelf && !canInspectIdentityLinks(actor) && options.allowInspectOthers !== true) {
     return { kind: 'forbidden', message: DISCORD_SEARCH_FORBIDDEN_MESSAGE };
   }
 
