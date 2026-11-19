@@ -10,6 +10,7 @@ import {
   calculateAverageMatches,
   calculateHistoryChange,
   calculateMegaPigEstimate,
+  calculateRankedRange,
   calculateTrophyProgression,
   calculateTrophyRange,
   filterSnapshotsByPeriod,
@@ -280,6 +281,120 @@ async function readBattleActivityForRoster(
   }
 
   return { matchActivity, megaPigEstimate };
+}
+
+interface OverviewPlayer {
+  readonly id: string;
+  readonly tag: string;
+  readonly rankedRankName: string | null;
+  readonly lastBattleAt: string | null;
+}
+
+function chunkValues<T>(values: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function normalizePlayerTag(tag: string): string {
+  return tag.trim().replace(/^#+/, '').toUpperCase();
+}
+
+/** Read roster players in batches for the club-overview view. */
+async function readOverviewPlayers(
+  tags: readonly string[],
+  db: DatabaseClient,
+): Promise<Map<string, OverviewPlayer>> {
+  const unique = [...new Set(tags.map(normalizePlayerTag).filter((tag) => tag.length > 0))];
+  const result = new Map<string, OverviewPlayer>();
+  if (unique.length === 0) return result;
+
+  for (const chunk of chunkValues(unique, 100)) {
+    const { data, error } = await db
+      .from('players')
+      .select('id, tag, ranked_rank_name, last_battle_at')
+      .in('tag', chunk);
+    requireOk(error, 'Read players for club overview');
+    for (const row of data ?? []) {
+      const source = record(row);
+      const id = asString(source?.['id']);
+      const tag = asString(source?.['tag']);
+      if (id === null || tag === null) continue;
+      result.set(normalizePlayerTag(tag), {
+        id,
+        tag,
+        rankedRankName: asString(source?.['ranked_rank_name']),
+        lastBattleAt: asString(source?.['last_battle_at']),
+      });
+    }
+  }
+  return result;
+}
+
+interface MegaPigTotals {
+  readonly matches: number;
+  readonly wins: number;
+  readonly trophyChange: number;
+}
+
+/** Aggregate stored Mega Pig battles by player across every club in the overview. */
+async function readMegaPigTotals(
+  playerIds: readonly string[],
+  window: { start: string; end: string },
+  db: DatabaseClient,
+): Promise<Map<string, MegaPigTotals>> {
+  const totals = new Map<string, MegaPigTotals>();
+  const unique = [...new Set(playerIds.filter((id) => id.length > 0))];
+  if (unique.length === 0) return totals;
+
+  for (const chunk of chunkValues(unique, 100)) {
+    const { data, error } = await db
+      .from('player_battles')
+      .select('player_id, result, trophy_change')
+      .in('player_id', chunk)
+      .gte('battle_time', window.start)
+      .lte('battle_time', window.end)
+      .limit(10_000);
+    if (error) continue;
+
+    for (const row of data ?? []) {
+      const source = record(row);
+      const playerId = asString(source?.['player_id']);
+      if (playerId === null) continue;
+      const current = totals.get(playerId) ?? { matches: 0, wins: 0, trophyChange: 0 };
+      const trophyChange = asNumber(source?.['trophy_change']) ?? 0;
+      totals.set(playerId, {
+        matches: current.matches + 1,
+        wins: current.wins + (asString(source?.['result']) === 'victory' ? 1 : 0),
+        trophyChange: current.trophyChange + trophyChange,
+      });
+    }
+  }
+  return totals;
+}
+
+function countActiveMembers(
+  roster: readonly RosterMember[],
+  players: ReadonlyMap<string, OverviewPlayer>,
+  now: Date,
+): number | null {
+  if (roster.length === 0) return null;
+  const threshold = now.getTime() - ACTIVITY_DAY_MS;
+  let count = 0;
+  for (const member of roster) {
+    const lastBattleAt = players.get(member.tag)?.lastBattleAt;
+    if (lastBattleAt === null || lastBattleAt === undefined) continue;
+    const timestamp = Date.parse(lastBattleAt);
+    if (!Number.isNaN(timestamp) && timestamp >= threshold) count += 1;
+  }
+  return count;
+}
+
+function rosterLeader(roster: readonly RosterMember[]): { name: string; tag: string } | null {
+  const leader = roster.find((member) => member.role === 'president' && member.name !== '');
+  return leader === undefined ? null : { name: leader.name, tag: leader.tag };
 }
 
 type NormalizedLookupTag =
@@ -772,26 +887,63 @@ export async function loadClubSummaries(
   const guildId = isDb ? null : (guildIdOrDb as string | null | undefined);
   const [clubs, runs] = await Promise.all([readClubs(db, guildId), readCompletedRuns(db)]);
   const completedRunIds = new Set(runs.map((run) => run.id));
+  const now = new Date();
 
-  return Promise.all(
+  const base = await Promise.all(
     clubs.map(async (club) => {
       const snapshots = await readSnapshots(club.id, db);
       const latestSnapshot = latestCompletedSnapshot(snapshots, completedRunIds);
       const rosterResult = snapshotRoster(snapshots, completedRunIds);
       const roster = rosterResult?.roster ?? (await readMembershipRoster(club.id, db));
-      const rosterAvailable = roster.length > 0;
-
-      return {
-        club,
-        totalTrophies: latestSnapshot?.trophies ?? club.trophies,
-        averageTrophies: rosterAvailable
-          ? calculateAverage(roster.map((member) => member.trophies))
-          : null,
-        memberCount: rosterAvailable ? roster.length : club.memberCount,
-        latestSyncAt: latestSuccessfulSyncAt(club, runs),
-      };
+      return { club, latestSnapshot, roster, rosterAvailable: roster.length > 0 };
     }),
   );
+
+  const players = await readOverviewPlayers(
+    base.flatMap((entry) => entry.roster.map((member) => member.tag)),
+    db,
+  );
+  const megaWindow = readMegaPigWindow();
+  const playerIds = [...new Set([...players.values()].map((player) => player.id))];
+  const megaTotals =
+    megaWindow === null
+      ? new Map<string, MegaPigTotals>()
+      : await readMegaPigTotals(playerIds, megaWindow, db);
+
+  return base.map(({ club, latestSnapshot, roster, rosterAvailable }) => {
+    const memberIds = roster
+      .map((member) => players.get(member.tag)?.id)
+      .filter((id): id is string => typeof id === 'string');
+    const megaRows = memberIds.flatMap((id) => {
+      const totals = megaTotals.get(id);
+      return totals === undefined ? [] : [totals];
+    });
+    const megaPigEstimate =
+      megaWindow === null
+        ? null
+        : calculateMegaPigEstimate({
+            rows: megaRows,
+            windowStart: megaWindow.start,
+            windowEnd: megaWindow.end,
+          });
+
+    return {
+      club,
+      totalTrophies: latestSnapshot?.trophies ?? club.trophies,
+      averageTrophies: rosterAvailable
+        ? calculateAverage(roster.map((member) => member.trophies))
+        : null,
+      memberCount: rosterAvailable ? roster.length : club.memberCount,
+      latestSyncAt: latestSuccessfulSyncAt(club, runs),
+      leader: rosterAvailable ? rosterLeader(roster) : null,
+      trophyRange: rosterAvailable ? calculateTrophyRange(roster) : null,
+      rankedRange: rosterAvailable
+        ? calculateRankedRange(roster.map((member) => players.get(member.tag)?.rankedRankName))
+        : null,
+      megaPigEstimate,
+      activeMembers24h: rosterAvailable ? countActiveMembers(roster, players, now) : null,
+    };
+  });
 }
 
 /** Rank registered clubs for slash-command autocomplete. */

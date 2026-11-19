@@ -87,6 +87,16 @@ export interface ClubSummary {
   readonly averageTrophies: number | null;
   readonly memberCount: number | null;
   readonly latestSyncAt: string | null;
+  /** President from the synced roster, when a roster is available. */
+  readonly leader: { readonly name: string; readonly tag: string } | null;
+  /** Lowest and highest member trophies from the synced roster. */
+  readonly trophyRange: { readonly low: number; readonly high: number } | null;
+  /** Lowest and highest stored ranked rank names from roster players. */
+  readonly rankedRange: { readonly low: string; readonly high: string } | null;
+  /** Null when the Mega Pig window is not configured. */
+  readonly megaPigEstimate: MegaPigEstimate | null;
+  /** Roster players with a stored battle in the last 24 hours; not live online status. */
+  readonly activeMembers24h: number | null;
 }
 
 export type LoadClubResult =

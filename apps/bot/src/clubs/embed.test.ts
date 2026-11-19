@@ -27,7 +27,10 @@ import type {
   TrophyProgression,
 } from './types';
 
-const CONFIG: Pick<BotConfig, 'emojis' | 'playerProfileUrlTemplate' | 'seasonStartIso'> = {
+const CONFIG: Pick<
+  BotConfig,
+  'emojis' | 'playerProfileUrlTemplate' | 'clubProfileUrlTemplate' | 'seasonStartIso'
+> = {
   emojis: {
     trophies: undefined,
     trophyRange: undefined,
@@ -37,8 +40,14 @@ const CONFIG: Pick<BotConfig, 'emojis' | 'playerProfileUrlTemplate' | 'seasonSta
     matches: undefined,
     progression: undefined,
     description: undefined,
+    ranked: undefined,
+    rank: undefined,
+    megaPig: undefined,
+    wins: undefined,
+    online: undefined,
   },
   playerProfileUrlTemplate: 'https://brawlify.com/player/{tag}',
+  clubProfileUrlTemplate: undefined,
   seasonStartIso: '2026-11-02T00:00:00Z',
 };
 
@@ -112,7 +121,7 @@ function summary(index: number): ClubSummary {
       name: `Club ${index}`,
       description: null,
       trophies: 1000 + index,
-      requiredTrophies: null,
+      requiredTrophies: 100_000,
       memberCount: 20,
       lastSyncedAt: null,
     },
@@ -120,6 +129,18 @@ function summary(index: number): ClubSummary {
     averageTrophies: 50 + index,
     memberCount: 20,
     latestSyncAt: '2026-11-17T10:00:00.000Z',
+    leader: { name: `Leader ${index}`, tag: `L${index}` },
+    trophyRange: { low: 90_000 + index, high: 120_000 + index },
+    rankedRange: { low: 'Diamond I', high: 'Mythic II' },
+    megaPigEstimate: {
+      matches: 64,
+      wins: 42,
+      trophyChange: 120,
+      sampleSize: 30,
+      windowStart: '2026-11-01T00:00:00.000Z',
+      windowEnd: '2026-11-08T00:00:00.000Z',
+    },
+    activeMembers24h: 12,
   };
 }
 
@@ -278,19 +299,25 @@ describe('club embeds', () => {
     expect(JSON.stringify(json)).not.toContain('Unavailable');
   });
 
-  it('renders a bounded page of registered clubs with sync timestamps', () => {
+  it('renders a bounded BrawlTools-style club overview page', () => {
     const summaries = Array.from({ length: 12 }, (_, index) => summary(index + 1));
     const page = paginate(summaries, 2, 5);
-    const json = buildClubsPageEmbed(summaries, page).toJSON();
+    const json = buildClubsPageEmbed(summaries, page, CONFIG).toJSON();
+    const value = json.fields?.[0]?.value ?? '';
 
     expect(json.fields).toHaveLength(5);
-    expect(json.fields?.[0]?.name).toContain('#TAG6');
-    expect(json.fields?.[0]?.value).toContain('Total: 1,006');
-    expect(json.fields?.[0]?.value).toContain('Average: 56');
-    expect(json.fields?.[0]?.value).toContain('Members: 20 / 30');
+    expect(json.fields?.[0]?.name).toBe('Club 6');
+    expect(value).toContain('👑 [Leader 6](https://brawlify.com/player/L6)');
+    expect(value).toContain('🏆1,006');
+    expect(value).toContain('📈90k-120k');
+    expect(value).toContain('🎖️ 🔹Diamond I - 🔹Mythic II');
+    expect(value).toContain('🐷 ✅42/64 (est.)');
+    expect(value).toContain('🔒 Req: 100,000');
+    expect(value).toContain('👥20/30 • 🟢12 active 24h');
     const syncSeconds = Math.floor(Date.parse('2026-11-17T10:00:00.000Z') / 1000);
-    expect(json.fields?.[0]?.value).toContain(`Last sync: <t:${syncSeconds}:R>`);
+    expect(value).toContain(`🕒 Synced <t:${syncSeconds}:R>`);
     expect(json.footer?.text).toContain('Page 2 / 3');
+    expect(json.footer?.text).toContain('not exposed by the Brawl Stars API');
   });
 
   it('renders club roster pages with stored details and Brawlify links', () => {

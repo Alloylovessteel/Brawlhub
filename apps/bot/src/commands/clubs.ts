@@ -4,6 +4,7 @@ import {
   type ChatInputCommandInteraction,
 } from 'discord.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
+import { getBotConfig } from '../config';
 import { buildClubsPageEmbed, paginateClubs } from '../clubs/embed';
 import { loadClubSummaries } from '../clubs/service';
 import { replyWithSafeError } from '../discord/errors';
@@ -24,7 +25,7 @@ export const clubsCommandData = new SlashCommandBuilder()
 async function buildPage(guildId: string | null, pageNumber: number) {
   const summaries = await loadClubSummaries(guildId);
   const page = paginateClubs(summaries, pageNumber, CLUBS_PAGE_SIZE);
-  const embed = buildClubsPageEmbed(summaries, page);
+  const embed = buildClubsPageEmbed(summaries, page, getBotConfig());
   const row = buildPaginationRow(COMMAND_NAME, page.page, page.pageCount);
   return { embeds: [embed], components: row === null ? [] : [row] };
 }

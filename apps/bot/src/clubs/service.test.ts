@@ -370,4 +370,50 @@ describe('club data service', () => {
       latestSyncAt: RUN.finished_at,
     });
   });
+
+  it('adds BrawlTools overview details from stored roster and battle data', async () => {
+    vi.stubEnv('BRAWL_MEGA_PIG_START_ISO', '2026-11-01T00:00:00.000Z');
+    vi.stubEnv('BRAWL_MEGA_PIG_END_ISO', '2026-11-30T00:00:00.000Z');
+    try {
+      const { db } = createFakeDb({
+        'clubs:select': () => ({ data: [CLUB] }),
+        'sync_runs:select': () => ({ data: [RUN] }),
+        'club_snapshots:select': () => ({ data: [SNAPSHOT] }),
+        'players:select': () => ({
+          data: [
+            {
+              id: 'player-1',
+              tag: 'G2P9',
+              ranked_rank_name: 'DIAMOND II',
+              last_battle_at: new Date().toISOString(),
+            },
+            {
+              id: 'player-2',
+              tag: 'Q8VR',
+              ranked_rank_name: 'MYTHIC I',
+              last_battle_at: '2020-01-01T00:00:00.000Z',
+            },
+          ],
+        }),
+        'player_battles:select': () => ({
+          data: [
+            { player_id: 'player-1', result: 'victory', trophy_change: 8 },
+            { player_id: 'player-1', result: 'defeat', trophy_change: -2 },
+          ],
+        }),
+      });
+
+      const [summary] = await loadClubSummaries(db);
+
+      expect(summary).toMatchObject({
+        leader: { name: 'Leader', tag: 'G2P9' },
+        trophyRange: { low: 700, high: 900 },
+        rankedRange: { low: 'Diamond II', high: 'Mythic I' },
+        activeMembers24h: 1,
+        megaPigEstimate: { matches: 2, wins: 1, trophyChange: 6, sampleSize: 1 },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

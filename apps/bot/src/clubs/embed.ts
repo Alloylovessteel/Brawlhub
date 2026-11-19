@@ -1,8 +1,9 @@
 import { EmbedBuilder } from 'discord.js';
-import type { BotConfig } from '../config';
+import type { BotConfig, BotEmojiConfig } from '../config';
 import {
   cleanTag,
   escapeMarkdown,
+  formatClubLink,
   formatEmoji,
   formatInteger,
   formatPlayerLink,
@@ -53,7 +54,7 @@ const CLUB_LOG_PERIOD_LABELS: Readonly<Record<ClubLogPeriod, string>> = {
 
 type EmbedConfig = Pick<
   BotConfig,
-  'emojis' | 'playerProfileUrlTemplate' | 'seasonStartIso'
+  'emojis' | 'playerProfileUrlTemplate' | 'clubProfileUrlTemplate' | 'seasonStartIso'
 >;
 
 function truncate(value: string, maximum: number): string {
@@ -100,6 +101,35 @@ export function fitEmbedToDiscordLimits(embed: EmbedBuilder): EmbedBuilder {
 
 function displayTag(tag: string): string {
   return `#${cleanTag(tag)}`;
+}
+
+function compactDecimal(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, '');
+}
+
+/** BrawlTools-style compact trophy amounts, e.g. 110.5k. */
+function formatCompact(value: number | null): string | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000) return `${compactDecimal(value / 1_000_000)}m`;
+  if (absolute >= 10_000) return `${compactDecimal(value / 1_000)}k`;
+  return formatInteger(value);
+}
+
+function overviewEmojis(config: { readonly emojis: Partial<BotEmojiConfig> }) {
+  return {
+    crown: formatEmoji(config.emojis.president, 'president') || '👑',
+    trophies: formatEmoji(config.emojis.trophies, 'trophies') || '🏆',
+    trophyRange: formatEmoji(config.emojis.trophyRange, 'trophy_range') || '📈',
+    ranked: formatEmoji(config.emojis.ranked, 'ranked') || '🎖️',
+    rank: formatEmoji(config.emojis.rank, 'rank') || '🔹',
+    megaPig: formatEmoji(config.emojis.megaPig, 'mega_pig') || '🐷',
+    wins: formatEmoji(config.emojis.wins, 'wins') || '✅',
+    required: formatEmoji(config.emojis.requiredTrophies, 'required_trophies') || '🔒',
+    members: formatEmoji(config.emojis.members, 'members') || '👥',
+    online: formatEmoji(config.emojis.online, 'online') || '🟢',
+    sync: '🕒',
+  };
 }
 
 function label(emoji: string, text: string): string {
@@ -303,16 +333,21 @@ export function buildClubEmbed(
   return fitEmbedToDiscordLimits(embed);
 }
 
-/** Build a compact, paginated `/clubs` embed. */
+/** Build a BrawlTools-style, paginated `/clubs` embed from stored official data. */
 export function buildClubsPageEmbed(
   summaries: readonly ClubSummary[],
   page: Page<ClubSummary>,
+  config?: EmbedConfig,
 ): EmbedBuilder {
+  const emoji = overviewEmojis(config ?? { emojis: {} });
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
-    .setTitle('Registered Clubs')
+    .setTitle('Club Overview')
     .setFooter({
-      text: `Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total}`,
+      text: [
+        `Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total}`,
+        'Global rank, region and live online status are not exposed by the Brawl Stars API.',
+      ].join(' • '),
     });
 
   if (page.items.length === 0) {
@@ -320,22 +355,62 @@ export function buildClubsPageEmbed(
     return embed;
   }
 
-  page.items.forEach((summary, index) => {
-    const average = formatInteger(summary.averageTrophies);
+  page.items.forEach((summary) => {
+    const leader = summary.leader ?? null;
+    const trophyRange = summary.trophyRange ?? null;
+    const rankedRange = summary.rankedRange ?? null;
+    const mega = summary.megaPigEstimate ?? null;
+    const active = summary.activeMembers24h ?? null;
+    const leaderText =
+      leader === null
+        ? `${emoji.crown} —`
+        : `${emoji.crown} ${formatPlayerLink(leader.name, leader.tag, config?.playerProfileUrlTemplate)}`;
+
+    const lines = [
+      leaderText,
+      `${emoji.trophies}${formatInteger(summary.totalTrophies) ?? '—'}`,
+    ];
+
+    if (trophyRange !== null) {
+      const low = formatCompact(trophyRange.low);
+      const high = formatCompact(trophyRange.high);
+      if (low !== null && high !== null) lines.push(`${emoji.trophyRange}${low}-${high}`);
+    }
+
+    if (rankedRange !== null) {
+      const ranks =
+        rankedRange.low === rankedRange.high
+          ? `${emoji.rank}${rankedRange.low}`
+          : `${emoji.rank}${rankedRange.low} - ${emoji.rank}${rankedRange.high}`;
+      lines.push(`${emoji.ranked} ${ranks}`);
+    }
+
+    if (mega !== null && mega.sampleSize > 0) {
+      lines.push(`${emoji.megaPig} ${emoji.wins}${mega.wins}/${mega.matches} (est.)`);
+    } else if (mega !== null) {
+      lines.push(`${emoji.megaPig} No stored Mega Pig data`);
+    }
+
+    const required = formatInteger(summary.club.requiredTrophies);
+    if (required !== null) lines.push(`${emoji.required} Req: ${required}`);
+
     const members = formatInteger(summary.memberCount);
-    const syncedAt = formatSyncTime(summary.latestSyncAt) ?? 'Not yet synced';
-    const lines = [`Total: ${formatInteger(summary.totalTrophies) ?? '—'}`];
-    if (average !== null) lines.push(`Average: ${average}`);
-    if (members !== null) lines.push(`Members: ${members} / ${CLUB_MEMBER_CAPACITY}`);
-    lines.push(`Last sync: ${syncedAt}`);
+    const memberLine = `${emoji.members}${members ?? '—'}/${CLUB_MEMBER_CAPACITY}`;
+    lines.push(active === null ? memberLine : `${memberLine} • ${emoji.online}${active} active 24h`);
+
+    const syncedAt = formatSyncTime(summary.latestSyncAt);
+    if (syncedAt !== null) lines.push(`${emoji.sync} Synced ${syncedAt}`);
 
     embed.addFields({
-      name: truncate(`${page.start + index}. ${escapeMarkdown(summary.club.name)} • ${displayTag(summary.club.tag)}`, 256),
+      name: truncate(
+        formatClubLink(summary.club.name, summary.club.tag, config?.clubProfileUrlTemplate),
+        256,
+      ),
       value: truncate(lines.join('\n'), 1024),
     });
   });
 
-  return embed;
+  return fitEmbedToDiscordLimits(embed);
 }
 
 export function paginateClubs(

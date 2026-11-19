@@ -27,7 +27,7 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       {
         name: 'clubs',
         usage: '/clubs',
-        description: 'Browse the registered clubs.',
+        description: 'BrawlTools-style overview of registered clubs from stored official data.',
       },
       {
         name: 'club-members',

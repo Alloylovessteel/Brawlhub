@@ -264,3 +264,63 @@ export function calculateMegaPigEstimate(input: {
     windowEnd: input.windowEnd,
   };
 }
+
+const RANKED_TIER_ORDER: Readonly<Record<string, number>> = {
+  BRONZE: 1,
+  SILVER: 2,
+  GOLD: 3,
+  DIAMOND: 4,
+  MYTHIC: 5,
+  LEGENDARY: 6,
+  MASTERS: 7,
+  PRO: 8,
+};
+
+const RANKED_DIVISION_ORDER: Readonly<Record<string, number>> = { I: 1, II: 2, III: 3 };
+
+function titleCase(value: string): string {
+  return value.charAt(0) + value.slice(1).toLowerCase();
+}
+
+interface ParsedRankedRank {
+  readonly label: string;
+  readonly order: number;
+}
+
+/** Parse an official `rankedRankName` such as `DIAMOND II` without inventing a rank. */
+export function parseRankedRank(value: string | null | undefined): ParsedRankedRank | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const normalized = value.trim().toUpperCase().replace(/\s+/g, ' ');
+  const match = /^([A-Z]+)(?:\s+(I|II|III))?$/.exec(normalized);
+  if (match === null) return null;
+
+  const tier = match[1] ?? '';
+  const division = match[2];
+  const tierOrder = RANKED_TIER_ORDER[tier];
+  if (tierOrder === undefined) return null;
+
+  const divisionOrder = division === undefined ? 9 : (RANKED_DIVISION_ORDER[division] ?? 9);
+  const tierLabel = titleCase(tier);
+  return {
+    label: division === undefined ? tierLabel : `${tierLabel} ${division}`,
+    order: tierOrder * 10 + divisionOrder,
+  };
+}
+
+/** Lowest and highest stored ranked ranks among roster players. */
+export function calculateRankedRange(
+  values: readonly (string | null | undefined)[],
+): { readonly low: string; readonly high: string } | null {
+  const parsed = values
+    .map((value) => parseRankedRank(value))
+    .filter((value): value is ParsedRankedRank => value !== null);
+  if (parsed.length === 0) return null;
+
+  let low = parsed[0]!;
+  let high = parsed[0]!;
+  for (const value of parsed.slice(1)) {
+    if (value.order < low.order) low = value;
+    if (value.order > high.order) high = value;
+  }
+  return { low: low.label, high: high.label };
+}

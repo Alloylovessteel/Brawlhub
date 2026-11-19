@@ -19,6 +19,12 @@ export interface BotEmojiConfig {
   readonly matches: string | undefined;
   readonly progression: string | undefined;
   readonly description: string | undefined;
+  /** Optional club-overview emojis; Unicode fallbacks are used when unset. */
+  readonly ranked: string | undefined;
+  readonly rank: string | undefined;
+  readonly megaPig: string | undefined;
+  readonly wins: string | undefined;
+  readonly online: string | undefined;
 }
 
 export interface BotConfig {
@@ -108,6 +114,11 @@ export function getBotConfig(): BotConfig {
       matches: readSnowflakeEnv('DISCORD_EMOJI_MATCHES'),
       progression: readSnowflakeEnv('DISCORD_EMOJI_PROGRESSION'),
       description: readSnowflakeEnv('DISCORD_EMOJI_DESCRIPTION'),
+      ranked: readSnowflakeEnv('DISCORD_EMOJI_RANKED'),
+      rank: readSnowflakeEnv('DISCORD_EMOJI_RANK'),
+      megaPig: readSnowflakeEnv('DISCORD_EMOJI_MEGAPIG'),
+      wins: readSnowflakeEnv('DISCORD_EMOJI_WINS'),
+      online: readSnowflakeEnv('DISCORD_EMOJI_ONLINE'),
     },
     playerProfileUrlTemplate: readProfileTemplateEnv('BRAWL_STARS_PROFILE_URL_TEMPLATE'),
     clubProfileUrlTemplate: readProfileTemplateEnv('BRAWL_STARS_CLUB_URL_TEMPLATE'),
