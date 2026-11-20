@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AutocompleteInteraction, ButtonInteraction, ChatInputCommandInteraction } from 'discord.js';
+import type {
+  AutocompleteInteraction,
+  ButtonInteraction,
+  ChatInputCommandInteraction,
+  StringSelectMenuInteraction,
+} from 'discord.js';
 
 const mocks = vi.hoisted(() => ({
   config: {
@@ -83,6 +88,28 @@ function buttonInteraction(customId: string) {
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
   } as unknown as ButtonInteraction;
+}
+
+function selectInteraction(
+  customId: string,
+  values: string[],
+  guildId: string | null = 'guild-1',
+) {
+  const interaction = {
+    customId,
+    guildId,
+    values,
+    isStringSelectMenu: vi.fn(() => true),
+    replied: false,
+    deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
+    reply: vi.fn(async () => undefined),
+    followUp: vi.fn(async () => undefined),
+  };
+  return interaction as unknown as StringSelectMenuInteraction;
 }
 
 function okView(overrides: Record<string, unknown> = {}) {
@@ -363,5 +390,34 @@ describe('/clubs command', () => {
 
     expect(interaction.deferUpdate).not.toHaveBeenCalled();
     expect(mocks.service.loadClubSummaries).not.toHaveBeenCalled();
+  });
+
+  it('shows details for every club selected in the overview menu', async () => {
+    mocks.service.loadClubView.mockResolvedValue(okView());
+    const interaction = selectInteraction('clubs:overview:guild-1', ['TAG1', 'TAG2']);
+
+    await handleClubsComponent(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect(mocks.service.loadClubView).toHaveBeenCalledTimes(2);
+    expect(mocks.service.loadClubView).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ tag: 'TAG1', guildId: 'guild-1' }),
+    );
+    expect(mocks.service.loadClubView).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ tag: 'TAG2', guildId: 'guild-1' }),
+    );
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(payload.embeds).toHaveLength(2);
+  });
+
+  it('ignores overview selections from another guild', async () => {
+    const interaction = selectInteraction('clubs:overview:guild-1', ['TAG1'], 'guild-2');
+
+    await handleClubsComponent(interaction);
+
+    expect(interaction.deferReply).not.toHaveBeenCalled();
+    expect(mocks.service.loadClubView).not.toHaveBeenCalled();
   });
 });

@@ -20,6 +20,8 @@ import { hasOverviewField, normalizeOverviewFields } from './fields';
 
 /** Discord limits an embed to 25 fields and a select menu to 25 options. */
 export const OVERVIEW_MAX_CLUBS = 25;
+/** Discord allows at most 10 embeds in one reply, so cap multi-club detail views. */
+export const OVERVIEW_MAX_SELECTIONS = 10;
 export const OVERVIEW_CUSTOM_ID_PREFIX = 'clubs:overview:';
 const EMBED_COLOR = 0x5865_f2;
 const CAVEAT =
@@ -287,7 +289,7 @@ export function buildViewTagsEmbed(input: ViewTagsEmbedInput): EmbedBuilder {
   return fitEmbedToDiscordLimits(embed);
 }
 
-/** The "Choose a Club" select menu attached below the overview embed. */
+/** The multi-select "Choose Clubs" menu attached below the overview embed. */
 export function buildClubOverviewSelect(
   summaries: readonly ClubSummary[],
   guildId: string,
@@ -296,15 +298,18 @@ export function buildClubOverviewSelect(
   const sorted = sortOverviewSummaries(summaries, fields);
   if (sorted.length === 0) return null;
 
+  const options = sorted.slice(0, OVERVIEW_MAX_CLUBS).map((summary) => ({
+    label: truncate(`${summary.club.name} (#${summary.club.tag})`, 100),
+    value: summary.club.tag,
+  }));
+  const maxValues = Math.min(OVERVIEW_MAX_SELECTIONS, options.length);
+
   const select = new StringSelectMenuBuilder()
     .setCustomId(buildClubOverviewCustomId(guildId))
-    .setPlaceholder('Choose a Club (1-25)')
-    .addOptions(
-      sorted.slice(0, OVERVIEW_MAX_CLUBS).map((summary) => ({
-        label: truncate(`${summary.club.name} (#${summary.club.tag})`, 100),
-        value: summary.club.tag,
-      })),
-    );
+    .setPlaceholder(maxValues === 1 ? 'Choose a Club' : `Choose 1-${maxValues} Clubs`)
+    .setMinValues(1)
+    .setMaxValues(maxValues)
+    .addOptions(options);
 
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select).toJSON();
 }

@@ -9,8 +9,8 @@ import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import { buildClubsPageEmbed, paginateClubs } from '../clubs/embed';
 import { loadClubSummaries } from '../clubs/service';
-import { parseClubOverviewCustomId } from '../clubs/overview/embed';
-import { buildClubDetailsReply } from './club';
+import { OVERVIEW_MAX_SELECTIONS, parseClubOverviewCustomId } from '../clubs/overview/embed';
+import { buildClubDetailsReply, type ClubDetailsReply } from './club';
 import { replyWithSafeError } from '../discord/errors';
 import {
   buildPaginationRow,
@@ -48,22 +48,34 @@ export async function handleClubs(interaction: ChatInputCommandInteraction): Pro
   }
 }
 
-/** Handle the "Choose a Club" select on the auto-posted overview message. */
+/** Handle the multi-club select on the auto-posted overview message. */
 async function handleOverviewSelect(
   interaction: StringSelectMenuInteraction,
   guildId: string,
 ): Promise<void> {
   // The custom ID carries the owning guild; never let a cross-guild message read another guild's data.
   if (interaction.guildId !== guildId) return;
-  const tag = interaction.values[0];
-  if (tag === undefined) return;
+  const tags = [...new Set(interaction.values)].slice(0, OVERVIEW_MAX_SELECTIONS);
+  if (tags.length === 0) return;
 
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const reply = await buildClubDetailsReply(tag, guildId, getBotConfig(), new Date());
+    const config = getBotConfig();
+    const now = new Date();
+    const replies: ClubDetailsReply[] = [];
+    for (const tag of tags) {
+      replies.push(await buildClubDetailsReply(tag, guildId, config, now));
+    }
+    const contents = [
+      ...new Set(
+        replies
+          .map((reply) => reply.content)
+          .filter((content): content is string => content !== undefined && content.length > 0),
+      ),
+    ];
     await interaction.editReply({
-      ...(reply.content === undefined ? {} : { content: reply.content }),
-      embeds: reply.embeds,
+      ...(contents.length === 0 ? {} : { content: contents.join('\n') }),
+      embeds: replies.flatMap((reply) => reply.embeds).slice(0, OVERVIEW_MAX_SELECTIONS),
       allowedMentions: { parse: [] },
     });
   } catch (error) {

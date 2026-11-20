@@ -3,6 +3,7 @@ import type { BotConfig } from '../../config';
 import type { ClubRecord, ClubSummary } from '../types';
 import {
   OVERVIEW_MAX_CLUBS,
+  OVERVIEW_MAX_SELECTIONS,
   buildClubOverviewCustomId,
   buildClubOverviewEmbed,
   buildClubOverviewSelect,
@@ -103,9 +104,27 @@ describe('club overview embed', () => {
 
     const select = buildClubOverviewSelect(summaries, GUILD_ID);
     expect(select?.components).toHaveLength(1);
-    const menu = select?.components[0] as { custom_id: string; options: unknown[] };
+    const menu = select?.components[0] as {
+      custom_id: string;
+      options: unknown[];
+      min_values: number;
+      max_values: number;
+      placeholder: string;
+    };
     expect(menu.custom_id).toBe(buildClubOverviewCustomId(GUILD_ID));
     expect(menu.options).toHaveLength(OVERVIEW_MAX_CLUBS);
+    expect(menu.min_values).toBe(1);
+    expect(menu.max_values).toBe(OVERVIEW_MAX_SELECTIONS);
+    expect(menu.placeholder).toBe(`Choose 1-${OVERVIEW_MAX_SELECTIONS} Clubs`);
+  });
+
+  it('lets members select several clubs when fewer than the cap are shown', () => {
+    const select = buildClubOverviewSelect([summary(1, 1000), summary(2, 2000)], GUILD_ID);
+    const menu = select?.components[0] as { min_values: number; max_values: number; placeholder: string };
+
+    expect(menu.min_values).toBe(1);
+    expect(menu.max_values).toBe(2);
+    expect(menu.placeholder).toBe('Choose 1-2 Clubs');
   });
 
   it('omits the select menu when there are no registered clubs', () => {
