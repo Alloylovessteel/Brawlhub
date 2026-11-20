@@ -68,6 +68,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         .select('id')
         .eq('id', parsedClubId)
         .eq('guild_id', parsed.data.guildId)
+        .is('archived_at', null)
         .maybeSingle();
       if (club.error !== null && club.error !== undefined) throw new Error(club.error.message);
       if (club.data === null) return redirectWith('error');

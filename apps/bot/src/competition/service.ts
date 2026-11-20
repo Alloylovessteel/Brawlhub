@@ -94,7 +94,11 @@ export interface CompetitionServiceOptions {
 
 async function readGuildClubIds(guildId: string | null | undefined, db: DatabaseClient): Promise<string[] | null> {
   if (guildId === undefined || guildId === null || guildId.trim() === '') return null;
-  const { data, error } = await db.from('clubs').select('id').eq('guild_id', guildId.trim());
+  const { data, error } = await db
+    .from('clubs')
+    .select('id')
+    .eq('guild_id', guildId.trim())
+    .is('archived_at', null);
   requireOk(error, 'Read guild clubs');
   return (data ?? [])
     .map((row: unknown) => asString(record(row)?.['id']))

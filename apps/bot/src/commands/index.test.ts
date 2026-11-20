@@ -68,6 +68,7 @@ describe('command registry', () => {
       'club-log',
       'club-history',
       'club-compare',
+      'view',
       'events',
       'me',
       'player-history',
@@ -77,6 +78,15 @@ describe('command registry', () => {
       'competition',
       'members',
       'member-verify',
+      'accounts',
+      'verify-info',
+      'verify-settings',
+      'tag',
+      'register-list',
+      'find',
+      'unverify-one',
+      'unverify-all',
+      'delete-me',
       'member-history',
       'member-search',
       'staff',
@@ -113,9 +123,12 @@ describe('command registry', () => {
         'function',
       );
     }
-    for (const name of ['settings', 'remove-club']) {
+    for (const name of ['settings', 'remove-club', 'view']) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
+    expect(commands.find((command) => command.data.name === 'club')?.handleComponent).toBeTypeOf(
+      'function',
+    );
   });
 
   it('keeps schema-dependent moderation commands unregistered', () => {
@@ -126,13 +139,13 @@ describe('command registry', () => {
     expect(blacklist?.handleComponent).toBeTypeOf('function');
   });
 
-  it('registers club removal as a safe, non-destructive command', () => {
+  it('registers club archival as a confirmed, non-destructive command', () => {
     expect(commands.map((command) => command.data.name)).toContain('remove-club');
     expect(pendingCommands.map((command) => command.data.name)).not.toContain('remove-club');
     const removeClub = commands.find((command) => command.data.name === 'remove-club');
     expect(removeClub).toBeDefined();
     expect(removeClub?.autocomplete).toBeTypeOf('function');
-    expect(removeClub?.handleComponent).toBeUndefined();
+    expect(removeClub?.handleComponent).toBeTypeOf('function');
   });
 
   it('registers all player commands with their handlers', () => {

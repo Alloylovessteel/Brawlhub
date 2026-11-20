@@ -98,9 +98,17 @@ export function buildSyncStatusEmbed(view: SyncStatusView): EmbedBuilder {
   if (run !== null && run.clubTags.length > 0) {
     embed.addFields({ name: 'Club tags', value: text(run.clubTags.map((tag) => `#${tag}`).join(', ')) });
   }
-  const error = run === null ? null : (run.error ?? run.lastError);
+  const error = run?.error ?? null;
   if (error !== null) {
     embed.addFields({ name: 'Error', value: text(error) });
+  } else if (run !== null && run.lastError !== null) {
+    // `last_error` is retained across retries by design (migration 0004). Only
+    // present it as the active error when the run actually failed, otherwise
+    // label it so an in-progress sync isn't shown as broken.
+    embed.addFields({
+      name: run.status === 'failed' ? 'Error' : 'Previous error',
+      value: text(run.lastError),
+    });
   }
   return embed;
 }
@@ -133,6 +141,11 @@ export function buildSettingsViewEmbed(
       {
         name: 'Announcement channel',
         value: settings.announcementChannelId === null ? 'Not configured' : `<#${settings.announcementChannelId}>`,
+        inline: INLINE,
+      },
+      {
+        name: 'Overview channel',
+        value: settings.overviewChannelId === null ? 'Not configured' : `<#${settings.overviewChannelId}>`,
         inline: INLINE,
       },
       {
@@ -223,6 +236,25 @@ export function buildAuditPageEmbed(view: AuditLogView, page: Page<AuditLogEntry
   return embed;
 }
 
+export function buildClubArchivePreviewEmbed(clubName: string, clubTag: string): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(0xfaa_61a)
+    .setTitle('Archive club?')
+    .setDescription(
+      `${clubName} (#${clubTag}) will be hidden from this server’s commands and overview. ` +
+        'Snapshots, memberships, roles and history are kept; this does not delete data. ' +
+        'The tag can be registered again later.',
+    );
+}
+
+export function buildClubArchivedEmbed(clubName: string, clubTag: string): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(0x57f2_87)
+    .setTitle('Club archived')
+    .setDescription(`${clubName} (#${clubTag}) is no longer active in this server.`);
+}
+
+/** @deprecated Kept for compatibility; archival is now available. */
 export function buildClubRemovalUnavailableEmbed(): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(0xfaa_61a)

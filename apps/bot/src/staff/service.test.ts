@@ -50,7 +50,7 @@ function createFakeDb(tables: Tables) {
       queries.push({ table, select: state.select, filters: { ...state.filters } });
       let rows = [...(tables[table] ?? [])];
       for (const [field, value] of Object.entries(state.filters)) {
-        rows = rows.filter((row) => row[field] === value);
+        rows = rows.filter((row) => (row[field] ?? null) === value);
       }
       return { data: state.maybeSingle ? (rows[0] ?? null) : rows, error: null };
     }
@@ -61,6 +61,10 @@ function createFakeDb(tables: Tables) {
         return builder;
       },
       eq: (field: string, value: unknown) => {
+        state.filters[field] = value;
+        return builder;
+      },
+      is: (field: string, value: unknown) => {
         state.filters[field] = value;
         return builder;
       },

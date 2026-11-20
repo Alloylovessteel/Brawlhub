@@ -152,6 +152,7 @@ export async function getClubs(input: {
       'id, guild_id, tag, name, description, badge_id, trophies, required_trophies, member_count, last_synced_at, created_at, updated_at',
       { count: 'exact' },
     )
+    .is('archived_at', null)
     .order('trophies', { ascending: false, nullsFirst: false });
   if (input.clubIds !== undefined) query = query.in('id', [...input.clubIds]);
 
@@ -184,6 +185,7 @@ export async function getClubById(
       'id, guild_id, tag, name, description, badge_id, trophies, required_trophies, member_count, last_synced_at, created_at, updated_at',
     )
     .eq('id', validId)
+    .is('archived_at', null)
     .maybeSingle();
   return {
     rows: data === null ? [] : [data as ClubRow],

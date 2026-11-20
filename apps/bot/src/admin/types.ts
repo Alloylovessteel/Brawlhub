@@ -14,6 +14,10 @@ export interface GuildSettingsView {
   readonly primaryClubName: string | null;
   readonly announcementChannelId: string | null;
   readonly verifiedRoleId: string | null;
+  /** Channel that receives the auto-updating club overview message. */
+  readonly overviewChannelId: string | null;
+  /** Internal: Discord message ID of the posted overview (not user-settable). */
+  readonly overviewMessageId: string | null;
   readonly updatedAt: string | null;
 }
 
@@ -27,7 +31,8 @@ export interface GuildRoleMappingView {
 export type GuildSettingsField =
   | 'primaryClubId'
   | 'announcementChannelId'
-  | 'verifiedRoleId';
+  | 'verifiedRoleId'
+  | 'overviewChannelId';
 
 export interface GuildSettingsUpdate {
   readonly actor: AdminActor;

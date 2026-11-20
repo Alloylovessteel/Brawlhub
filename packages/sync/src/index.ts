@@ -4,6 +4,7 @@ export {
   guildSyncScope,
   isUniqueViolation,
   payloadHash,
+  recoverInterruptedSyncs,
   runSync,
   runSyncForAllGuilds,
   sanitizeError,
@@ -12,6 +13,7 @@ export {
   withTimeout,
 } from './sync';
 export type {
+  SyncRecoveryResult,
   RunSyncOptions,
   SyncNotificationInput,
   SyncNotifier,

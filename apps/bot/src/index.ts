@@ -5,10 +5,12 @@ import { createLogger } from '@brawlhub/logging';
 import { Client, type Interaction } from 'discord.js';
 import { handleInteraction, registerCommands } from './commands/index.js';
 import { createDiscordNotifier } from './notifier.js';
+import { recoverInterruptedSyncs } from '@brawlhub/sync';
 import { runManagedSync } from './sync/guard.js';
 import { registerDiscordAuthorizationEvents } from './discord/events.js';
 import { getGatewayIntents } from './discord/intents.js';
 import { markDiscordDisconnected, markDiscordReady } from './status/runtime.js';
+import { startClubOverviewSchedule } from './clubs/overview/service.js';
 
 const logger = createLogger('bot');
 
@@ -39,6 +41,7 @@ const INITIAL_SYNC_DELAY_MS = 5_000;
 
 let initialSyncTimer: ReturnType<typeof setTimeout> | undefined;
 let syncTimer: ReturnType<typeof setInterval> | undefined;
+let stopOverviewSchedule: (() => void) | undefined;
 
 /** Run scheduled sync for all guilds, skipping if a previous batch is running. */
 async function executeSync(): Promise<void> {
@@ -79,6 +82,21 @@ async function executeSync(): Promise<void> {
     }
   } catch (error: unknown) {
     logger.error('Scheduled sync failed', { error: safeError(error, token) });
+  }
+}
+
+/** Release sync claims abandoned by a previous process before scheduling work. */
+async function recoverSyncState(): Promise<void> {
+  try {
+    const outcome = await recoverInterruptedSyncs();
+    if (outcome.recoveredRuns > 0) {
+      logger.warn('Recovered sync runs interrupted by a previous process', {
+        runs: outcome.recoveredRuns,
+        scopes: outcome.clearedScopes.join(', '),
+      });
+    }
+  } catch (error: unknown) {
+    logger.warn('Could not recover interrupted sync runs', { error: safeError(error, token) });
   }
 }
 
@@ -148,18 +166,28 @@ client.on('shardDisconnect', () => markDiscordDisconnected());
 client.on('shardReconnecting', () => markDiscordDisconnected());
 client.on('shardResume', () => markDiscordReady());
 
-client.once('clientReady', () => {
+client.once('clientReady', async () => {
   markDiscordReady();
   logger.info(`Logged in as ${client.user?.tag ?? 'unknown'}`);
   registerCommands().catch((error: unknown) => {
     logger.error('Unexpected error while registering commands', { error: safeError(error, token) });
   });
+  await recoverSyncState();
   startSyncSchedule();
+  stopOverviewSchedule = startClubOverviewSchedule(async (guildId) => {
+    try {
+      const guild = await client.guilds.fetch(guildId);
+      return guild.name;
+    } catch {
+      return null;
+    }
+  });
 });
 
 process.on('SIGINT', () => {
   logger.info('SIGINT received, shutting down');
   stopSyncSchedule();
+  stopOverviewSchedule?.();
   client.destroy();
   process.exit(0);
 });
@@ -167,6 +195,7 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down');
   stopSyncSchedule();
+  stopOverviewSchedule?.();
   client.destroy();
   process.exit(0);
 });

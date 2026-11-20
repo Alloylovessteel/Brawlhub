@@ -15,7 +15,9 @@ vi.mock('@brawlhub/database', () => ({
         select: () => ({
           eq: () => ({
             eq: () => ({
-              maybeSingle: async () => ({ data: fake.existing, error: null }),
+              is: () => ({
+                maybeSingle: async () => ({ data: fake.existing, error: null }),
+              }),
             }),
           }),
         }),

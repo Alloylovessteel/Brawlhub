@@ -147,7 +147,7 @@ function compareMembers(first: StaffMember, second: StaffMember): number {
 export async function listStaff(options: StaffServiceOptions = {}): Promise<StaffListView> {
   const db = options.db ?? createTrustedClient();
   const guildId = options.guildId?.trim() || null;
-  let clubQuery = db.from('clubs').select('id, tag, name, guild_id');
+  let clubQuery = db.from('clubs').select('id, tag, name, guild_id').is('archived_at', null);
   if (guildId !== null) {
     clubQuery = clubQuery.eq('guild_id', guildId);
   }

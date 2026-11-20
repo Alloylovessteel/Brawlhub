@@ -3,26 +3,34 @@ import { paginate } from '../discord/pagination';
 import {
   buildClubsPageEmbed,
   buildClubEmbed,
+  buildClubMemberDetailsPageEmbed,
   buildClubMembersPageEmbed,
+  buildClubPreviousMembersEmbed,
+  buildClubStaffEmbed,
   buildCompareEmbed,
   buildHistoryPageEmbed,
   buildLeaderboardPageEmbed,
   CLUB_MEMBER_CAPACITY,
+  clubEmojis,
   formatAbsoluteTime,
 } from './embed';
 import type { BotConfig } from '../config';
 import type {
   ClubRecord,
   ClubSummary,
+  ClubMemberDetailView,
+  ClubPreviousMembersView,
   ClubView,
   ComparisonSide,
   ComparisonView,
+  DetailedMember,
   HistoryPoint,
   HistoryView,
   LeaderboardEntry,
   LeaderboardView,
   MemberDetail,
   MemberView,
+  PreviousMember,
   SyncedClubView,
   TrophyProgression,
 } from './types';
@@ -42,6 +50,10 @@ const CONFIG: Pick<
     description: undefined,
     ranked: undefined,
     rank: undefined,
+    rankMythic: undefined,
+    rankLegendary: undefined,
+    rankMasters: undefined,
+    rankPro: undefined,
     megaPig: undefined,
     wins: undefined,
     online: undefined,
@@ -197,6 +209,27 @@ function detail(
   return { tag, name, trophies, role, playerId, highestTrophies };
 }
 
+function detailedMember(
+  tag: string,
+  name: string,
+  trophies: number | null,
+  overrides: Partial<DetailedMember> = {},
+): DetailedMember {
+  return {
+    ...detail(tag, name, trophies),
+    lastBattleAt: null,
+    rankedRankName: null,
+    highestAllTimeRankedRankName: null,
+    soloVictories: null,
+    duoVictories: null,
+    threeVsThreeVictories: null,
+    joinedAt: null,
+    verified: false,
+    progression: null,
+    ...overrides,
+  };
+}
+
 function leaderEntry(
   tag: string,
   name: string,
@@ -237,6 +270,25 @@ function comparisonSide(
 }
 
 describe('club embeds', () => {
+  it('uses tier-specific rank emojis with a generic fallback', () => {
+    const emoji = clubEmojis({
+      emojis: {
+        ...CONFIG.emojis,
+        rank: '1490653362188718170',
+        rankMythic: '1490653209562185873',
+        rankLegendary: '1490653268391628840',
+        rankMasters: '1490653316269477939',
+        rankPro: '1490653362188718170',
+      },
+    });
+
+    expect(emoji.rankFor('Mythic II')).toBe('<:mythic:1490653209562185873>');
+    expect(emoji.rankFor('LEGENDARY I')).toBe('<:legendary:1490653268391628840>');
+    expect(emoji.rankFor('masters')).toBe('<:masters:1490653316269477939>');
+    expect(emoji.rankFor('Pro')).toBe('<:pro:1490653362188718170>');
+    expect(emoji.rankFor('Silver I')).toBe('<:rank:1490653362188718170>');
+  });
+
   it('renders supported sections in the required order', () => {
     const json = buildClubEmbed(view(), CONFIG, NOW).toJSON();
     const names = (json.fields ?? []).map((field) => field.name);
@@ -333,7 +385,7 @@ describe('club embeds', () => {
     const value = json.fields?.[0]?.value ?? '';
 
     expect(json.fields).toHaveLength(5);
-    expect(json.fields?.[0]?.name).toBe('Club 6');
+    expect(json.fields?.[0]?.name).toBe('Club 6 • #TAG6');
     expect(value).toContain('👑 [Leader 6](https://brawlify.com/player/L6)');
     expect(value).toContain('🏆1,006');
     expect(value).toContain('📈90k-120k');
@@ -544,5 +596,73 @@ describe('club embeds', () => {
       expect(field.value.length).toBeLessThanOrEqual(1024);
     }
     expect(JSON.stringify(json).length).toBeLessThanOrEqual(6000);
+  });
+
+  it('renders club staff from the stored roster', () => {
+    const roster = [
+      detail('G2P9', 'Leader', 900, 'president'),
+      detail('Q8VR', 'Senior', 700, 'senior'),
+    ];
+    const json = buildClubStaffEmbed(synced({ roster }), CONFIG).toJSON();
+
+    expect(json.title).toContain('Staff');
+    expect(json.description).toContain('latest stored official roster');
+    expect(json.fields?.[0]?.value).toContain('President: [Leader]');
+    expect(json.fields?.[0]?.value).toContain('Seniors: [Senior]');
+    expect(json.footer?.text).toContain('Snapshot');
+  });
+
+  it('shows stored member details with sort, filter and verification context', () => {
+    const members = [
+      detailedMember('G2P9', 'Leader', 1000, {
+        rankedRankName: 'Mythic II',
+        highestAllTimeRankedRankName: 'Legendary I',
+        soloVictories: 42,
+        verified: true,
+        joinedAt: '2026-11-10T00:00:00.000Z',
+        progression: { today: 100, week: 200, season: null },
+      }),
+    ];
+    const memberView: ClubMemberDetailView = {
+      ...synced(),
+      members,
+      sort: 'trophies',
+      filter: 'ranked',
+      search: 'lead',
+    };
+    const json = buildClubMemberDetailsPageEmbed(memberView, paginate(members, 1, 10), CONFIG).toJSON();
+    const value = json.fields?.[0]?.value ?? '';
+
+    expect(json.title).toContain('Member Details');
+    expect(json.description).toContain('1 matching member');
+    expect(json.description).toContain('Search: lead');
+    expect(json.footer?.text).toContain('Sorted by Current trophies');
+    expect(json.footer?.text).toContain('Filter: Ranked');
+    expect(value).toContain('Ranked:');
+    expect(value).toContain('All-time:');
+    expect(value).toContain('Solo wins: 42');
+    expect(value).toContain('Verified account');
+    expect(value).toContain('Push Today: +100');
+    expect(JSON.stringify(json).length).toBeLessThanOrEqual(6000);
+  });
+
+  it('labels previous members and warns that trophies are not historical', () => {
+    const previous: PreviousMember[] = [
+      {
+        playerId: 'p1',
+        tag: 'G2P9',
+        name: 'Leader',
+        trophies: 1050,
+        role: 'member',
+        leftAt: '2026-11-16T00:00:00.000Z',
+      },
+    ];
+    const json = buildClubPreviousMembersEmbed({ ...synced(), previous }, CONFIG).toJSON();
+
+    expect(json.title).toContain('Previous Members');
+    expect(json.footer?.text).toContain('not trophies at the time of leaving');
+    expect(json.fields?.[0]?.name).toContain('https://brawlify.com/player/G2P9');
+    expect(json.fields?.[0]?.value).toContain('Trophies: 1,050');
+    expect(json.fields?.[0]?.value).toContain('Left:');
   });
 });

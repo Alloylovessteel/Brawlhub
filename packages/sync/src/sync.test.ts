@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrawlStarsClient, Club, ClubMember } from '@brawlhub/brawl-stars';
-import { registerClubs, runSync } from './index';
+import { recoverInterruptedSyncs, registerClubs, runSync } from './index';
 
 type Call = {
   table: string;
@@ -604,5 +604,52 @@ describe('runSync', () => {
     expect(second.snapshotsWritten).toBeGreaterThan(0);
     expect(callsFor('player_snapshots', 'upsert')).toHaveLength(2);
     expect(state.playerHash).toBeDefined();
+  });
+});
+
+describe('recoverInterruptedSyncs', () => {
+  it('fails abandoned runs and clears their lock scopes', async () => {
+    setHandlers({
+      'sync_runs:select': () => ({
+        data: [
+          { id: 'run-1', scope: 'guild:guild-1' },
+          { id: 'run-2', scope: 'guild:guild-1' },
+        ],
+      }),
+      'sync_runs:update': () => ({ data: [] }),
+      'sync_locks:update': () => ({ data: [] }),
+    });
+
+    const outcome = await recoverInterruptedSyncs(
+      undefined as never,
+      '2026-11-20T03:40:00.000Z',
+    );
+
+    expect(outcome).toEqual({
+      recoveredRuns: 2,
+      clearedScopes: ['guild:guild-1'],
+    });
+    const runUpdates = callsFor('sync_runs', 'update');
+    expect(runUpdates).toHaveLength(1);
+    expect(runUpdates[0]?.payload).toMatchObject({
+      status: 'failed',
+      finished_at: '2026-11-20T03:40:00.000Z',
+    });
+    const lockUpdates = callsFor('sync_locks', 'update');
+    expect(lockUpdates).toHaveLength(1);
+    expect(lockUpdates[0]?.payload).toEqual({
+      locked_by: null,
+      locked_at: null,
+      locked_until: null,
+    });
+  });
+
+  it('does nothing when no runs are interrupted', async () => {
+    setHandlers({ 'sync_runs:select': () => ({ data: [] }) });
+
+    const outcome = await recoverInterruptedSyncs(undefined as never);
+
+    expect(outcome).toEqual({ recoveredRuns: 0, clearedScopes: [] });
+    expect(callsFor('sync_locks', 'update')).toHaveLength(0);
   });
 });

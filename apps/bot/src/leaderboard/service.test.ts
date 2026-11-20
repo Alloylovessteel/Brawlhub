@@ -40,7 +40,7 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
       }
       let result = [...(tables[table] ?? [])];
       for (const [field, value] of Object.entries(state.filters)) {
-        result = result.filter((row) => row[field] === value);
+        result = result.filter((row) => (row[field] ?? null) === value);
       }
       if (state.limit !== null) result = result.slice(0, state.limit);
       return {
@@ -52,6 +52,10 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
     const builder = {
       select: () => builder,
       eq: (field: string, value: unknown) => {
+        state.filters[field] = value;
+        return builder;
+      },
+      is: (field: string, value: unknown) => {
         state.filters[field] = value;
         return builder;
       },

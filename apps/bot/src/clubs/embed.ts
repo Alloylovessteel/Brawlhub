@@ -13,10 +13,15 @@ import { calculateAverage, calculateTrophyProgression, calculateTrophyRange, cou
 import type {
   ClubLogPeriod,
   ClubLogView,
+  ClubMemberDetailView,
+  ClubPreviousMembersView,
   ClubSummary,
   ClubView,
+  ClubMemberFilter,
+  ClubMemberSort,
   ComparisonSide,
   ComparisonView,
+  DetailedMember,
   HistoryPeriod,
   HistoryPoint,
   HistoryView,
@@ -24,6 +29,7 @@ import type {
   MemberDetail,
   MemberView,
   RosterMember,
+  SyncedClubView,
   TrophyProgression,
 } from './types';
 
@@ -50,6 +56,26 @@ const CLUB_LOG_PERIOD_LABELS: Readonly<Record<ClubLogPeriod, string>> = {
   today: 'Today',
   week: 'This Week',
   season: 'This Season',
+};
+
+const CLUB_MEMBER_SORT_LABELS: Readonly<Record<ClubMemberSort, string>> = {
+  trophies: 'Current trophies',
+  highest: 'Highest trophies',
+  'last-match': 'Last match',
+  joined: 'Joined club',
+  name: 'Name',
+};
+
+const CLUB_MEMBER_FILTER_LABELS: Readonly<Record<ClubMemberFilter, string>> = {
+  ranked: 'Ranked',
+  'ranked-all-time': 'Ranked all-time',
+  'daily-push': 'Daily push',
+  'weekly-push': 'Weekly push',
+  'season-push': 'Season push',
+  'joined-club': 'Joined club',
+  'solo-wins': 'Solo wins',
+  'duo-wins': 'Duo wins',
+  'three-vs-three': '3vs3',
 };
 
 type EmbedConfig = Pick<
@@ -99,7 +125,7 @@ export function fitEmbedToDiscordLimits(embed: EmbedBuilder): EmbedBuilder {
   return embed;
 }
 
-function displayTag(tag: string): string {
+export function displayTag(tag: string): string {
   return `#${cleanTag(tag)}`;
 }
 
@@ -108,7 +134,7 @@ function compactDecimal(value: number): string {
 }
 
 /** BrawlTools-style compact trophy amounts, e.g. 110.5k. */
-function formatCompact(value: number | null): string | null {
+export function formatCompact(value: number | null): string | null {
   if (value === null || !Number.isFinite(value)) return null;
   const absolute = Math.abs(value);
   if (absolute >= 1_000_000) return `${compactDecimal(value / 1_000_000)}m`;
@@ -116,13 +142,26 @@ function formatCompact(value: number | null): string | null {
   return formatInteger(value);
 }
 
-function clubEmojis(config: { readonly emojis: Partial<BotEmojiConfig> }) {
+export function clubEmojis(config: { readonly emojis: Partial<BotEmojiConfig> }) {
+  const genericRank = formatEmoji(config.emojis.rank, 'rank') || '🔹';
+  const tierEmojis: Readonly<Record<string, string>> = {
+    MYTHIC: formatEmoji(config.emojis.rankMythic, 'mythic'),
+    LEGENDARY: formatEmoji(config.emojis.rankLegendary, 'legendary'),
+    MASTERS: formatEmoji(config.emojis.rankMasters, 'masters'),
+    PRO: formatEmoji(config.emojis.rankPro, 'pro'),
+  };
+
   return {
     crown: formatEmoji(config.emojis.president, 'president') || '👑',
     trophies: formatEmoji(config.emojis.trophies, 'trophies') || '🏆',
     trophyRange: formatEmoji(config.emojis.trophyRange, 'trophy_range') || '📈',
     ranked: formatEmoji(config.emojis.ranked, 'ranked') || '🎖️',
-    rank: formatEmoji(config.emojis.rank, 'rank') || '🔹',
+    rank: genericRank,
+    /** Return the tier emoji for a rank label such as "Mythic II", else the generic rank emoji. */
+    rankFor(label: string): string {
+      const tier = label.trim().toUpperCase().split(/\s+/)[0] ?? '';
+      return tierEmojis[tier] || genericRank;
+    },
     megaPig: formatEmoji(config.emojis.megaPig, 'mega_pig') || '🐷',
     wins: formatEmoji(config.emojis.wins, 'wins') || '✅',
     required: formatEmoji(config.emojis.requiredTrophies, 'required_trophies') || '🔒',
@@ -413,8 +452,8 @@ export function buildClubsPageEmbed(
     if (rankedRange !== null) {
       const ranks =
         rankedRange.low === rankedRange.high
-          ? `${emoji.rank}${rankedRange.low}`
-          : `${emoji.rank}${rankedRange.low} - ${emoji.rank}${rankedRange.high}`;
+          ? `${emoji.rankFor(rankedRange.low)}${rankedRange.low}`
+          : `${emoji.rankFor(rankedRange.low)}${rankedRange.low} - ${emoji.rankFor(rankedRange.high)}${rankedRange.high}`;
       lines.push(`${emoji.ranked} ${ranks}`);
     }
 
@@ -436,7 +475,7 @@ export function buildClubsPageEmbed(
 
     embed.addFields({
       name: truncate(
-        formatClubLink(summary.club.name, summary.club.tag, config?.clubProfileUrlTemplate),
+        `${formatClubLink(summary.club.name, summary.club.tag, config?.clubProfileUrlTemplate)} • ${displayTag(summary.club.tag)}`,
         256,
       ),
       value: truncate(lines.join('\n'), 1024),
@@ -524,6 +563,174 @@ export function buildClubMembersPageEmbed(
 
     embed.addFields({
       name: truncate(`${page.start + index}. ${memberName(member, config)}`, 256),
+      value: truncate(lines.join('\n'), 1024),
+    });
+  });
+
+  return fitEmbedToDiscordLimits(embed);
+}
+
+/** BrawlTools-style staff breakdown from the latest stored roster. */
+export function buildClubStaffEmbed(view: SyncedClubView, config: EmbedConfig): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(
+      truncate(`${escapeMarkdown(view.club.name)} • ${displayTag(view.club.tag)} — Staff`, 256),
+    )
+    .setDescription('Club leadership from the latest stored official roster.');
+
+  const lines = staffLines(view.roster, config);
+  embed.addFields({
+    name: 'Staff',
+    value: truncate(
+      lines.length === 0 ? 'No staff roles are stored for this club.' : lines.join('\n'),
+      1024,
+    ),
+  });
+
+  const sync = formatSyncTime(view.latestSnapshot?.capturedAt ?? view.latestSyncAt);
+  embed.setFooter({
+    text: truncate(
+      `Stored official roster data${sync === null ? '' : ` • Snapshot ${sync}`}`,
+      2048,
+    ),
+  });
+
+  return fitEmbedToDiscordLimits(embed);
+}
+
+/** Build a sorted, filterable member-details page from stored data only. */
+export function buildClubMemberDetailsPageEmbed(
+  view: ClubMemberDetailView,
+  page: Page<DetailedMember>,
+  config: EmbedConfig,
+): EmbedBuilder {
+  const emoji = clubEmojis(config);
+  const footer = [
+    pageFooter(page, 'Member details'),
+    `Sorted by ${CLUB_MEMBER_SORT_LABELS[view.sort]}`,
+    view.filter === null ? null : `Filter: ${CLUB_MEMBER_FILTER_LABELS[view.filter]}`,
+  ].filter((line): line is string => line !== null);
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(
+      truncate(
+        `${escapeMarkdown(view.club.name)} • ${displayTag(view.club.tag)} — Member Details`,
+        256,
+      ),
+    )
+    .setFooter({ text: truncate(footer.join(' • '), 2048) });
+
+  const sync = formatSyncTime(view.latestSnapshot?.capturedAt ?? view.latestSyncAt);
+  embed.setDescription(
+    truncate(
+      [
+        `${view.members.length} matching member${view.members.length === 1 ? '' : 's'}`,
+        view.search === null ? null : `Search: ${view.search}`,
+        sync === null ? null : `Snapshot ${sync}`,
+      ]
+        .filter((line): line is string => line !== null)
+        .join(' • '),
+      2048,
+    ),
+  );
+
+  if (page.items.length === 0) {
+    embed.addFields({
+      name: 'Member details',
+      value:
+        view.members.length === 0
+          ? 'No stored members match this filter.'
+          : 'No members on this page.',
+    });
+    return fitEmbedToDiscordLimits(embed);
+  }
+
+  page.items.forEach((member, index) => {
+    const lines = [
+      `Tag: ${displayTag(member.tag)}`,
+      `Trophies: ${formatInteger(member.trophies) ?? '—'} • Highest: ${formatInteger(member.highestTrophies) ?? '—'}`,
+    ];
+    const role = member.role === null ? undefined : ROLE_LABELS[member.role];
+    if (role !== undefined) lines.push(`Role: ${role}`);
+    if (member.rankedRankName !== null) {
+      lines.push(`Ranked: ${emoji.rankFor(member.rankedRankName)} ${member.rankedRankName}`);
+    }
+    if (member.highestAllTimeRankedRankName !== null) {
+      lines.push(
+        `All-time: ${emoji.rankFor(member.highestAllTimeRankedRankName)} ${member.highestAllTimeRankedRankName}`,
+      );
+    }
+    if (member.soloVictories !== null) lines.push(`Solo wins: ${formatInteger(member.soloVictories)}`);
+    if (member.duoVictories !== null) lines.push(`Duo wins: ${formatInteger(member.duoVictories)}`);
+    if (member.threeVsThreeVictories !== null) {
+      lines.push(`3vs3 wins: ${formatInteger(member.threeVsThreeVictories)}`);
+    }
+    if (member.joinedAt !== null) {
+      lines.push(`Joined: ${formatSyncTime(member.joinedAt)}`);
+    }
+    if (member.lastBattleAt !== null) {
+      lines.push(`Last match: ${formatSyncTime(member.lastBattleAt)}`);
+    }
+    if (member.verified) lines.push('Verified account');
+    lines.push(...formatProgressionLines(member.progression, 'Push '));
+
+    embed.addFields({
+      name: truncate(`${page.start + index}. ${memberName(member, config)}`, 256),
+      value: truncate(lines.join('\n'), 1024),
+    });
+  });
+
+  return fitEmbedToDiscordLimits(embed);
+}
+
+/** Build the previous-member view from closed, guild-scoped memberships. */
+export function buildClubPreviousMembersEmbed(
+  view: ClubPreviousMembersView,
+  config: EmbedConfig,
+): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(
+      truncate(
+        `${escapeMarkdown(view.club.name)} • ${displayTag(view.club.tag)} — Previous Members`,
+        256,
+      ),
+    )
+    .setDescription(
+      truncate(
+        `Up to ${view.previous.length} most recently recorded departures from stored membership history.`,
+        2048,
+      ),
+    )
+    .setFooter({
+      text: truncate(
+        'Trophies are current stored values, not trophies at the time of leaving.',
+        2048,
+      ),
+    });
+
+  if (view.previous.length === 0) {
+    embed.addFields({
+      name: 'Previous members',
+      value: 'No closed memberships are stored for this club.',
+    });
+    return fitEmbedToDiscordLimits(embed);
+  }
+
+  view.previous.forEach((member, index) => {
+    const lines = [`Tag: ${displayTag(member.tag)}`];
+    if (member.trophies !== null) lines.push(`Trophies: ${formatInteger(member.trophies)}`);
+    if (member.role !== null) lines.push(`Role: ${ROLE_LABELS[member.role] ?? member.role}`);
+    if (member.leftAt !== null) {
+      lines.push(`Left: ${formatSyncTime(member.leftAt)}`);
+    }
+    const name = member.name === '' ? `#${cleanTag(member.tag)}` : member.name;
+    embed.addFields({
+      name: truncate(
+        `${index + 1}. ${formatPlayerLink(name, member.tag, config.playerProfileUrlTemplate)}`,
+        256,
+      ),
       value: truncate(lines.join('\n'), 1024),
     });
   });

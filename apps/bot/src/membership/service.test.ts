@@ -40,7 +40,7 @@ function createFakeDb(initialTables: Tables) {
     async function execute(): Promise<{ data: unknown; error: { message: string } | null }> {
       let rows = [...(tables[table] ?? [])];
       for (const [field, value] of Object.entries(state.filters)) {
-        rows = rows.filter((row) => row[field] === value);
+        rows = rows.filter((row) => (row[field] ?? null) === value);
       }
       for (const filter of state.inFilters) {
         rows = rows.filter((row) => filter.values.includes(row[filter.field]));
@@ -66,6 +66,10 @@ function createFakeDb(initialTables: Tables) {
     const builder = {
       select: () => builder,
       eq: (field: string, value: unknown) => {
+        state.filters[field] = value;
+        return builder;
+      },
+      is: (field: string, value: unknown) => {
         state.filters[field] = value;
         return builder;
       },

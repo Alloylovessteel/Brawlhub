@@ -73,6 +73,7 @@ export async function POST(
       .from('clubs')
       .select('guild_id')
       .eq('id', parsedClubId.data)
+      .is('archived_at', null)
       .maybeSingle();
     if (club.error !== null && club.error !== undefined) {
       throw new Error(club.error.message);

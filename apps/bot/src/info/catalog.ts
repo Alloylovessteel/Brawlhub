@@ -21,8 +21,9 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     entries: [
       {
         name: 'club',
-        usage: '/club tag:<club-tag>',
-        description: 'Show detailed club information with live data when available.',
+        usage: '/club tag:<club-tag> section:Member Details sort:Current trophies',
+        description:
+          'Show club info, staff, sorted/filtered member details and previous members from stored official data.',
       },
       {
         name: 'clubs',
@@ -55,6 +56,12 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         usage: '/club-compare first:<club-tag> second:<club-tag>',
         description: 'Compare two registered clubs using stored data.',
       },
+      {
+        name: 'view',
+        usage: '/view tag add|remove|list',
+        description: 'Choose which registered clubs appear in this server’s auto-updated overview.',
+        permission: 'clubs:write',
+      },
     ],
   },
   {
@@ -62,8 +69,8 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     entries: [
       {
         name: 'me',
-        usage: '/me tag:PLAYERTAG',
-        description: 'Show a player profile and club context.',
+        usage: '/me [tag:PLAYERTAG]',
+        description: 'Show a player profile and club context. Leave tag blank to use your verified player.',
       },
       {
         name: 'player-history',
@@ -130,6 +137,28 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
           'Verify player ownership by setting your in-game icon to a random required default brawler icon shown by the bot, then run /member-verify check to confirm via the official API.',
       },
       {
+        name: 'accounts',
+        usage: '/accounts list | /accounts set-main tag:<tag>',
+        description: 'List your linked accounts as main/alt and choose your main account.',
+      },
+      {
+        name: 'delete-me',
+        usage: '/delete-me',
+        description: 'Permanently delete your BrawlHub identity data after confirmation.',
+      },
+      {
+        name: 'verify-info',
+        usage: '/verify-info',
+        description: 'Post the player verification guide in the current channel.',
+        permission: 'members:verify',
+      },
+      {
+        name: 'verify-settings',
+        usage: '/verify-settings',
+        description: 'Show this server’s verification settings.',
+        permission: 'members:verify',
+      },
+      {
         name: 'member-history',
         usage: '/member-history tag:<club-tag>',
         description: 'Show membership change history for a registered club.',
@@ -167,8 +196,38 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         name: 'remove-club',
         usage: '/remove-club club:<club-tag>',
         description:
-          'Explain that safe club removal/archival is currently unavailable; no club data is deleted.',
+          'Archive a registered club without deleting snapshots, memberships, roles or history.',
         permission: 'clubs:write',
+      },
+      {
+        name: 'tag',
+        usage: '/tag set user:@USER tag:<tag>',
+        description: 'Staff-link a Discord user to a verified Brawl Stars player.',
+        permission: 'members:verify',
+      },
+      {
+        name: 'register-list',
+        usage: '/register-list',
+        description: 'List verified account links for this server’s tracked players.',
+        permission: 'members:verify',
+      },
+      {
+        name: 'find',
+        usage: '/find user @USER | /find tag <tag>',
+        description: 'Find a verified account link in this server.',
+        permission: 'members:verify',
+      },
+      {
+        name: 'unverify-one',
+        usage: '/unverify-one tag <tag>',
+        description: 'Revoke one verified account link after confirmation.',
+        permission: 'members:verify',
+      },
+      {
+        name: 'unverify-all',
+        usage: '/unverify-all user:@USER',
+        description: 'Revoke every verified account link for a user after confirmation.',
+        permission: 'members:verify',
       },
       {
         name: 'sync',

@@ -1,12 +1,16 @@
 import { createLogger } from '@brawlhub/logging';
 import {
+  MessageFlags,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
+  type StringSelectMenuInteraction,
 } from 'discord.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import { buildClubsPageEmbed, paginateClubs } from '../clubs/embed';
 import { loadClubSummaries } from '../clubs/service';
+import { parseClubOverviewCustomId } from '../clubs/overview/embed';
+import { buildClubDetailsReply } from './club';
 import { replyWithSafeError } from '../discord/errors';
 import {
   buildPaginationRow,
@@ -44,8 +48,45 @@ export async function handleClubs(interaction: ChatInputCommandInteraction): Pro
   }
 }
 
-/** Handle Previous/Next buttons for `/clubs`. */
+/** Handle the "Choose a Club" select on the auto-posted overview message. */
+async function handleOverviewSelect(
+  interaction: StringSelectMenuInteraction,
+  guildId: string,
+): Promise<void> {
+  // The custom ID carries the owning guild; never let a cross-guild message read another guild's data.
+  if (interaction.guildId !== guildId) return;
+  const tag = interaction.values[0];
+  if (tag === undefined) return;
+
+  try {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const reply = await buildClubDetailsReply(tag, guildId, getBotConfig(), new Date());
+    await interaction.editReply({
+      ...(reply.content === undefined ? {} : { content: reply.content }),
+      embeds: reply.embeds,
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    logger.error('Club overview selection failed', {
+      error: error instanceof Error ? error.message : 'unknown error',
+    });
+    await replyWithSafeError(interaction);
+  }
+}
+
+/** Handle Previous/Next buttons and the overview select menu. */
 export async function handleClubsComponent(interaction: CommandComponentInteraction): Promise<void> {
+  const overviewGuildId = parseClubOverviewCustomId(interaction.customId);
+  if (overviewGuildId !== null) {
+    // Guard the type check so lightweight button mocks in tests do not need the full interaction API.
+    const isSelect =
+      typeof interaction.isStringSelectMenu === 'function' && interaction.isStringSelectMenu();
+    if (isSelect) {
+      await handleOverviewSelect(interaction as StringSelectMenuInteraction, overviewGuildId);
+    }
+    return;
+  }
+
   if (!isPaginationButton(interaction, COMMAND_NAME)) return;
   const requestedPage = parsePaginationCustomId(interaction.customId, COMMAND_NAME);
   if (requestedPage === null) return;

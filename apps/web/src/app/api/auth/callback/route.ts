@@ -54,7 +54,7 @@ export async function GET(request: NextRequest) {
     }
 
     const db = createTrustedClient();
-    const clubsResult = await db.from('clubs').select('id, tag');
+    const clubsResult = await db.from('clubs').select('id, tag').is('archived_at', null);
     if (clubsResult.error !== null && clubsResult.error !== undefined) {
       throw new Error('Unable to read registered clubs');
     }

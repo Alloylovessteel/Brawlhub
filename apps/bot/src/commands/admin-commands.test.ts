@@ -48,6 +48,11 @@ const mocks = vi.hoisted(() => {
       buildRoleMappingsEmbed: vi.fn(),
       buildAuditPageEmbed: vi.fn(),
       buildClubRemovalUnavailableEmbed: vi.fn(),
+      buildClubArchivePreviewEmbed: vi.fn(),
+      buildClubArchivedEmbed: vi.fn(),
+    },
+    archival: {
+      archiveGuildClub: vi.fn(),
     },
     sync: {
       previewClubRegistration: vi.fn(),
@@ -75,6 +80,7 @@ vi.mock('../admin/service', () => ({
 vi.mock('../admin/embed', () => mocks.embeds);
 vi.mock('@brawlhub/sync', () => mocks.sync);
 vi.mock('../clubs/service', () => mocks.clubs);
+vi.mock('../clubs/archival', () => mocks.archival);
 vi.mock('../sync/guard', () => mocks.guard);
 vi.mock('../discord/rate-limit', () => mocks.rateLimit);
 
@@ -90,8 +96,10 @@ import {
   registerClubCommandData,
 } from './register-club';
 import {
+  clearPendingClubArchives,
   handleRemoveClub,
   handleRemoveClubAutocomplete,
+  handleRemoveClubComponent,
   removeClubCommandData,
 } from './remove-club';
 import {
@@ -127,6 +135,8 @@ function settings() {
     primaryClubName: 'Alpha',
     announcementChannelId: null,
     verifiedRoleId: null,
+    overviewChannelId: null,
+    overviewMessageId: null,
     updatedAt: '2026-11-18T00:00:00.000Z',
   };
 }
@@ -242,6 +252,7 @@ function forbidden(): InstanceType<typeof mocks.AdminServiceError> {
 
 beforeEach(() => {
   clearPendingClubRegistrations();
+  clearPendingClubArchives();
   clearPendingSettingsChanges();
   mocks.rateLimit.clearBotRateLimits();
 
@@ -299,6 +310,13 @@ beforeEach(() => {
   mocks.clubs.getRegisteredClubs.mockResolvedValue([{ id: CLUB_ID, tag: '2UG9', name: 'Alpha' }]);
   mocks.clubs.filterRegisteredClubs.mockReset();
   mocks.clubs.filterRegisteredClubs.mockImplementation((clubs: unknown) => clubs as never);
+
+  mocks.archival.archiveGuildClub.mockReset();
+  mocks.archival.archiveGuildClub.mockResolvedValue({ kind: 'archived' });
+  mocks.embeds.buildClubArchivePreviewEmbed.mockReset();
+  mocks.embeds.buildClubArchivePreviewEmbed.mockReturnValue({ kind: 'archive-preview' });
+  mocks.embeds.buildClubArchivedEmbed.mockReset();
+  mocks.embeds.buildClubArchivedEmbed.mockReturnValue({ kind: 'archived' });
 
   mocks.guard.runManagedSync.mockReset();
   mocks.guard.runManagedSync.mockResolvedValue({ kind: 'ran', results: [syncResult()] });
@@ -534,6 +552,8 @@ describe('/settings', () => {
       'clear-primary-club',
       'set-announcement-channel',
       'clear-announcement-channel',
+      'set-overview-channel',
+      'clear-overview-channel',
       'set-verified-role',
       'clear-verified-role',
     ]);
@@ -689,16 +709,52 @@ describe('/audit', () => {
   });
 });
 
-describe('/remove-club blocker', () => {
-  it('explains that safe archival is unavailable and performs no deletion', async () => {
+describe('/remove-club archival', () => {
+  it('previews archival without changing club data', async () => {
     const interaction = chat(null, { club: CLUB_ID });
 
     await handleRemoveClub(interaction);
 
     expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
-    expect(mocks.embeds.buildClubRemovalUnavailableEmbed).toHaveBeenCalledOnce();
-    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'remove-unavailable' }]);
+    expect(mocks.embeds.buildClubArchivePreviewEmbed).toHaveBeenCalledWith('Alpha', '2UG9');
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'archive-preview' }]);
+    expect(mocks.archival.archiveGuildClub).not.toHaveBeenCalled();
     expect(mocks.service.recordAdminAudit).not.toHaveBeenCalled();
+  });
+
+  it('archives the guild club on confirmation', async () => {
+    const start = chat(null, { club: CLUB_ID });
+    await handleRemoveClub(start);
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
+    const confirmation = button(confirmId);
+
+    await handleRemoveClubComponent(confirmation);
+
+    expect(mocks.archival.archiveGuildClub).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clubId: CLUB_ID,
+        guildId: GUILD_ID,
+        clubTag: '2UG9',
+        clubName: 'Alpha',
+        actor: actor(),
+      }),
+    );
+    expect(mocks.embeds.buildClubArchivedEmbed).toHaveBeenCalledWith('Alpha', '2UG9');
+    expect(payload(confirmation, 'editReply').embeds).toEqual([{ kind: 'archived' }]);
+  });
+
+  it('cancels archival without calling the archive service', async () => {
+    const start = chat(null, { club: CLUB_ID });
+    await handleRemoveClub(start);
+    const cancelId = buttons(payload(start, 'editReply'))[1]!.data.custom_id;
+    const cancellation = button(cancelId);
+
+    await handleRemoveClubComponent(cancellation);
+
+    expect(mocks.archival.archiveGuildClub).not.toHaveBeenCalled();
+    expect(payload(cancellation, 'editReply').content).toBe(
+      'Club archival cancelled. Nothing was changed.',
+    );
   });
 
   it('requires permission for club autocomplete', async () => {

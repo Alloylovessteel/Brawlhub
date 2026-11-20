@@ -99,6 +99,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         .from('clubs')
         .select('id, guild_id')
         .eq('id', parsedClubId)
+        .is('archived_at', null)
         .maybeSingle();
       if (club.error !== null && club.error !== undefined) throw new Error(club.error.message);
       if (club.data === null) return redirectToAdmin(request, 'error');

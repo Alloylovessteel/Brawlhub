@@ -14,6 +14,8 @@ vi.mock('@brawlhub/brawl-stars', async (importOriginal) => {
 });
 
 import {
+  loadClubMemberDetails,
+  loadClubPreviousMembers,
   loadCompareView,
   loadHistoryView,
   loadLeaderboardView,
@@ -27,6 +29,7 @@ type QueryCall = {
   readonly table: string;
   readonly filters: Record<string, unknown>;
   readonly ins: Record<string, readonly unknown[]>;
+  readonly nots: readonly string[];
   readonly ors: readonly string[];
   readonly orders: readonly string[];
   readonly limit: number | undefined;
@@ -39,6 +42,7 @@ interface Fixture {
   readonly runs?: Row[];
   readonly snapshotsByClub?: Readonly<Record<string, Row[]>>;
   readonly membershipRows?: Row[];
+  readonly verifications?: Row[];
   readonly players?: Row[];
   readonly playerSnapshots?: Row[];
   readonly events?: Row[];
@@ -51,6 +55,7 @@ function createFakeDb(fixture: Fixture = {}): { db: Db; calls: QueryCall[] } {
   const clubs = fixture.clubs ?? [CLUB_A, CLUB_B];
   const runs = fixture.runs ?? [RUN_2, RUN_3, RUN_WEEK, RUN_1];
   const membershipRows = fixture.membershipRows ?? [];
+  const verifications = fixture.verifications ?? [];
   const players = fixture.players ?? PLAYERS;
   const playerSnapshots = fixture.playerSnapshots ?? PLAYER_SNAPSHOTS;
   const events = fixture.events ?? EVENTS;
@@ -64,13 +69,20 @@ function createFakeDb(fixture: Fixture = {}): { db: Db; calls: QueryCall[] } {
     'clubs:select': ({ filters }) => {
       const failure = errorResult('clubs');
       if (failure !== null) return failure;
+      let rows = clubs;
+      if (filters['archived_at'] === null) {
+        rows = rows.filter((club) => (club['archived_at'] ?? null) === null);
+      }
+      if (filters['guild_id'] !== undefined) {
+        rows = rows.filter((club) => club['guild_id'] === filters['guild_id']);
+      }
       if (filters['tag'] !== undefined) {
-        return { data: clubs.filter((club) => club['tag'] === filters['tag']) };
+        rows = rows.filter((club) => club['tag'] === filters['tag']);
       }
       if (filters['id'] !== undefined) {
-        return { data: clubs.filter((club) => club['id'] === filters['id']) };
+        rows = rows.filter((club) => club['id'] === filters['id']);
       }
-      return { data: clubs };
+      return { data: rows };
     },
     'guild_settings:select': () => errorResult('guild_settings') ?? { data: fixture.guildSettings ?? null },
     'sync_runs:select': () => errorResult('sync_runs') ?? { data: runs },
@@ -78,7 +90,16 @@ function createFakeDb(fixture: Fixture = {}): { db: Db; calls: QueryCall[] } {
       errorResult('club_snapshots') ?? {
         data: fixture.snapshotsByClub?.[String(filters['club_id'])] ?? [],
       },
-    'club_memberships:select': () => errorResult('club_memberships') ?? { data: membershipRows },
+    'club_memberships:select': ({ nots }) => {
+      const failure = errorResult('club_memberships');
+      if (failure !== null) return failure;
+      const rows = nots.includes('valid_to:is:null')
+        ? membershipRows.filter((row) => (row['valid_to'] ?? null) !== null)
+        : membershipRows;
+      return { data: rows };
+    },
+    'player_verifications:select': () =>
+      errorResult('player_verifications') ?? { data: verifications },
     'players:select': ({ ins }) => {
       const failure = errorResult('players');
       if (failure !== null) return failure;
@@ -104,6 +125,7 @@ function createFakeDb(fixture: Fixture = {}): { db: Db; calls: QueryCall[] } {
   class FakeQuery {
     private readonly filters: Record<string, unknown> = {};
     private readonly ins: Record<string, readonly unknown[]> = {};
+    private readonly nots: string[] = [];
     private readonly ors: string[] = [];
     private readonly orders: string[] = [];
     private limitValue: number | undefined;
@@ -126,6 +148,11 @@ function createFakeDb(fixture: Fixture = {}): { db: Db; calls: QueryCall[] } {
 
     is(column: string, value: unknown): this {
       this.filters[column] = value;
+      return this;
+    }
+
+    not(column: string, operator: string, value: unknown): this {
+      this.nots.push(`${column}:${operator}:${String(value)}`);
       return this;
     }
 
@@ -154,6 +181,7 @@ function createFakeDb(fixture: Fixture = {}): { db: Db; calls: QueryCall[] } {
         table: this.table,
         filters: { ...this.filters },
         ins: { ...this.ins },
+        nots: [...this.nots],
         ors: [...this.ors],
         orders: [...this.orders],
         limit: this.limitValue,
@@ -193,6 +221,7 @@ function createFakeDb(fixture: Fixture = {}): { db: Db; calls: QueryCall[] } {
 
 const CLUB_A: Row = {
   id: 'club-a',
+  guild_id: 'guild-1',
   tag: '2C0Y',
   name: 'Alpha',
   description: 'Alpha club',
@@ -204,6 +233,7 @@ const CLUB_A: Row = {
 
 const CLUB_B: Row = {
   id: 'club-b',
+  guild_id: 'guild-1',
   tag: 'Q8VR',
   name: 'Bravo',
   description: 'Bravo club',
@@ -579,5 +609,149 @@ describe('advanced club loaders', () => {
     await expect(
       loadHistoryView({ tag: CLUB_A.tag as string, period: 'all', now: NOW }, { db: eventFailure.db }),
     ).rejects.toThrow('Read membership history failed');
+  });
+
+  it('hides archived clubs and keeps club reads within the invoking guild', async () => {
+    const archived = {
+      ...CLUB_A,
+      id: 'club-archived',
+      tag: 'C8L',
+      name: 'Archived',
+      archived_at: '2026-11-18T00:00:00.000Z',
+    };
+    const otherGuild = {
+      ...CLUB_B,
+      id: 'club-other',
+      tag: 'QVY',
+      name: 'Other',
+      guild_id: 'guild-2',
+    };
+    const { db, calls } = createFakeDb({
+      clubs: [CLUB_A, CLUB_B, archived, otherGuild],
+      guildSettings: { guild_id: 'guild-1', primary_club_id: CLUB_A['id'] },
+      snapshotsByClub: FULL_SNAPSHOTS,
+    });
+
+    const result = await loadSyncedClub({ guildId: 'guild-1' }, { db });
+
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') expect(result.value.club.id).toBe(CLUB_A['id']);
+    expect(
+      calls.some(
+        (call) =>
+          call.table === 'clubs' &&
+          call.filters['archived_at'] === null &&
+          call.filters['guild_id'] === 'guild-1',
+      ),
+    ).toBe(true);
+    await expect(loadSyncedClub({ tag: 'C8L', guildId: 'guild-1' }, { db })).resolves.toEqual({
+      kind: 'unregistered',
+      tag: 'C8L',
+    });
+    await expect(loadSyncedClub({ tag: 'QVY', guildId: 'guild-1' }, { db })).resolves.toEqual({
+      kind: 'unregistered',
+      tag: 'QVY',
+    });
+  });
+
+  it('sorts and filters member details using stored values only', async () => {
+    const players: Row[] = [
+      {
+        ...(PLAYERS[0] ?? {}),
+        last_battle_at: '2026-11-18T10:00:00.000Z',
+        ranked_rank_name: 'Gold I',
+        highest_all_time_ranked_rank_name: null,
+        solo_victories: 12,
+        duo_victories: null,
+        three_vs_three_victories: 4,
+      },
+      {
+        ...(PLAYERS[1] ?? {}),
+        last_battle_at: null,
+        ranked_rank_name: null,
+        highest_all_time_ranked_rank_name: 'Mythic II',
+        solo_victories: null,
+        duo_victories: 7,
+        three_vs_three_victories: null,
+      },
+    ];
+    const { db, calls } = createFakeDb({
+      snapshotsByClub: FULL_SNAPSHOTS,
+      players,
+      membershipRows: [{ player_id: 'p1', valid_from: '2026-11-10T00:00:00.000Z' }],
+      verifications: [{ player_id: 'p1' }],
+    });
+
+    const ranked = await loadClubMemberDetails(
+      {
+        tag: '2C0Y',
+        sort: 'highest',
+        filter: 'ranked',
+        now: NOW,
+        seasonStartIso: SEASON_START,
+      },
+      { db },
+    );
+
+    expect(ranked.kind).toBe('ok');
+    if (ranked.kind !== 'ok') return;
+    expect(ranked.value.members.map((member) => member.tag)).toEqual(['G2P9']);
+    expect(ranked.value.members[0]).toMatchObject({
+      rankedRankName: 'Gold I',
+      verified: true,
+      joinedAt: '2026-11-10T00:00:00.000Z',
+    });
+    expect(
+      calls.some(
+        (call) => call.table === 'player_verifications' && call.filters['status'] === 'active',
+      ),
+    ).toBe(true);
+    expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
+
+    const byName = await loadClubMemberDetails({ tag: '2C0Y', sort: 'name' }, { db });
+    expect(byName.kind).toBe('ok');
+    if (byName.kind === 'ok') {
+      expect(byName.value.members.map((member) => member.tag)).toEqual(['G2P9', 'Q8VR']);
+    }
+  });
+
+  it('loads previous members only from closed, guild-scoped memberships', async () => {
+    const { db, calls } = createFakeDb({
+      membershipRows: [
+        {
+          player_id: 'p1',
+          role: 'member',
+          valid_to: '2026-11-16T00:00:00.000Z',
+          player: { tag: 'G2P9', name: 'Alpha Leader', trophies: 1050 },
+        },
+        {
+          player_id: 'p2',
+          role: 'senior',
+          valid_to: null,
+          player: { tag: 'Q8VR', name: 'Alpha Senior', trophies: 850 },
+        },
+      ],
+      snapshotsByClub: FULL_SNAPSHOTS,
+    });
+
+    const result = await loadClubPreviousMembers({ tag: '2C0Y', guildId: 'guild-1' }, { db });
+
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.previous).toEqual([
+      {
+        playerId: 'p1',
+        tag: 'G2P9',
+        name: 'Alpha Leader',
+        trophies: 1050,
+        role: 'member',
+        leftAt: '2026-11-16T00:00:00.000Z',
+      },
+    ]);
+    expect(
+      calls.some(
+        (call) => call.table === 'club_memberships' && call.filters['club_id'] === CLUB_A['id'],
+      ),
+    ).toBe(true);
   });
 });

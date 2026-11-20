@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createTrustedClient } from '@brawlhub/database';
 import { BrawlStarsApiError, createBrawlStarsClient, type BrawlStarsClient } from '@brawlhub/brawl-stars';
 import { brawlTagSchema } from '@brawlhub/shared';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { pickRandomVerificationIconAsync } from './icons.js';
 import type {
   CancelVerificationResult,
@@ -45,8 +46,10 @@ function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-export async function resolveProfileId(discordUserId: string): Promise<string | null> {
-  const db = createTrustedClient();
+export async function resolveProfileId(
+  discordUserId: string,
+  db: SupabaseClient = createTrustedClient(),
+): Promise<string | null> {
   const { data, error } = await db
     .from('profiles')
     .select('id')
@@ -81,6 +84,477 @@ export async function resolveProfileId(discordUserId: string): Promise<string | 
   }
 
   return null;
+}
+
+export interface VerifiedPlayerIdentity {
+  /** Normalized Brawl Stars tag without a leading `#`. */
+  readonly tag: string;
+  readonly name: string | null;
+}
+
+/** One active Discord → Brawl Stars account link, labelled main or alt. */
+export interface LinkedAccountView {
+  readonly verificationId: string;
+  readonly tag: string;
+  readonly name: string | null;
+  readonly isMain: boolean;
+  readonly method: string;
+  readonly verifiedAt: string | null;
+}
+
+interface ActiveLinkRow {
+  readonly verificationId: string;
+  readonly playerId: string;
+  readonly isMain: boolean;
+  readonly method: string;
+  readonly verifiedAt: string | null;
+  readonly tag: string;
+  readonly name: string | null;
+}
+
+const LINK_SELECT =
+  'id, player_id, is_main, method, verified_at, ' +
+  'player:players!player_verifications_player_id_fkey(tag, name)';
+
+function parseLinkRow(value: unknown): ActiveLinkRow | null {
+  if (value === null || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const verificationId = asString(row.id);
+  const playerId = asString(row.player_id);
+  const isMain = row.is_main === true;
+  const method = asString(row.method) ?? 'api_snapshot';
+  const verifiedAt = asString(row.verified_at);
+  const player = row.player;
+  if (verificationId === null || playerId === null || player === null || typeof player !== 'object') {
+    return null;
+  }
+  const playerRow = player as Record<string, unknown>;
+  const parsedTag = brawlTagSchema.safeParse(asString(playerRow.tag) ?? '');
+  if (!parsedTag.success) return null;
+  return {
+    verificationId,
+    playerId,
+    isMain,
+    method,
+    verifiedAt,
+    tag: parsedTag.data,
+    name: asString(playerRow.name),
+  };
+}
+
+async function readActiveLinks(
+  profileId: string,
+  db: SupabaseClient,
+): Promise<ActiveLinkRow[]> {
+  const { data, error } = await db
+    .from('player_verifications')
+    .select(LINK_SELECT)
+    .eq('profile_id', profileId)
+    .eq('status', 'active')
+    .order('verified_at', { ascending: false });
+  requireOk(error, 'Read active verification links');
+  if (!Array.isArray(data)) return [];
+  return data.map(parseLinkRow).filter((row): row is ActiveLinkRow => row !== null);
+}
+
+/** List every active account link for a Discord user, main first. */
+export async function listLinkedAccounts(
+  discordUserId: string,
+  options: { db?: SupabaseClient } = {},
+): Promise<LinkedAccountView[] | null> {
+  const trimmed = discordUserId.trim();
+  if (!/^\d{17,20}$/.test(trimmed)) return null;
+  const db = options.db ?? createTrustedClient();
+  const profileId = await resolveProfileId(trimmed, db);
+  if (profileId === null) return null;
+  const links = await readActiveLinks(profileId, db);
+  return links
+    .sort((a, b) => Number(b.isMain) - Number(a.isMain))
+    .map((row) => ({
+      verificationId: row.verificationId,
+      tag: row.tag,
+      name: row.name,
+      isMain: row.isMain,
+      method: row.method,
+      verifiedAt: row.verifiedAt,
+    }));
+}
+
+export type SetMainResult =
+  | { readonly kind: 'ok'; readonly tag: string }
+  | { readonly kind: 'invalid-tag' }
+  | { readonly kind: 'not-found' }
+  | { readonly kind: 'db-error'; readonly message: string };
+
+/** Promote one of the caller's active links to main; all others become alts. */
+export async function setMainVerification(
+  discordUserId: string,
+  tagInput: string,
+  options: { db?: SupabaseClient } = {},
+): Promise<SetMainResult> {
+  const parsed = brawlTagSchema.safeParse(tagInput);
+  if (!parsed.success) return { kind: 'invalid-tag' };
+  const tag = parsed.data;
+  const db = options.db ?? createTrustedClient();
+  const profileId = await resolveProfileId(discordUserId.trim(), db);
+  if (profileId === null) return { kind: 'not-found' };
+
+  const links = await readActiveLinks(profileId, db);
+  const target = links.find((link) => link.tag === tag);
+  if (target === undefined) return { kind: 'not-found' };
+  if (target.isMain && links.filter((link) => link.isMain).length === 1) {
+    return { kind: 'ok', tag };
+  }
+
+  try {
+    const demote = await db
+      .from('player_verifications')
+      .update({ is_main: false })
+      .eq('profile_id', profileId)
+      .eq('status', 'active')
+      .eq('is_main', true);
+    requireOk(demote.error, 'Clear previous main account');
+    const promote = await db
+      .from('player_verifications')
+      .update({ is_main: true })
+      .eq('id', target.verificationId)
+      .eq('status', 'active');
+    requireOk(promote.error, 'Set main account');
+    return { kind: 'ok', tag };
+  } catch (error) {
+    return { kind: 'db-error', message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Resolve a Discord user to the player they actively verified. The account
+ * marked main is preferred; if none is marked (legacy data), the newest active
+ * link is used. This never infers ownership from a name or tag match.
+ */
+export async function findVerifiedPlayerForDiscordUser(
+  discordUserId: string,
+  options: { db?: SupabaseClient } = {},
+): Promise<VerifiedPlayerIdentity | null> {
+  const trimmed = discordUserId.trim();
+  if (!/^\d{17,20}$/.test(trimmed)) return null;
+
+  const db = options.db ?? createTrustedClient();
+  const profileId = await resolveProfileId(trimmed, db);
+  if (profileId === null) return null;
+
+  const links = await readActiveLinks(profileId, db);
+  const selected =
+    links.find((link) => link.isMain) ??
+    [...links].sort((a, b) => (b.verifiedAt ?? '').localeCompare(a.verifiedAt ?? ''))[0] ??
+    null;
+  if (selected === null) return null;
+  return { tag: selected.tag, name: selected.name };
+}
+
+/** A link as shown to staff, including the owning Discord user. */
+export interface RegisteredLinkView extends LinkedAccountView {
+  readonly discordUserId: string;
+  readonly discordUsername: string | null;
+}
+
+const STAFF_LINK_SELECT =
+  'id, player_id, is_main, method, verified_at, ' +
+  'player:players!player_verifications_player_id_fkey(tag, name), ' +
+  'profile:profiles!player_verifications_profile_id_fkey(discord_user_id, username)';
+
+/** Player IDs with an open membership in a club registered to this guild. */
+async function readGuildPlayerIds(guildId: string, db: SupabaseClient): Promise<string[]> {
+  if (guildId.trim() === '') return [];
+  const { data: clubs, error: clubsError } = await db
+    .from('clubs')
+    .select('id')
+    .eq('guild_id', guildId.trim())
+    .is('archived_at', null);
+  requireOk(clubsError, 'Read guild clubs for link lookup');
+  const clubIds = (clubs ?? [])
+    .map((row: unknown) =>
+      row !== null && typeof row === 'object' ? asString((row as Record<string, unknown>).id) : null,
+    )
+    .filter((id): id is string => id !== null);
+  if (clubIds.length === 0) return [];
+
+  const { data: memberships, error: membershipError } = await db
+    .from('club_memberships')
+    .select('player_id')
+    .in('club_id', clubIds)
+    .is('valid_to', null);
+  requireOk(membershipError, 'Read guild club memberships for link lookup');
+  return (memberships ?? [])
+    .map((row: unknown) =>
+      row !== null && typeof row === 'object'
+        ? asString((row as Record<string, unknown>).player_id)
+        : null,
+    )
+    .filter((id): id is string => id !== null);
+}
+
+/** List active verification links for players in clubs registered to one guild. */
+export async function listGuildVerifiedLinks(
+  guildId: string,
+  options: { db?: SupabaseClient } = {},
+): Promise<RegisteredLinkView[]> {
+  const db = options.db ?? createTrustedClient();
+  const playerIds = await readGuildPlayerIds(guildId, db);
+  if (playerIds.length === 0) return [];
+
+  const { data, error } = await db
+    .from('player_verifications')
+    .select(STAFF_LINK_SELECT)
+    .eq('status', 'active')
+    .in('player_id', playerIds)
+    .order('verified_at', { ascending: false });
+  requireOk(error, 'Read guild verification links');
+  if (!Array.isArray(data)) return [];
+
+  return data.flatMap((value): RegisteredLinkView[] => {
+    const link = parseLinkRow(value);
+    if (link === null) return [];
+    const row = value as unknown as Record<string, unknown>;
+    const profile = row.profile;
+    if (profile === null || typeof profile !== 'object') return [];
+    const profileRow = profile as Record<string, unknown>;
+    const discordUserId = asString(profileRow.discord_user_id);
+    if (discordUserId === null) return [];
+    return [{
+      ...link,
+      discordUserId,
+      discordUsername: asString(profileRow.username),
+    }];
+  });
+}
+
+export type ManualLinkResult =
+  | { readonly kind: 'ok'; readonly account: LinkedAccountView }
+  | { readonly kind: 'invalid-tag' }
+  | { readonly kind: 'invalid-user' }
+  | { readonly kind: 'player-not-found' }
+  | { readonly kind: 'api-unavailable' }
+  | { readonly kind: 'already-linked-self' }
+  | { readonly kind: 'already-linked-other' }
+  | { readonly kind: 'db-error'; readonly message: string };
+
+/**
+ * Staff-forced account link. This is an explicit staff action, not an inferred
+ * link: it is stored as fully verified with method 'manual_staff' and records
+ * the acting staff profile.
+ */
+export async function linkPlayerManually(
+  input: {
+    readonly actorProfileId: string;
+    readonly actorDiscordUserId: string;
+    readonly discordUserId: string;
+    readonly tagInput: string;
+    readonly reason?: string | null;
+  },
+  deps?: { readonly api?: BrawlStarsClient },
+): Promise<ManualLinkResult> {
+  const discordUserId = input.discordUserId.trim();
+  if (!/^\d{17,20}$/.test(discordUserId)) return { kind: 'invalid-user' };
+  const parsed = brawlTagSchema.safeParse(input.tagInput);
+  if (!parsed.success) return { kind: 'invalid-tag' };
+  const tag = parsed.data;
+
+  const db = createTrustedClient();
+  const profileId = await ensureBotProfileForDiscordUser(discordUserId);
+  const links = await readActiveLinks(profileId, db);
+  if (links.some((link) => link.tag === tag)) return { kind: 'already-linked-self' };
+
+  const api = deps?.api ?? createBrawlStarsClient();
+  let player;
+  try {
+    player = await api.getPlayer(formatTag(tag));
+  } catch (error) {
+    if (error instanceof BrawlStarsApiError && error.status === 404) {
+      return { kind: 'player-not-found' };
+    }
+    return { kind: 'api-unavailable' };
+  }
+
+  const iconId = asNumber(player.icon?.id);
+  let playerRow: PlayerRow;
+  try {
+    playerRow = await ensurePlayerRecord({
+      tag,
+      name: player.name,
+      trophies: player.trophies,
+      highestTrophies: player.highestTrophies ?? player.highscore,
+      expLevel: player.expLevel,
+      ...(iconId !== null ? { iconId } : {}),
+    });
+  } catch (error) {
+    return { kind: 'db-error', message: error instanceof Error ? error.message : String(error) };
+  }
+
+  const { data: existing, error: existingError } = await db
+    .from('player_verifications')
+    .select('profile_id')
+    .eq('player_id', playerRow.id)
+    .eq('status', 'active')
+    .maybeSingle();
+  requireOk(existingError, 'Read existing player link');
+  if (existing !== null && typeof existing === 'object') {
+    return { kind: 'already-linked-other' };
+  }
+
+  const isMain = links.length === 0 || !links.some((link) => link.isMain);
+  const evidence = JSON.stringify({
+    type: 'manual_staff',
+    actorDiscordUserId: input.actorDiscordUserId,
+    actorProfileId: input.actorProfileId,
+    reason: input.reason ?? null,
+    verifiedAt: new Date().toISOString(),
+  });
+  try {
+    const { error } = await db.from('player_verifications').insert({
+      profile_id: profileId,
+      player_id: playerRow.id,
+      status: 'active',
+      method: 'manual_staff',
+      verified_by_profile_id: input.actorProfileId,
+      verified_at: new Date().toISOString(),
+      is_main: isMain,
+      evidence,
+    });
+    requireOk(error, 'Insert staff link');
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return links.some((link) => link.tag === tag)
+        ? { kind: 'already-linked-self' }
+        : { kind: 'already-linked-other' };
+    }
+    return { kind: 'db-error', message: error instanceof Error ? error.message : String(error) };
+  }
+
+  return {
+    kind: 'ok',
+    account: {
+      verificationId: '',
+      tag,
+      name: playerRow.name,
+      isMain,
+      method: 'manual_staff',
+      verifiedAt: new Date().toISOString(),
+    },
+  };
+}
+
+export type RevokeLinkResult =
+  | { readonly kind: 'ok'; readonly promoted: boolean }
+  | { readonly kind: 'not-found' }
+  | { readonly kind: 'db-error'; readonly message: string };
+
+/** Revoke one active link and promote another active link if the main was removed. */
+export async function revokeVerification(
+  verificationId: string,
+  actorProfileId: string,
+  options: { db?: SupabaseClient } = {},
+): Promise<RevokeLinkResult> {
+  const db = options.db ?? createTrustedClient();
+  const { data: row, error: readError } = await db
+    .from('player_verifications')
+    .select('id, profile_id, is_main')
+    .eq('id', verificationId)
+    .eq('status', 'active')
+    .maybeSingle();
+  requireOk(readError, 'Read verification to revoke');
+  if (row === null || typeof row !== 'object') return { kind: 'not-found' };
+  const record = row as Record<string, unknown>;
+  const profileId = asString(record.profile_id);
+  if (profileId === null) return { kind: 'not-found' };
+
+  try {
+    const { error } = await db
+      .from('player_verifications')
+      .update({
+        status: 'revoked',
+        revoked_at: new Date().toISOString(),
+        revoked_by_profile_id: actorProfileId,
+      })
+      .eq('id', verificationId)
+      .eq('status', 'active');
+    requireOk(error, 'Revoke verification');
+
+    if (record.is_main === true) {
+      const remaining = await readActiveLinks(profileId, db);
+      const next = [...remaining].sort((a, b) =>
+        (a.verifiedAt ?? '').localeCompare(b.verifiedAt ?? ''),
+      )[0];
+      if (next !== undefined) {
+        const promoted = await db
+          .from('player_verifications')
+          .update({ is_main: true })
+          .eq('id', next.verificationId)
+          .eq('status', 'active');
+        requireOk(promoted.error, 'Promote replacement main account');
+        return { kind: 'ok', promoted: true };
+      }
+    }
+    return { kind: 'ok', promoted: false };
+  } catch (error) {
+    return { kind: 'db-error', message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Revoke every active link for a Discord user. */
+export async function revokeAllLinksForDiscordUser(
+  discordUserId: string,
+  actorProfileId: string,
+  options: { db?: SupabaseClient } = {},
+): Promise<{ readonly kind: 'ok'; readonly revoked: number } | { readonly kind: 'not-found' } | { readonly kind: 'db-error'; readonly message: string }> {
+  const db = options.db ?? createTrustedClient();
+  const profileId = await resolveProfileId(discordUserId.trim(), db);
+  if (profileId === null) return { kind: 'not-found' };
+  const links = await readActiveLinks(profileId, db);
+  let revoked = 0;
+  for (const link of links) {
+    const result = await revokeVerification(link.verificationId, actorProfileId, { db });
+    if (result.kind !== 'ok') return result;
+    revoked += 1;
+  }
+  return { kind: 'ok', revoked };
+}
+
+/**
+ * Irreversibly erase a Discord user's BrawlHub identity data. Player statistics
+ * themselves are not deleted — they are official game data, not user data.
+ */
+export async function deleteUserDataForDiscordUser(
+  discordUserId: string,
+  options: { db?: SupabaseClient } = {},
+): Promise<{ readonly kind: 'ok' } | { readonly kind: 'not-found' } | { readonly kind: 'db-error'; readonly message: string }> {
+  const trimmed = discordUserId.trim();
+  if (!/^\d{17,20}$/.test(trimmed)) return { kind: 'not-found' };
+  const db = options.db ?? createTrustedClient();
+  const profileId = await resolveProfileId(trimmed, db);
+  if (profileId === null) return { kind: 'not-found' };
+
+  try {
+    const removedDiscord = await db.from('discord_users').delete().eq('discord_user_id', trimmed);
+    requireOk(removedDiscord.error, 'Delete Discord identity');
+    const removedProfile = await db.from('profiles').delete().eq('id', profileId);
+    requireOk(removedProfile.error, 'Delete profile');
+
+    // The shadow auth user is separate from the profile row. Best-effort cleanup:
+    // the profile is already gone, so a failed auth delete leaves no usable data.
+    const admin = (db as unknown as {
+      auth?: { admin?: { deleteUser: (id: string) => Promise<unknown> } };
+    }).auth?.admin;
+    if (admin !== undefined && typeof admin.deleteUser === 'function') {
+      try {
+        await admin.deleteUser(profileId);
+      } catch {
+        // Intentionally ignored: profile and link rows have already been erased.
+      }
+    }
+    return { kind: 'ok' };
+  } catch (error) {
+    return { kind: 'db-error', message: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 export async function ensureBotProfileForDiscordUser(

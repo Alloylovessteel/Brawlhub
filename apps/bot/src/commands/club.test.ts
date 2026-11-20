@@ -23,6 +23,9 @@ const mocks = vi.hoisted(() => ({
   },
   service: {
     loadClubView: vi.fn(),
+    loadClubMemberDetails: vi.fn(),
+    loadClubPreviousMembers: vi.fn(),
+    loadSyncedClub: vi.fn(),
     getRegisteredClubs: vi.fn(),
     loadClubSummaries: vi.fn(),
     filterRegisteredClubs: vi.fn(),
@@ -34,13 +37,22 @@ vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
 vi.mock('../clubs/service', () => mocks.service);
 vi.mock('../metadata/assets', () => ({ resolveClubBadgeUrl: mocks.resolveClubBadgeUrl }));
 
-import { handleClubAutocomplete, handleClub } from './club';
+import { handleClubAutocomplete, handleClub, handleClubComponent } from './club';
 import { handleClubs, handleClubsComponent } from './clubs';
 
-function chatInteraction(tag: string | null = null, guildId: string | null = 'guild-1') {
+function chatInteraction(
+  tag: string | null = null,
+  guildId: string | null = 'guild-1',
+  options: Record<string, unknown> = {},
+) {
   const interaction = {
     guildId,
-    options: { getString: vi.fn(() => tag) },
+    options: {
+      getString: vi.fn((name: string) =>
+        name === 'tag' ? tag : (options[name] ?? null),
+      ),
+      getBoolean: vi.fn((name: string) => options[name] ?? null),
+    },
     replied: false,
     deferred: false,
     deferReply: vi.fn(async () => {
@@ -53,9 +65,9 @@ function chatInteraction(tag: string | null = null, guildId: string | null = 'gu
   return interaction as unknown as ChatInputCommandInteraction;
 }
 
-function autocompleteInteraction(focused: string) {
+function autocompleteInteraction(focused: string, name = 'tag') {
   return {
-    options: { getFocused: vi.fn(() => focused) },
+    options: { getFocused: vi.fn(() => ({ name, value: focused })) },
     respond: vi.fn(async () => undefined),
   } as unknown as AutocompleteInteraction;
 }
@@ -63,6 +75,7 @@ function autocompleteInteraction(focused: string) {
 function buttonInteraction(customId: string) {
   return {
     customId,
+    guildId: 'guild-1',
     replied: false,
     deferred: false,
     deferUpdate: vi.fn(async () => undefined),
@@ -127,6 +140,9 @@ function summary(index: number) {
 
 beforeEach(() => {
   mocks.service.loadClubView.mockReset();
+  mocks.service.loadClubMemberDetails.mockReset();
+  mocks.service.loadClubPreviousMembers.mockReset();
+  mocks.service.loadSyncedClub.mockReset();
   mocks.service.getRegisteredClubs.mockReset();
   mocks.service.loadClubSummaries.mockReset();
   mocks.service.filterRegisteredClubs.mockReset();
@@ -253,6 +269,62 @@ describe('/club command', () => {
     expect(interaction.respond).toHaveBeenCalledWith([
       { name: 'Club 1 (#TAG1)', value: 'TAG1' },
     ]);
+  });
+
+  it('keeps previous members when a paginated member-details page changes', async () => {
+    const base = {
+      ...okView().view,
+      rosterSource: 'snapshot' as const,
+      completedRunIds: new Set<string>(),
+      latestSnapshot: null,
+      roster: [],
+    };
+    const member = {
+      tag: 'G2P9',
+      name: 'Leader',
+      trophies: 1000,
+      role: 'president',
+      playerId: 'p1',
+      highestTrophies: 1050,
+      lastBattleAt: null,
+      rankedRankName: null,
+      highestAllTimeRankedRankName: null,
+      soloVictories: null,
+      duoVictories: null,
+      threeVsThreeVictories: null,
+      joinedAt: null,
+      verified: false,
+      progression: null,
+    };
+    mocks.service.loadClubMemberDetails.mockResolvedValue({
+      kind: 'ok',
+      value: { ...base, members: [member], sort: 'trophies', filter: null, search: null },
+    });
+    mocks.service.loadClubPreviousMembers.mockResolvedValue({
+      kind: 'ok',
+      value: {
+        ...base,
+        previous: [
+          {
+            playerId: 'p2',
+            tag: 'Q8VR',
+            name: 'Former',
+            trophies: 800,
+            role: 'member',
+            leftAt: '2026-11-16T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+    const interaction = buttonInteraction('club:page:2:details|trophies|-|-|1|2C0Y');
+
+    await handleClubComponent(
+      interaction as unknown as Parameters<typeof handleClubComponent>[0],
+    );
+
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(payload.embeds).toHaveLength(2);
+    expect(payload.embeds[1].toJSON().title).toContain('Previous Members');
   });
 });
 

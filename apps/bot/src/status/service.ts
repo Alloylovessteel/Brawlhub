@@ -107,7 +107,7 @@ async function checkDatabase(
   const guildId = options.guildId?.trim() || null;
 
   try {
-    let query = db.from('clubs').select('tag', { count: 'exact' });
+    let query = db.from('clubs').select('tag', { count: 'exact' }).is('archived_at', null);
     if (guildId !== null) {
       query = query.eq('guild_id', guildId);
     }

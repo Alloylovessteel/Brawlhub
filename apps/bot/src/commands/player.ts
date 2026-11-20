@@ -3,6 +3,7 @@ import { buildPlayerProfileEmbed } from '../players/embed';
 import { loadPlayerProfile } from '../players/service';
 import { resolvePlayerIconUrl } from '../metadata/assets.js';
 import { getBotConfig } from '../config';
+import { findVerifiedPlayerForDiscordUser } from '../verification/index.js';
 import { replyPlayerLookupFailure, respondWithPlayerChoices } from './player-utils';
 
 export const meCommandData = new SlashCommandBuilder()
@@ -11,16 +12,39 @@ export const meCommandData = new SlashCommandBuilder()
   .addStringOption((option) =>
     option
       .setName('tag')
-      .setDescription('Player tag, for example #PLAYERTAG')
+      .setDescription('Player tag, for example #PLAYERTAG. Leave blank to use your verified player.')
       .setAutocomplete(true)
-      .setRequired(true)
+      .setRequired(false)
       .setMaxLength(11),
   );
 
 export async function handleMe(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply();
+
+  let tag = interaction.options.getString('tag')?.trim() ?? '';
+  if (tag === '') {
+    try {
+      const verified = await findVerifiedPlayerForDiscordUser(interaction.user.id);
+      if (verified === null) {
+        await interaction.editReply({
+          content:
+            'You do not have a verified Brawl Stars player yet. Use `/member-verify start tag:YOURTAG` to link one, or pass `tag:` explicitly.',
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+      tag = verified.tag;
+    } catch {
+      await interaction.editReply({
+        content: 'Could not read your verified player right now. Please try again or pass `tag:` explicitly.',
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+  }
+
   const result = await loadPlayerProfile({
-    tag: interaction.options.getString('tag', true),
+    tag,
     guildId: interaction.guildId,
   });
 

@@ -279,6 +279,8 @@ interface GuildSettingsRow {
   primary_club_id: string | null;
   announcement_channel_id: string | null;
   verified_role_id: string | null;
+  overview_channel_id: string | null;
+  overview_message_id: string | null;
   updated_at: string | null;
 }
 
@@ -288,7 +290,9 @@ async function readGuildSettingsRow(
 ): Promise<GuildSettingsRow | null> {
   const result = await db
     .from('guild_settings')
-    .select('guild_id, primary_club_id, announcement_channel_id, verified_role_id, updated_at')
+    .select(
+      'guild_id, primary_club_id, announcement_channel_id, verified_role_id, overview_channel_id, overview_message_id, updated_at',
+    )
     .eq('guild_id', guildId)
     .maybeSingle();
   requireOk(result.error, 'Read guild settings');
@@ -314,6 +318,7 @@ export async function loadGuildSettings(
       .select('tag, name')
       .eq('id', row.primary_club_id)
       .eq('guild_id', parsedGuildId.data)
+      .is('archived_at', null)
       .maybeSingle();
     requireOk(club.error, 'Read primary club');
     const clubRow = record(club.data);
@@ -328,6 +333,8 @@ export async function loadGuildSettings(
     primaryClubName,
     announcementChannelId: asString(row?.['announcement_channel_id']),
     verifiedRoleId: asString(row?.['verified_role_id']),
+    overviewChannelId: asString(row?.['overview_channel_id']),
+    overviewMessageId: asString(row?.['overview_message_id']),
     updatedAt: asString(row?.['updated_at']),
   };
 }
@@ -350,6 +357,7 @@ async function validateSettingValue(
       .select('id')
       .eq('id', normalized)
       .eq('guild_id', guildId)
+      .is('archived_at', null)
       .maybeSingle();
     requireOk(club.error, 'Validate primary club');
     if (club.data === null) {
@@ -386,11 +394,18 @@ export async function updateGuildSettings(
     primary_club_id: asString(existing?.['primary_club_id']),
     announcement_channel_id: asString(existing?.['announcement_channel_id']),
     verified_role_id: asString(existing?.['verified_role_id']),
+    overview_channel_id: asString(existing?.['overview_channel_id']),
+    overview_message_id: asString(existing?.['overview_message_id']),
     updated_at: asString(existing?.['updated_at']),
   };
   if (input.field === 'primaryClubId') next.primary_club_id = value;
   if (input.field === 'announcementChannelId') next.announcement_channel_id = value;
   if (input.field === 'verifiedRoleId') next.verified_role_id = value;
+  if (input.field === 'overviewChannelId') {
+    next.overview_channel_id = value;
+    // A new channel means any previous message is stale; let the poster create a fresh one.
+    if (value !== existing?.['overview_channel_id']) next.overview_message_id = null;
+  }
 
   const saved = await db.from('guild_settings').upsert(
     {
@@ -398,6 +413,8 @@ export async function updateGuildSettings(
       primary_club_id: next.primary_club_id,
       announcement_channel_id: next.announcement_channel_id,
       verified_role_id: next.verified_role_id,
+      overview_channel_id: next.overview_channel_id,
+      overview_message_id: next.overview_message_id,
     },
     { onConflict: 'guild_id' },
   );
@@ -413,6 +430,9 @@ export async function updateGuildSettings(
   if ((existing?.['verified_role_id'] ?? null) !== next.verified_role_id) {
     changedFields.push('verifiedRoleId');
   }
+  if ((existing?.['overview_channel_id'] ?? null) !== next.overview_channel_id) {
+    changedFields.push('overviewChannelId');
+  }
 
   await recordAdminAudit(
     {
@@ -427,6 +447,33 @@ export async function updateGuildSettings(
   );
 
   return loadGuildSettings(parsedGuildId.data, { db });
+}
+
+/**
+ * Persist the Discord message ID for a guild's auto-updating overview.
+ * Internal bookkeeping only: no audit entry and no user-facing permission check.
+ */
+export async function setGuildOverviewMessageId(
+  guildId: string,
+  messageId: string | null,
+  options: AdminServiceOptions = {},
+): Promise<void> {
+  const parsedGuildId = discordIdSchema.safeParse(guildId);
+  if (!parsedGuildId.success) return;
+
+  const db = dbFor(options);
+  const updated = await db
+    .from('guild_settings')
+    .update({ overview_message_id: messageId })
+    .eq('guild_id', parsedGuildId.data)
+    .select('guild_id');
+  requireOk(updated.error, 'Save overview message ID');
+  if (updated.data !== null && updated.data.length > 0) return;
+
+  const inserted = await db
+    .from('guild_settings')
+    .insert({ guild_id: parsedGuildId.data, overview_message_id: messageId });
+  requireOk(inserted.error, 'Create overview message state');
 }
 
 export async function listGuildRoleMappings(

@@ -30,11 +30,15 @@ const mocks = vi.hoisted(() => ({
     searchPlayers: vi.fn(),
   },
   resolvePlayerIconUrl: vi.fn(async (): Promise<string | null> => null),
+  verification: {
+    findVerifiedPlayerForDiscordUser: vi.fn(),
+  },
 }));
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
 vi.mock('../players/service', () => mocks.service);
 vi.mock('../metadata/assets', () => ({ resolvePlayerIconUrl: mocks.resolvePlayerIconUrl }));
+vi.mock('../verification/index', () => mocks.verification);
 
 import { handleMe, handleMeAutocomplete } from './player';
 import {
@@ -52,6 +56,7 @@ import { handlePlayerCompare, handlePlayerCompareAutocomplete } from './player-c
 function chatInteraction(options: Record<string, string | null> = {}) {
   const interaction = {
     guildId: 'guild-1',
+    user: { id: 'discord-1' },
     options: { getString: vi.fn((name: string) => options[name] ?? null) },
     replied: false,
     deferred: false,
@@ -199,9 +204,34 @@ function payload(interaction: ChatInputCommandInteraction | ButtonInteraction, m
 beforeEach(() => {
   for (const fn of Object.values(mocks.service)) fn.mockReset();
   mocks.resolvePlayerIconUrl.mockReset().mockResolvedValue(null);
+  mocks.verification.findVerifiedPlayerForDiscordUser.mockReset().mockResolvedValue(null);
 });
 
 describe('/me command', () => {
+  it('uses the caller\'s verified player when no tag is supplied', async () => {
+    mocks.verification.findVerifiedPlayerForDiscordUser.mockResolvedValue({
+      tag: '2C0Y',
+      name: 'Alpha',
+    });
+    mocks.service.loadPlayerProfile.mockResolvedValue(profileResult());
+    const interaction = chatInteraction();
+
+    await handleMe(interaction);
+
+    expect(mocks.verification.findVerifiedPlayerForDiscordUser).toHaveBeenCalledWith('discord-1');
+    expect(mocks.service.loadPlayerProfile).toHaveBeenCalledWith({ tag: '2C0Y', guildId: 'guild-1' });
+  });
+
+  it('prompts verification when no tag is supplied and none is linked', async () => {
+    mocks.verification.findVerifiedPlayerForDiscordUser.mockResolvedValue(null);
+    const interaction = chatInteraction();
+
+    await handleMe(interaction);
+
+    expect(mocks.service.loadPlayerProfile).not.toHaveBeenCalled();
+    expect(payload(interaction, 'editReply').content).toContain('/member-verify start');
+  });
+
   it('loads and renders a player profile with a Brawlify link', async () => {
     mocks.service.loadPlayerProfile.mockResolvedValue(profileResult());
     const interaction = chatInteraction({ tag: '#2c0y' });

@@ -67,6 +67,7 @@ async function loadExistingClub(
     .select('id, tag, name')
     .eq('guild_id', guildId)
     .eq('tag', tag)
+    .is('archived_at', null)
     .maybeSingle();
 
   if (error !== null) {

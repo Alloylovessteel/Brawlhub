@@ -756,6 +756,65 @@ async function releaseSyncLock(
   }
 }
 
+export interface SyncRecoveryResult {
+  readonly recoveredRuns: number;
+  readonly clearedScopes: string[];
+}
+
+/**
+ * Clear run rows and lock claims left behind when a process exits mid-sync.
+ * Called once on bot startup so a restart never blocks syncing until the
+ * 30-minute lock TTL expires. Safe to call repeatedly: it only touches rows
+ * that are still marked `running` with no `finished_at`.
+ */
+export async function recoverInterruptedSyncs(
+  db: SupabaseClient = createTrustedClient(),
+  nowIso: string = new Date().toISOString(),
+): Promise<SyncRecoveryResult> {
+  const running = await db
+    .from('sync_runs')
+    .select('id, scope')
+    .eq('status', 'running')
+    .is('finished_at', null);
+  requireOk(running.error, 'Read interrupted sync runs');
+
+  const rows = (running.data ?? []) as Array<{ id: string; scope: string | null }>;
+  if (rows.length === 0) {
+    return { recoveredRuns: 0, clearedScopes: [] };
+  }
+
+  const reason = 'Sync interrupted by process restart';
+  const finished = await db
+    .from('sync_runs')
+    .update({ status: 'failed', error: reason, last_error: reason, finished_at: nowIso })
+    .in(
+      'id',
+      rows.map((row) => row.id),
+    );
+  requireOk(finished.error, 'Mark interrupted sync runs failed');
+
+  const scopes = [
+    ...new Set(
+      rows
+        .map((row) => row.scope)
+        .filter((scope): scope is string => typeof scope === 'string' && scope.trim() !== ''),
+    ),
+  ];
+  if (scopes.length > 0) {
+    const cleared = await db
+      .from('sync_locks')
+      .update({ locked_by: null, locked_at: null, locked_until: null })
+      .in('scope', scopes);
+    requireOk(cleared.error, 'Clear interrupted sync locks');
+  }
+
+  log.warn('Recovered interrupted sync state', {
+    runs: rows.length,
+    scopes: scopes.join(', '),
+  });
+  return { recoveredRuns: rows.length, clearedScopes: scopes };
+}
+
 /** Writes event + membership changes in one Postgres transaction. */
 async function applyMembershipTransition(
   db: SupabaseClient,
@@ -1046,7 +1105,7 @@ export interface RunSyncOptions {
 }
 
 async function listGuildIdsWithRegisteredClubs(db: SupabaseClient): Promise<string[]> {
-  const result = await db.from('clubs').select('guild_id');
+  const result = await db.from('clubs').select('guild_id').is('archived_at', null);
   requireOk(result.error, 'List guilds with registered clubs');
   const ids = new Set<string>();
   for (const row of (result.data ?? []) as Array<{ guild_id?: string | null }>) {
@@ -1149,9 +1208,13 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
 
   let clubRows: ClubRow[];
   try {
-    let clubsQuery = db.from('clubs').select('id, tag, name, guild_id').order('tag', {
-      ascending: true,
-    });
+    let clubsQuery = db
+      .from('clubs')
+      .select('id, tag, name, guild_id')
+      .is('archived_at', null)
+      .order('tag', {
+        ascending: true,
+      });
     if (requestedGuildId !== undefined && requestedGuildId.length > 0) {
       clubsQuery = clubsQuery.eq('guild_id', requestedGuildId);
     }

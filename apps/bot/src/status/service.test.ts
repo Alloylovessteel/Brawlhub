@@ -27,16 +27,21 @@ function dbClient(options: {
 }) {
   return {
     from: vi.fn(() => ({
-      select: vi.fn(() => ({
-        limit: vi.fn(async () => ({
+      select: vi.fn(() => {
+        const result = {
           data:
             options.clubTag === undefined || options.clubTag === null
               ? []
               : [{ tag: options.clubTag }],
           error: options.clubsError ? { message: 'db error' } : null,
           count: options.count ?? null,
-        })),
-      })),
+        };
+        const query = {
+          is: vi.fn(() => query),
+          limit: vi.fn(async () => result),
+        };
+        return query;
+      }),
     })),
   } as never;
 }

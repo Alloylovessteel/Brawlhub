@@ -21,6 +21,7 @@ import {
   clubCommandData,
   handleClub,
   handleClubAutocomplete,
+  handleClubComponent,
 } from './club.js';
 import {
   clubsCommandData,
@@ -102,6 +103,36 @@ import {
 } from './members.js';
 import { memberVerifyCommandData, handleMemberVerify } from './member-verify.js';
 import {
+  accountsCommandData,
+  handleAccounts,
+  handleAccountsAutocomplete,
+} from './accounts.js';
+import {
+  verifyInfoCommandData,
+  handleVerifyInfo,
+  verifySettingsCommandData,
+  handleVerifySettings,
+} from './verification-info.js';
+import {
+  tagCommandData,
+  handleTag,
+  registerListCommandData,
+  handleRegisterList,
+  findCommandData,
+  handleFind,
+  unverifyOneCommandData,
+  handleUnverifyOne,
+  handleUnverifyOneComponent,
+  unverifyAllCommandData,
+  handleUnverifyAll,
+  handleUnverifyAllComponent,
+} from './admin-identity.js';
+import {
+  deleteMeCommandData,
+  handleDeleteMe,
+  handleDeleteMeComponent,
+} from './delete-me.js';
+import {
   memberHistoryCommandData,
   handleMemberHistory,
   handleMemberHistoryAutocomplete,
@@ -142,7 +173,13 @@ import {
   removeClubCommandData,
   handleRemoveClub,
   handleRemoveClubAutocomplete,
+  handleRemoveClubComponent,
 } from './remove-club.js';
+import {
+  viewCommandData,
+  handleView,
+  handleViewAutocomplete,
+} from './view.js';
 import { handlePing } from './ping.js';
 import {
   helpCommandData,
@@ -182,6 +219,7 @@ export const commands: readonly CommandDefinition[] = [
     data: clubCommandData,
     handle: handleClub,
     autocomplete: handleClubAutocomplete,
+    handleComponent: handleClubComponent,
   },
   {
     data: clubsCommandData,
@@ -216,6 +254,11 @@ export const commands: readonly CommandDefinition[] = [
     data: clubCompareCommandData,
     handle: handleClubCompare,
     autocomplete: handleClubCompareAutocomplete,
+  },
+  {
+    data: viewCommandData,
+    handle: handleView,
+    autocomplete: handleViewAutocomplete,
   },
   {
     data: eventsCommandData,
@@ -266,6 +309,46 @@ export const commands: readonly CommandDefinition[] = [
     handle: handleMemberVerify,
   },
   {
+    data: accountsCommandData,
+    handle: handleAccounts,
+    autocomplete: handleAccountsAutocomplete,
+  },
+  {
+    data: verifyInfoCommandData,
+    handle: handleVerifyInfo,
+  },
+  {
+    data: verifySettingsCommandData,
+    handle: handleVerifySettings,
+  },
+  {
+    data: tagCommandData,
+    handle: handleTag,
+  },
+  {
+    data: registerListCommandData,
+    handle: handleRegisterList,
+  },
+  {
+    data: findCommandData,
+    handle: handleFind,
+  },
+  {
+    data: unverifyOneCommandData,
+    handle: handleUnverifyOne,
+    handleComponent: handleUnverifyOneComponent,
+  },
+  {
+    data: unverifyAllCommandData,
+    handle: handleUnverifyAll,
+    handleComponent: handleUnverifyAllComponent,
+  },
+  {
+    data: deleteMeCommandData,
+    handle: handleDeleteMe,
+    handleComponent: handleDeleteMeComponent,
+  },
+  {
     data: memberHistoryCommandData,
     handle: handleMemberHistory,
     autocomplete: handleMemberHistoryAutocomplete,
@@ -310,6 +393,7 @@ export const commands: readonly CommandDefinition[] = [
     data: removeClubCommandData,
     handle: handleRemoveClub,
     autocomplete: handleRemoveClubAutocomplete,
+    handleComponent: handleRemoveClubComponent,
   },
   {
     data: helpCommandData,

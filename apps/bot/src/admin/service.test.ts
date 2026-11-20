@@ -77,6 +77,11 @@ vi.mock('@brawlhub/database', () => {
       return this;
     }
 
+    is(column: string, value: unknown): this {
+      this.filters[column] = value;
+      return this;
+    }
+
     in(column: string, values: unknown[]): this {
       this.inValues = { column, values };
       return this;

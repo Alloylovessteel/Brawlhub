@@ -12,7 +12,9 @@ import {
 } from 'discord.js';
 import type { AutocompleteInteraction, ChatInputCommandInteraction } from 'discord.js';
 import type { Role } from '@brawlhub/shared';
+import { createLogger } from '@brawlhub/logging';
 import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
+import { refreshOverviewNow } from '../clubs/overview/service';
 import {
   buildRoleMappingsEmbed,
   buildSettingsUpdatedEmbed,
@@ -38,6 +40,7 @@ import { isIgnorableInteractionError } from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 
+const logger = createLogger('bot');
 const COMMAND_NAME = 'settings';
 const FORBIDDEN_MESSAGE = 'You do not have permission to manage BrawlHub guild settings.';
 const NO_GUILD_MESSAGE = 'Guild settings can only be managed from within a Discord server.';
@@ -174,6 +177,23 @@ export const settingsCommandData = new SlashCommandBuilder()
   )
   .addSubcommand((subcommand) =>
     subcommand
+      .setName('set-overview-channel')
+      .setDescription('Set the channel for the auto-updating club stats overview')
+      .addChannelOption((option) =>
+        option
+          .setName('channel')
+          .setDescription('Text channel that receives the club overview')
+          .addChannelTypes(ChannelType.GuildText)
+          .setRequired(true),
+      ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('clear-overview-channel')
+      .setDescription('Stop posting the club overview in this server'),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
       .setName('set-verified-role')
       .setDescription('Set the guild verified-member role')
       .addRoleOption((option) =>
@@ -191,6 +211,7 @@ const FIELD_LABELS: Readonly<Record<GuildSettingsField, string>> = {
   primaryClubId: 'Primary club',
   announcementChannelId: 'Announcement channel',
   verifiedRoleId: 'Verified role',
+  overviewChannelId: 'Overview channel',
 };
 
 function requireGuildId(interaction: { guildId: string | null }): string {
@@ -206,12 +227,13 @@ function currentValue(
 ): string | null {
   if (field === 'primaryClubId') return settings.primaryClubId;
   if (field === 'announcementChannelId') return settings.announcementChannelId;
+  if (field === 'overviewChannelId') return settings.overviewChannelId;
   return settings.verifiedRoleId;
 }
 
 function displayValue(field: GuildSettingsField, value: string | null): string {
   if (value === null) return 'Not configured';
-  if (field === 'announcementChannelId') return `<#${value}>`;
+  if (field === 'announcementChannelId' || field === 'overviewChannelId') return `<#${value}>`;
   if (field === 'verifiedRoleId') return `<@&${value}>`;
   return `\`${value}\``;
 }
@@ -513,6 +535,14 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
       await startChange(interaction, 'announcementChannelId', null);
       return;
     }
+    if (subcommand === 'set-overview-channel') {
+      await startChange(interaction, 'overviewChannelId', interaction.options.getChannel('channel', true).id);
+      return;
+    }
+    if (subcommand === 'clear-overview-channel') {
+      await startChange(interaction, 'overviewChannelId', null);
+      return;
+    }
     if (subcommand === 'set-verified-role') {
       await startChange(interaction, 'verifiedRoleId', interaction.options.getRole('role', true).id);
       return;
@@ -595,7 +625,24 @@ async function handleSettingsConfirmation(interaction: CommandComponentInteracti
     value: pending.value,
   });
 
+  let overviewNotice: string | undefined;
+  if (pending.field === 'overviewChannelId' && updated.overviewChannelId !== null) {
+    try {
+      const outcome = await refreshOverviewNow(updated.guildId, interaction.guild?.name ?? null);
+      overviewNotice = outcome.posted
+        ? `Club overview posted to <#${updated.overviewChannelId}>.`
+        : 'Club overview could not be posted right now; it will retry on the next refresh.';
+    } catch (error) {
+      logger.warn('Could not post club overview immediately after configuration', {
+        guildId: updated.guildId,
+        error: error instanceof Error ? error.message : 'unknown error',
+      });
+      overviewNotice = 'Club overview will be posted on the next refresh.';
+    }
+  }
+
   await interaction.editReply({
+    ...(overviewNotice === undefined ? {} : { content: overviewNotice }),
     embeds: [buildSettingsUpdatedEmbed(updated, changedFields)],
     components: [],
     allowedMentions: { parse: [] },

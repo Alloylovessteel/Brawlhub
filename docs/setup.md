@@ -37,6 +37,7 @@ Variables (from `.env.example`):
 | Brawl Stars | `SYNC_INTERVAL_MINUTES` | Sync cadence in minutes (default `15`, clamped to `1`–`1440`). |
 | Brawl Stars | `BRAWL_STARS_MIN_INTERVAL_MS` | Minimum delay between Brawl Stars API requests in ms (default `250`). |
 | Sync | `SYNC_SECRET` | Server-only bearer secret for `/api/sync`; blank makes the endpoint return `503`. |
+| Discord | `OVERVIEW_INTERVAL_MINUTES` | Club stats overview refresh cadence (default `30`, clamped to `1`–`1440`). The channel is set per guild with `/settings set-overview-channel`. |
 | Discord | `DISCORD_TOKEN` | Bot token (server-side only). |
 | Discord | `DISCORD_CLIENT_ID` | Discord application ID. |
 | Discord | `DISCORD_CLIENT_SECRET` | Discord OAuth client secret (server-side only). |
@@ -132,6 +133,10 @@ Replace the `#TAG` placeholders with your actual Brawl Stars club tags. The regi
 The bot runs its first sync about 5 seconds after Discord login and then every `SYNC_INTERVAL_MINUTES` (default `15`, clamped to `1`–`1440`). A local guard skips a tick if the previous in-process run is still in progress, and a Postgres-backed `sync_locks` claim prevents the bot, web cron route and separate CLI processes from overlapping. Timers are cleared on shutdown. Notifications are posted to `DISCORD_NOTIFICATION_CHANNEL_ID` when configured; otherwise the notifier is a no-op so sync can clear its claim. No secrets are logged.
 
 `sync_runs.error` describes the current run status. `sync_runs.last_error` preserves the most recent failure even after that run is retried successfully, so recovery remains auditable. To exercise a full repeated sync while keeping all idempotency protections, run with `SYNC_INTERVAL_MINUTES=1`, wait for the next minute boundary, and run it again.
+
+### Club stats overview
+
+For each guild with an overview channel configured via `/settings set-overview-channel`, the bot posts one compact "Club Stats" message and **edits that same message** every `OVERVIEW_INTERVAL_MINUTES` (default `30`). The first post happens about 15 seconds after Discord login. Each club is one inline field (up to 25, sorted by trophies), and a "Choose a Club" select menu opens the detailed `/club` view ephemerally. All values come from stored official Brawl Stars API sync data; global/regional rank and true online status are explicitly caveated because the API does not expose them. Use `/settings clear-overview-channel` to stop posting. Timers are cleared on shutdown.
 
 ### Cron route
 

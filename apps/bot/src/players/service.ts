@@ -319,7 +319,11 @@ export interface PlayerSearchOptions {
 
 async function readGuildClubIds(guildId: string | null | undefined, db: DatabaseClient): Promise<string[] | null> {
   if (guildId === undefined || guildId === null || guildId.trim() === '') return null;
-  const { data, error } = await db.from('clubs').select('id').eq('guild_id', guildId.trim());
+  const { data, error } = await db
+    .from('clubs')
+    .select('id')
+    .eq('guild_id', guildId.trim())
+    .is('archived_at', null);
   requireOk(error, 'Read guild clubs');
   return (data ?? [])
     .map((row: unknown) => asString(record(row)?.['id']))
@@ -665,7 +669,7 @@ export async function loadPlayerProfile(
   let currentClub = liveClubRef(live.profile?.club) ?? selectCurrentClub(memberships);
   if (guildClubIds !== null && currentClub !== null) {
     if (!(currentClub.id !== null && guildClubIds.includes(currentClub.id))) {
-      const { data: guildClubRows } = await db.from('clubs').select('id, tag').eq('guild_id', input.guildId ?? '').in('id', guildClubIds.length ? guildClubIds : ['00000000-0000-0000-0000-000000000000']);
+      const { data: guildClubRows } = await db.from('clubs').select('id, tag').eq('guild_id', input.guildId ?? '').is('archived_at', null).in('id', guildClubIds.length ? guildClubIds : ['00000000-0000-0000-0000-000000000000']);
       const allowedTags = new Set((guildClubRows ?? []).map((row) => asString(record(row)?.['tag'])).filter((t) => t !== null));
       if (!allowedTags.has(currentClub.tag)) currentClub = selectCurrentClub(memberships);
     }

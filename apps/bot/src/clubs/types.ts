@@ -130,6 +130,52 @@ export interface MemberDetail extends RosterMember {
   readonly highestTrophies: number | null;
 }
 
+export type ClubMemberSort = 'trophies' | 'highest' | 'last-match' | 'joined' | 'name';
+
+export type ClubMemberFilter =
+  | 'ranked'
+  | 'ranked-all-time'
+  | 'daily-push'
+  | 'weekly-push'
+  | 'season-push'
+  | 'joined-club'
+  | 'solo-wins'
+  | 'duo-wins'
+  | 'three-vs-three';
+
+/** Member detail backed by stored player, membership, verification and battle data. */
+export interface DetailedMember extends MemberDetail {
+  readonly lastBattleAt: string | null;
+  readonly rankedRankName: string | null;
+  readonly highestAllTimeRankedRankName: string | null;
+  readonly soloVictories: number | null;
+  readonly duoVictories: number | null;
+  readonly threeVsThreeVictories: number | null;
+  readonly joinedAt: string | null;
+  readonly verified: boolean;
+  readonly progression: TrophyProgression | null;
+}
+
+export interface ClubMemberDetailView extends SyncedClubView {
+  readonly members: readonly DetailedMember[];
+  readonly sort: ClubMemberSort;
+  readonly filter: ClubMemberFilter | null;
+  readonly search: string | null;
+}
+
+export interface PreviousMember {
+  readonly playerId: string;
+  readonly name: string;
+  readonly tag: string;
+  readonly trophies: number | null;
+  readonly role: string | null;
+  readonly leftAt: string | null;
+}
+
+export interface ClubPreviousMembersView extends SyncedClubView {
+  readonly previous: readonly PreviousMember[];
+}
+
 export interface LeaderboardEntry extends MemberDetail {
   readonly rank: number;
   readonly progression: TrophyProgression | null;

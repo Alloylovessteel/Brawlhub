@@ -21,12 +21,17 @@ import {
 import type {
   ApiIssue,
   ClubLookupFailure,
+  ClubMemberDetailView,
+  ClubMemberFilter,
+  ClubMemberSort,
+  ClubPreviousMembersView,
   ClubRecord,
   ClubSnapshot,
   ClubSummary,
   ClubView,
   ComparisonSide,
   ComparisonView,
+  DetailedMember,
   HistoryPeriod,
   HistoryPoint,
   HistoryView,
@@ -39,6 +44,7 @@ import type {
   MemberView,
   MembershipChange,
   PlayerRecord,
+  PreviousMember,
   ResolvedClubResult,
   RosterMember,
   RosterSource,
@@ -647,7 +653,11 @@ async function readClubs(
   db: DatabaseClient,
   guildId?: string | null,
 ): Promise<ClubRecord[]> {
-  let query = db.from('clubs').select(CLUB_COLUMNS).order('name', { ascending: true });
+  let query = db
+    .from('clubs')
+    .select(CLUB_COLUMNS)
+    .is('archived_at', null)
+    .order('name', { ascending: true });
   if (guildId !== undefined && guildId !== null && guildId.trim() !== '') {
     query = query.eq('guild_id', guildId.trim());
   }
@@ -663,7 +673,7 @@ async function findClubByTag(
   db: DatabaseClient,
   guildId?: string | null,
 ): Promise<ClubRecord | null> {
-  let query = db.from('clubs').select(CLUB_COLUMNS).eq('tag', tag);
+  let query = db.from('clubs').select(CLUB_COLUMNS).eq('tag', tag).is('archived_at', null);
   if (guildId !== undefined && guildId !== null && guildId.trim() !== '') {
     query = query.eq('guild_id', guildId.trim());
   }
@@ -686,7 +696,7 @@ async function findClubById(
   db: DatabaseClient,
   guildId?: string | null,
 ): Promise<ClubRecord | null> {
-  let query = db.from('clubs').select(CLUB_COLUMNS).eq('id', id);
+  let query = db.from('clubs').select(CLUB_COLUMNS).eq('id', id).is('archived_at', null);
   if (guildId !== undefined && guildId !== null && guildId.trim() !== '') {
     query = query.eq('guild_id', guildId.trim());
   }
@@ -1459,4 +1469,297 @@ export async function loadCompareView(
       aligned: sharedRunId !== null,
     },
   };
+}
+
+interface DetailPlayerRow {
+  readonly id: string;
+  readonly tag: string;
+  readonly name: string;
+  readonly trophies: number | null;
+  readonly highestTrophies: number | null;
+  readonly lastBattleAt: string | null;
+  readonly rankedRankName: string | null;
+  readonly highestAllTimeRankedRankName: string | null;
+  readonly soloVictories: number | null;
+  readonly duoVictories: number | null;
+  readonly threeVsThreeVictories: number | null;
+}
+
+const DETAIL_PLAYER_COLUMNS = [
+  'id',
+  'tag',
+  'name',
+  'trophies',
+  'highest_trophies',
+  'last_battle_at',
+  'ranked_rank_name',
+  'highest_all_time_ranked_rank_name',
+  'solo_victories',
+  'duo_victories',
+  'three_vs_three_victories',
+].join(', ');
+
+async function readDetailPlayers(tags: readonly string[], db: DatabaseClient): Promise<DetailPlayerRow[]> {
+  const unique = [...new Set(tags)];
+  if (unique.length === 0) return [];
+  const { data, error } = await db
+    .from('players')
+    .select(DETAIL_PLAYER_COLUMNS)
+    .in('tag', unique);
+  requireOk(error, 'Read member details');
+
+  return (data ?? []).flatMap((value: unknown) => {
+    const row = record(value);
+    const id = asString(row?.['id']);
+    const tag = asString(row?.['tag']);
+    if (id === null || tag === null) return [];
+    return [{
+      id,
+      tag,
+      name: asString(row?.['name']) ?? '',
+      trophies: asNumber(row?.['trophies']),
+      highestTrophies: asNumber(row?.['highest_trophies']),
+      lastBattleAt: asString(row?.['last_battle_at']),
+      rankedRankName: asString(row?.['ranked_rank_name']),
+      highestAllTimeRankedRankName: asString(row?.['highest_all_time_ranked_rank_name']),
+      soloVictories: asNumber(row?.['solo_victories']),
+      duoVictories: asNumber(row?.['duo_victories']),
+      threeVsThreeVictories: asNumber(row?.['three_vs_three_victories']),
+    }];
+  });
+}
+
+function descendingDate(left: string | null, right: string | null): number {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return right.localeCompare(left);
+}
+
+function descendingNumber(left: number | null, right: number | null): number {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return right - left;
+}
+
+function matchesMemberFilter(member: DetailedMember, filter: ClubMemberFilter | null): boolean {
+  switch (filter) {
+    case null:
+      return true;
+    case 'ranked':
+      return member.rankedRankName !== null;
+    case 'ranked-all-time':
+      return member.highestAllTimeRankedRankName !== null;
+    case 'daily-push':
+      return member.progression?.today !== null && member.progression?.today !== undefined;
+    case 'weekly-push':
+      return member.progression?.week !== null && member.progression?.week !== undefined;
+    case 'season-push':
+      return member.progression?.season !== null && member.progression?.season !== undefined;
+    case 'joined-club':
+      return member.joinedAt !== null;
+    case 'solo-wins':
+      return member.soloVictories !== null;
+    case 'duo-wins':
+      return member.duoVictories !== null;
+    case 'three-vs-three':
+      return member.threeVsThreeVictories !== null;
+  }
+}
+
+function compareDetailedMembers(
+  left: DetailedMember,
+  right: DetailedMember,
+  sort: ClubMemberSort,
+  filter: ClubMemberFilter | null,
+): number {
+  switch (filter) {
+    case 'daily-push':
+      return descendingNumber(left.progression?.today ?? null, right.progression?.today ?? null);
+    case 'weekly-push':
+      return descendingNumber(left.progression?.week ?? null, right.progression?.week ?? null);
+    case 'season-push':
+      return descendingNumber(left.progression?.season ?? null, right.progression?.season ?? null);
+    case 'solo-wins':
+      return descendingNumber(left.soloVictories, right.soloVictories);
+    case 'duo-wins':
+      return descendingNumber(left.duoVictories, right.duoVictories);
+    case 'three-vs-three':
+      return descendingNumber(left.threeVsThreeVictories, right.threeVsThreeVictories);
+    default:
+      break;
+  }
+
+  switch (sort) {
+    case 'highest':
+      return descendingNumber(left.highestTrophies, right.highestTrophies);
+    case 'last-match':
+      return descendingDate(left.lastBattleAt, right.lastBattleAt);
+    case 'joined':
+      return descendingDate(left.joinedAt, right.joinedAt);
+    case 'name':
+      return left.name.localeCompare(right.name);
+    case 'trophies':
+      return descendingNumber(left.trophies, right.trophies);
+  }
+}
+
+/** Load sorted, filterable member details using only stored official and verification data. */
+export async function loadClubMemberDetails(
+  input: {
+    readonly tag?: string | undefined;
+    readonly guildId?: string | null | undefined;
+    readonly sort?: ClubMemberSort | undefined;
+    readonly filter?: ClubMemberFilter | null | undefined;
+    readonly search?: string | null | undefined;
+    readonly now?: Date;
+    readonly seasonStartIso?: string | undefined;
+  },
+  options: ClubReadOptions = {},
+): Promise<ResolvedClubResult<ClubMemberDetailView>> {
+  const db = options.db ?? createTrustedClient();
+  const base = await loadSyncedClub(input, { db });
+  if (base.kind !== 'ok') return base;
+
+  const view = base.value;
+  const players = await readDetailPlayers(view.roster.map((member) => member.tag), db);
+  const byTag = new Map(players.map((player) => [player.tag, player]));
+  const playerIds = players.map((player) => player.id);
+  const [runs, memberships, verifications] = await Promise.all([
+    readCompletedRuns(db),
+    playerIds.length === 0
+      ? Promise.resolve({ data: [] as unknown[], error: null })
+      : db
+          .from('club_memberships')
+          .select('player_id, valid_from')
+          .eq('club_id', view.club.id)
+          .is('valid_to', null)
+          .in('player_id', playerIds),
+    playerIds.length === 0
+      ? Promise.resolve({ data: [] as unknown[], error: null })
+      : db
+          .from('player_verifications')
+          .select('player_id')
+          .eq('status', 'active')
+          .in('player_id', playerIds),
+  ]);
+  if (memberships.error !== null && memberships.error !== undefined) {
+    requireOk(memberships.error, 'Read club join dates');
+  }
+  if (verifications.error !== null && verifications.error !== undefined) {
+    requireOk(verifications.error, 'Read verification status');
+  }
+
+  const joinedAt = new Map<string, string>();
+  for (const value of memberships.data ?? []) {
+    const row = record(value);
+    const id = asString(row?.['player_id']);
+    const date = asString(row?.['valid_from']);
+    if (id !== null && date !== null) joinedAt.set(id, date);
+  }
+  const verified = new Set<string>();
+  for (const value of verifications.data ?? []) {
+    const id = asString(record(value)?.['player_id']);
+    if (id !== null) verified.add(id);
+  }
+
+  const completedRunIds = new Set(runs.map((run) => run.id));
+  const snapshots = await readPlayerSnapshots(playerIds, completedRunIds, db);
+  const grouped = new Map<string, ClubSnapshot[]>();
+  for (const entry of snapshots) {
+    const existing = grouped.get(entry.playerId) ?? [];
+    existing.push(entry.snapshot);
+    grouped.set(entry.playerId, existing);
+  }
+
+  const currentAt = view.latestSnapshot?.capturedAt ?? '';
+  const now = input.now ?? new Date();
+  const search = input.search?.trim().toLowerCase() ?? null;
+  const filter = input.filter ?? null;
+  const sort = input.sort ?? 'trophies';
+
+  const members: DetailedMember[] = view.roster.flatMap((member) => {
+    const player = byTag.get(member.tag);
+    if (player === undefined) return [];
+    const playerId = player.id;
+    if (
+      search !== null &&
+      !member.name.toLowerCase().includes(search) &&
+      !member.tag.toLowerCase().includes(search)
+    ) {
+      return [];
+    }
+
+    return [{
+      ...member,
+      playerId,
+      highestTrophies: player.highestTrophies,
+      lastBattleAt: player.lastBattleAt,
+      rankedRankName: player.rankedRankName,
+      highestAllTimeRankedRankName: player.highestAllTimeRankedRankName,
+      soloVictories: player.soloVictories,
+      duoVictories: player.duoVictories,
+      threeVsThreeVictories: player.threeVsThreeVictories,
+      joinedAt: joinedAt.get(playerId) ?? null,
+      verified: verified.has(playerId),
+      progression:
+        currentAt === ''
+          ? null
+          : progressionFor(grouped.get(playerId) ?? [], member.trophies, currentAt, now, input.seasonStartIso),
+    }];
+  });
+
+  return {
+    kind: 'ok',
+    value: {
+      ...view,
+      members: members
+        .filter((member) => matchesMemberFilter(member, filter))
+        .sort((left, right) => compareDetailedMembers(left, right, sort, filter)),
+      sort,
+      filter,
+      search,
+    },
+  };
+}
+
+/** Load closed memberships for a guild-scoped club as BrawlTools-style previous members. */
+export async function loadClubPreviousMembers(
+  input: { readonly tag?: string | undefined; readonly guildId?: string | null | undefined },
+  options: ClubReadOptions = {},
+): Promise<ResolvedClubResult<ClubPreviousMembersView>> {
+  const db = options.db ?? createTrustedClient();
+  const base = await loadSyncedClub(input, { db });
+  if (base.kind !== 'ok') return base;
+
+  const { data, error } = await db
+    .from('club_memberships')
+    .select(
+      'player_id, role, valid_to, player:players!club_memberships_player_id_fkey(tag, name, trophies)',
+    )
+    .eq('club_id', base.value.club.id)
+    .not('valid_to', 'is', null)
+    .order('valid_to', { ascending: false })
+    .limit(25);
+  requireOk(error, 'Read previous club members');
+
+  const previous: PreviousMember[] = [];
+  for (const value of data ?? []) {
+    const row = record(value);
+    const playerId = asString(row?.['player_id']);
+    const player = relationRecord(row?.['player']);
+    const tag = asString(player?.['tag']);
+    if (playerId === null || tag === null) continue;
+    previous.push({
+      playerId,
+      tag,
+      name: asString(player?.['name']) ?? '',
+      trophies: asNumber(player?.['trophies']),
+      role: asString(row?.['role']),
+      leftAt: asString(row?.['valid_to']),
+    });
+  }
+
+  return { kind: 'ok', value: { ...base.value, previous } };
 }

@@ -22,6 +22,11 @@ export interface BotEmojiConfig {
   /** Optional club-overview emojis; Unicode fallbacks are used when unset. */
   readonly ranked: string | undefined;
   readonly rank: string | undefined;
+  /** Tier-specific rank icons (mythic/legendary/masters/pro) used before rank names. */
+  readonly rankMythic: string | undefined;
+  readonly rankLegendary: string | undefined;
+  readonly rankMasters: string | undefined;
+  readonly rankPro: string | undefined;
   readonly megaPig: string | undefined;
   readonly wins: string | undefined;
   readonly online: string | undefined;
@@ -116,6 +121,10 @@ export function getBotConfig(): BotConfig {
       description: readSnowflakeEnv('DISCORD_EMOJI_DESCRIPTION'),
       ranked: readSnowflakeEnv('DISCORD_EMOJI_RANKED'),
       rank: readSnowflakeEnv('DISCORD_EMOJI_RANK'),
+      rankMythic: readSnowflakeEnv('DISCORD_EMOJI_RANK_MYTHIC'),
+      rankLegendary: readSnowflakeEnv('DISCORD_EMOJI_RANK_LEGENDARY'),
+      rankMasters: readSnowflakeEnv('DISCORD_EMOJI_RANK_MASTERS'),
+      rankPro: readSnowflakeEnv('DISCORD_EMOJI_RANK_PRO'),
       megaPig: readSnowflakeEnv('DISCORD_EMOJI_MEGAPIG'),
       wins: readSnowflakeEnv('DISCORD_EMOJI_WINS'),
       online: readSnowflakeEnv('DISCORD_EMOJI_ONLINE'),
