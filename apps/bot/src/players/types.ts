@@ -124,6 +124,30 @@ export interface PlayerHistoryView {
   readonly events: readonly PlayerMembershipEvent[];
 }
 
+export interface PlayerBattleRecord {
+  readonly id: string;
+  readonly syncRunId: string | null;
+  readonly battleTime: string;
+  readonly mode: string | null;
+  readonly map: string | null;
+  readonly battleType: string | null;
+  readonly result: string | null;
+  readonly trophyChange: number | null;
+}
+
+export interface PlayerBattleHistoryView {
+  readonly player: PlayerIdentity;
+  readonly period: HistoryPeriod;
+  readonly battles: readonly PlayerBattleRecord[];
+  readonly wins: number;
+  readonly losses: number;
+  readonly draws: number;
+  readonly trophyChange: number | null;
+  readonly topModes: readonly { readonly mode: string; readonly count: number }[];
+  readonly firstBattleAt: string | null;
+  readonly latestBattleAt: string | null;
+}
+
 export interface PlayerClubsView {
   readonly player: PlayerIdentity;
   readonly currentClub: PlayerClubRef | null;

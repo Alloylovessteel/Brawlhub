@@ -28,9 +28,12 @@ import {
   playerProgression,
   sharedCompletedRunId,
   snapshotWindowsDiffer,
+  summarizePlayerBattles,
   toHistoryPoints,
 } from './calculate';
 import type {
+  PlayerBattleHistoryView,
+  PlayerBattleRecord,
   PlayerClubRef,
   PlayerComparisonSide,
   PlayerComparisonView,
@@ -81,6 +84,9 @@ const PLAYER_COLUMNS = [
 
 const PLAYER_SNAPSHOT_COLUMNS =
   'id, player_id, sync_run_id, captured_at, trophies';
+
+const PLAYER_BATTLE_COLUMNS =
+  'id, sync_run_id, battle_time, mode, map, battle_type, result, trophy_change';
 
 const MEMBERSHIP_SELECT =
   'id, club_id, player_id, role, valid_from, valid_to, ' +
@@ -346,6 +352,34 @@ async function readPlayerIdsInClubs(clubIds: readonly string[], db: DatabaseClie
   return ids;
 }
 
+/** True when a stored player belongs to one of the guild's active registered clubs. */
+async function isPlayerInGuildScope(
+  player: PlayerIdentity,
+  guildId: string | null | undefined,
+  db: DatabaseClient,
+  knownClubIds?: readonly string[] | null,
+): Promise<boolean> {
+  const guildClubIds = knownClubIds !== undefined
+    ? knownClubIds
+    : await readGuildClubIds(guildId, db);
+  if (guildClubIds === null) return true;
+  if (player.id === null || guildClubIds.length === 0) return false;
+  const allowed = await readPlayerIdsInClubs(guildClubIds, db);
+  return allowed.has(player.id);
+}
+
+/** Read a stored player only when it is visible inside the invoking guild. */
+async function readGuildScopedPlayer(
+  tag: string,
+  guildId: string | null | undefined,
+  db: DatabaseClient,
+  guildClubIds?: readonly string[] | null,
+): Promise<PlayerIdentity | null> {
+  const player = await readPlayerByTag(tag, db);
+  if (player === null) return null;
+  return (await isPlayerInGuildScope(player, guildId, db, guildClubIds)) ? player : null;
+}
+
 export async function searchPlayers(
   query: string,
   dbOrOptions: DatabaseClient | PlayerSearchOptions = createTrustedClient(),
@@ -399,6 +433,46 @@ async function readCompletedSnapshots(
     .filter((snapshot): snapshot is ClubSnapshot => snapshot !== null)
     .filter((snapshot) => completedRunIds.has(snapshot.syncRunId));
   return { snapshots, completedRunIds };
+}
+
+async function readPlayerBattles(
+  playerId: string,
+  db: DatabaseClient,
+  period: HistoryPeriod,
+  now: Date,
+): Promise<PlayerBattleRecord[]> {
+  const completedRunIds = new Set((await readCompletedRuns(db)).map((run) => run.id));
+  if (completedRunIds.size === 0) return [];
+
+  const { data, error } = await db
+    .from('player_battles')
+    .select(PLAYER_BATTLE_COLUMNS)
+    .eq('player_id', playerId)
+    .order('battle_time', { ascending: false })
+    .limit(500);
+  requireOk(error, 'Read battle history');
+
+  return (data ?? [])
+    .map((row: unknown) => {
+      const item = record(row);
+      const battleTime = asString(item?.['battle_time']);
+      if (battleTime === null) return null;
+      const syncRunId = asString(item?.['sync_run_id']);
+      if (syncRunId !== null && !completedRunIds.has(syncRunId)) return null;
+      if (!withinPeriod(battleTime, period, now)) return null;
+      const trophyChange = asNumber(item?.['trophy_change']);
+      return {
+        id: asString(item?.['id']) ?? '',
+        syncRunId,
+        battleTime,
+        mode: asString(item?.['mode']),
+        map: asString(item?.['map']),
+        battleType: asString(item?.['battle_type']),
+        result: asString(item?.['result']),
+        trophyChange: trophyChange !== null && Number.isFinite(trophyChange) ? trophyChange : null,
+      } satisfies PlayerBattleRecord;
+    })
+    .filter((battle): battle is PlayerBattleRecord => battle !== null && battle.id !== '');
 }
 
 async function readMemberships(
@@ -606,13 +680,15 @@ export async function loadPlayerProfile(
   const now = input.now ?? new Date();
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   const stored = await readPlayerByTag(normalized.tag, db);
+  const storedInScope =
+    stored !== null && (await isPlayerInGuildScope(stored, input.guildId, db));
   const needsRefresh =
-    stored === null || !isRecentSync(stored.lastSyncedAt, now, staleAfterMs);
+    !storedInScope || stored === null || !isRecentSync(stored.lastSyncedAt, now, staleAfterMs);
   const live = needsRefresh
     ? await fetchLivePlayer(normalized.tag, api, now, options.useCache ?? true)
     : emptyLiveResult();
 
-  if (stored === null && live.profile === null) {
+  if (!storedInScope && live.profile === null) {
     return live.notFound
       ? { kind: 'not-found', tag: normalized.tag }
       : {
@@ -622,17 +698,18 @@ export async function loadPlayerProfile(
         };
   }
 
+  const scopedStored = storedInScope ? stored : null;
   const effective = live.profile !== null
-    ? identityFromLive(live.profile, stored, normalized.tag)
-    : stored;
+    ? identityFromLive(live.profile, scopedStored, normalized.tag)
+    : scopedStored;
   if (effective === null) return { kind: 'not-found', tag: normalized.tag };
 
   const guildClubIds = await readGuildClubIds(input.guildId, db);
-  const [history, memberships] = stored === null
+  const [history, memberships] = scopedStored === null
     ? [{ snapshots: [] as ClubSnapshot[] }, [] as PlayerMembershipRecord[]]
     : await Promise.all([
-        readCompletedSnapshots(storedPlayerId(stored), db),
-        readMemberships(storedPlayerId(stored), db, stored.lastSyncedAt, staleAfterMs, now, guildClubIds),
+        readCompletedSnapshots(storedPlayerId(scopedStored), db),
+        readMemberships(storedPlayerId(scopedStored), db, scopedStored.lastSyncedAt, staleAfterMs, now, guildClubIds),
       ]);
 
   const liveBrawlers = live.profile?.brawlers ?? [];
@@ -702,10 +779,10 @@ export async function loadPlayerHistory(
   const now = input.now ?? new Date();
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   const guildId = input.guildId ?? options.guildId;
-  const player = await readPlayerByTag(normalized.tag, db);
+  const guildClubIds = await readGuildClubIds(guildId, db);
+  const player = await readGuildScopedPlayer(normalized.tag, guildId, db, guildClubIds);
   if (player === null) return { kind: 'not-found', tag: normalized.tag };
 
-  const guildClubIds = await readGuildClubIds(guildId, db);
   const [{ snapshots }, memberships, events] = await Promise.all([
     readCompletedSnapshots(storedPlayerId(player), db),
     readMemberships(storedPlayerId(player), db, player.lastSyncedAt, staleAfterMs, now, guildClubIds),
@@ -747,6 +824,41 @@ export async function loadPlayerHistory(
   };
 }
 
+/** Load stored official battle-log history for one guild-visible player. */
+export async function loadPlayerBattles(
+  input: {
+    readonly tag: string;
+    readonly period: HistoryPeriod;
+    readonly now?: Date;
+    readonly guildId?: string | null;
+  },
+  options: PlayerReadOptions = {},
+): Promise<ResolvedPlayerResult<PlayerBattleHistoryView>> {
+  const normalized = normalizePlayerTag(input.tag);
+  if (!normalized.ok || normalized.tag === undefined) return { kind: 'invalid-tag' };
+
+  const db = options.db ?? createTrustedClient();
+  const now = input.now ?? new Date();
+  const guildId = input.guildId ?? options.guildId;
+  const guildClubIds = await readGuildClubIds(guildId, db);
+  const player = await readGuildScopedPlayer(normalized.tag, guildId, db, guildClubIds);
+  if (player === null) return { kind: 'not-found', tag: normalized.tag };
+
+  const battles = await readPlayerBattles(storedPlayerId(player), db, input.period, now);
+  const summary = summarizePlayerBattles(battles);
+  return {
+    kind: 'ok',
+    value: {
+      player,
+      period: input.period,
+      battles,
+      ...summary,
+      firstBattleAt: battles[battles.length - 1]?.battleTime ?? null,
+      latestBattleAt: battles[0]?.battleTime ?? null,
+    },
+  };
+}
+
 /** Load confirmed and incomplete club-membership history for one player. */
 export async function loadPlayerClubs(
   input: { readonly tag: string; readonly now?: Date; readonly guildId?: string | null },
@@ -759,10 +871,10 @@ export async function loadPlayerClubs(
   const now = input.now ?? new Date();
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   const guildId = input.guildId ?? options.guildId;
-  const player = await readPlayerByTag(normalized.tag, db);
+  const guildClubIds = await readGuildClubIds(guildId, db);
+  const player = await readGuildScopedPlayer(normalized.tag, guildId, db, guildClubIds);
   if (player === null) return { kind: 'not-found', tag: normalized.tag };
 
-  const guildClubIds = await readGuildClubIds(guildId, db);
   const [memberships, events] = await Promise.all([
     readMemberships(storedPlayerId(player), db, player.lastSyncedAt, staleAfterMs, now, guildClubIds),
     readEvents(storedPlayerId(player), db, guildClubIds),
@@ -846,16 +958,15 @@ export async function loadPlayerCompare(
   const db = options.db ?? createTrustedClient();
   const now = input.now ?? new Date();
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
+  const guildId = input.guildId ?? options.guildId ?? null;
+  const guildClubIds = await readGuildClubIds(guildId, db);
   const [firstPlayer, secondPlayer] = await Promise.all([
-    readPlayerByTag(firstTag.tag, db),
-    readPlayerByTag(secondTag.tag, db),
+    readGuildScopedPlayer(firstTag.tag, guildId, db, guildClubIds),
+    readGuildScopedPlayer(secondTag.tag, guildId, db, guildClubIds),
   ]);
   if (firstPlayer === null) return { kind: 'not-found', tag: firstTag.tag };
   if (secondPlayer === null) return { kind: 'not-found', tag: secondTag.tag };
   if (firstPlayer.id === secondPlayer.id) return { kind: 'same-player' };
-
-  const guildId = input.guildId ?? options.guildId ?? null;
-  const guildClubIds = await readGuildClubIds(guildId, db);
   const historyInput: PlayerHistoryInput = {
     tag: firstTag.tag,
     period: input.period,

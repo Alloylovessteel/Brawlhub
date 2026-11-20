@@ -127,7 +127,8 @@ export const battleEventSchema = z
     id: z.number().int().optional(),
     mode: z.string().optional(),
     modeId: z.number().int().optional(),
-    map: z.string().optional(),
+    /** Official battle logs return null for events without a named map. */
+    map: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -171,7 +172,8 @@ export const battleSchema = z
     mode: z.string().optional(),
     type: z.string().optional(),
     result: z.string().optional(),
-    duration: z.number().int().nonnegative().optional(),
+    /** Official battle logs can report -1 when duration is unavailable. */
+    duration: z.number().int().optional(),
     trophyChange: z.number().int().optional(),
     rank: z.number().int().positive().optional(),
     starPlayer: battleParticipantSchema.nullable().optional(),

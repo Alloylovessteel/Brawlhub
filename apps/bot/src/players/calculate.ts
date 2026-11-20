@@ -8,6 +8,7 @@ import {
 import type { ClubSnapshot, HistoryPeriod, TrophyProgression } from '../clubs/types';
 import type {
   ClubMembershipStatus,
+  PlayerBattleRecord,
   PlayerHistoryChange,
   PlayerHistoryPoint,
 } from './types';
@@ -157,4 +158,46 @@ export function snapshotWindowsDiffer(
   secondEnd: string | null,
 ): boolean {
   return firstStart !== secondStart || firstEnd !== secondEnd;
+}
+
+/** Summarize only values actually present in stored battle-log rows. */
+export function summarizePlayerBattles(battles: readonly PlayerBattleRecord[]): {
+  readonly wins: number;
+  readonly losses: number;
+  readonly draws: number;
+  readonly trophyChange: number | null;
+  readonly topModes: readonly { readonly mode: string; readonly count: number }[];
+} {
+  let wins = 0;
+  let losses = 0;
+  let draws = 0;
+  let trophyChange = 0;
+  let hasTrophyChange = false;
+  const modeCounts = new Map<string, number>();
+
+  for (const battle of battles) {
+    const result = battle.result?.toLowerCase() ?? null;
+    if (result === 'victory') wins += 1;
+    else if (result === 'defeat') losses += 1;
+    else if (result === 'draw' || result === 'tie') draws += 1;
+
+    if (battle.trophyChange !== null && Number.isFinite(battle.trophyChange)) {
+      trophyChange += battle.trophyChange;
+      hasTrophyChange = true;
+    }
+    if (battle.mode !== null) {
+      modeCounts.set(battle.mode, (modeCounts.get(battle.mode) ?? 0) + 1);
+    }
+  }
+
+  return {
+    wins,
+    losses,
+    draws,
+    trophyChange: hasTrophyChange ? trophyChange : null,
+    topModes: [...modeCounts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 3)
+      .map(([mode, count]) => ({ mode, count })),
+  };
 }

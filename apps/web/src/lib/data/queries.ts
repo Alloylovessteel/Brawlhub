@@ -10,6 +10,7 @@ import type {
   MembershipEventRow,
   MembershipRow,
   NotificationRow,
+  PlayerBattleRow,
   PlayerRow,
   PlayerSnapshotRow,
   QueryResult,
@@ -434,10 +435,16 @@ export async function getClubSnapshots(
 
 export async function getPlayerSnapshots(
   playerId: string,
-  input: { days?: number; limit?: number } = {},
+  input: { allowedClubIds?: readonly string[]; days?: number; limit?: number } = {},
 ): Promise<QueryResult<PlayerSnapshotRow>> {
   const validId = parseUuid(playerId);
   if (validId === null) return emptyResult('Invalid player id');
+  if (scopeEmpty(input.allowedClubIds)) return emptyResult(null);
+  if (input.allowedClubIds !== undefined) {
+    const scoped = await getPlayerIdsForClubScope(input.allowedClubIds);
+    if (scoped.error !== null) return emptyResult(scoped.error);
+    if (!scoped.ids.includes(validId)) return emptyResult(null);
+  }
   const supabase = await createServerSupabaseClient();
   let query = supabase
     .from('player_snapshots')
@@ -451,6 +458,35 @@ export async function getPlayerSnapshots(
   if (input.limit !== undefined) query = query.limit(input.limit);
   const { data, count, error } = await query;
   return { rows: (data ?? []) as PlayerSnapshotRow[], count: count ?? 0, error: errorText(error) };
+}
+
+export async function getPlayerBattles(
+  playerId: string,
+  input: { allowedClubIds?: readonly string[]; days?: number; limit?: number } = {},
+): Promise<QueryResult<PlayerBattleRow>> {
+  const validId = parseUuid(playerId);
+  if (validId === null) return emptyResult('Invalid player id');
+  if (scopeEmpty(input.allowedClubIds)) return emptyResult(null);
+  if (input.allowedClubIds !== undefined) {
+    const scoped = await getPlayerIdsForClubScope(input.allowedClubIds);
+    if (scoped.error !== null) return emptyResult(scoped.error);
+    if (!scoped.ids.includes(validId)) return emptyResult(null);
+  }
+  const supabase = await createServerSupabaseClient();
+  let query = supabase
+    .from('player_battles')
+    .select(
+      'id, player_id, sync_run_id, battle_time, mode, map, battle_type, result, trophy_change, created_at',
+    )
+    .eq('player_id', validId)
+    .order('battle_time', { ascending: false });
+  if (input.days !== undefined) {
+    const since = new Date(Date.now() - input.days * 24 * 60 * 60 * 1000).toISOString();
+    query = query.gte('battle_time', since);
+  }
+  const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+  const { data, count, error } = await query.limit(limit);
+  return { rows: (data ?? []) as PlayerBattleRow[], count: count ?? 0, error: errorText(error) };
 }
 
 export async function getSyncRuns(limit = 20): Promise<QueryResult<SyncRunRow>> {

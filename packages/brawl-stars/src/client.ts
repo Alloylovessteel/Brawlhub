@@ -204,11 +204,20 @@ export function createBrawlStarsClient(options?: BrawlStarsClientOptions): Brawl
       return request(`/players/${encodeURIComponent(normalizeTag(tag))}`, playerSchema);
     },
     async getBattleLog(tag) {
-      const response = await request(
-        `/players/${encodeURIComponent(normalizeTag(tag))}/battlelog`,
-        battleLogResponseSchema,
-      );
-      return response.items;
+      try {
+        const response = await request(
+          `/players/${encodeURIComponent(normalizeTag(tag))}/battlelog`,
+          battleLogResponseSchema,
+        );
+        return response.items;
+      } catch (error) {
+        // A private or unavailable battle log is simply empty history; do not
+        // treat it as a sync failure or retry a definitively missing resource.
+        if (error instanceof BrawlStarsApiError && error.status === 404) {
+          return [];
+        }
+        throw error;
+      }
     },
     async getBrawlers() {
       const response = await request('/brawlers', brawlerCatalogResponseSchema);

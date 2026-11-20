@@ -153,6 +153,53 @@ describe('createBrawlStarsClient', () => {
     expect(requested).toEqual([`${BASE_URL}/brawlers`]);
   });
 
+  it('accepts official battle log null maps and unavailable durations', async () => {
+    const requested: string[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (input) => {
+      requested.push(String(input));
+      return jsonResponse({
+        items: [
+          {
+            battleTime: '20261120T100000.000Z',
+            event: { id: 15000026, mode: 'soloShowdown', modeId: 4, map: null },
+            battle: {
+              mode: 'showdown',
+              type: 'solo',
+              result: 'victory',
+              duration: -1,
+              trophyChange: 8,
+              players: [
+                {
+                  tag: '#G2P9',
+                  name: 'Example Player',
+                  brawler: { id: 16000000, name: 'SHELLY', power: 11, trophies: 900 },
+                  stats: { kills: 3, deaths: 1, damageDealt: 12345 },
+                },
+              ],
+            },
+          },
+        ],
+        paging: { cursors: {} },
+      });
+    });
+
+    const client = createBrawlStarsClient({ apiKey: API_KEY, baseUrl: BASE_URL, fetchFn });
+    const items = await client.getBattleLog('#g2p9');
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.event?.map).toBeNull();
+    expect(items[0]?.battle?.duration).toBe(-1);
+    expect(requested).toEqual([`${BASE_URL}/players/%23G2P9/battlelog`]);
+  });
+
+  it('treats a 404 battle log as empty history without retrying', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ reason: 'notFound' }, 404));
+    const client = createBrawlStarsClient({ apiKey: API_KEY, baseUrl: BASE_URL, fetchFn });
+
+    await expect(client.getBattleLog('#g2p9')).resolves.toEqual([]);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it('reads the official live event rotation', async () => {
     const requested: string[] = [];
     const fetchFn = vi.fn<typeof fetch>(async (input) => {

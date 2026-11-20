@@ -92,6 +92,11 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         description: 'Show stored trophy and club history for a player.',
       },
       {
+        name: 'player-battles',
+        usage: '/player-battles tag:PLAYERTAG',
+        description: 'Show stored battle-log history and results for a player.',
+      },
+      {
         name: 'player-clubs',
         usage: '/player-clubs tag:PLAYERTAG',
         description: 'Show the club history recorded for a player.',

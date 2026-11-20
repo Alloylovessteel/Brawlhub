@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   service: {
     loadPlayerProfile: vi.fn(),
     loadPlayerHistory: vi.fn(),
+    loadPlayerBattles: vi.fn(),
     loadPlayerClubs: vi.fn(),
     loadPlayerCompare: vi.fn(),
     searchPlayers: vi.fn(),
@@ -46,6 +47,11 @@ import {
   handlePlayerHistoryAutocomplete,
   handlePlayerHistoryComponent,
 } from './player-history';
+import {
+  handlePlayerBattles,
+  handlePlayerBattlesAutocomplete,
+  handlePlayerBattlesComponent,
+} from './player-battles';
 import {
   handlePlayerClubs,
   handlePlayerClubsAutocomplete,
@@ -140,6 +146,34 @@ function historyResult(count: number, period = '30d') {
       progression: null,
       memberships: [],
       events: [],
+    },
+  };
+}
+
+function battlesResult(count: number, period = '30d') {
+  const battles = Array.from({ length: count }, (_, index) => ({
+    id: `b${index}`,
+    syncRunId: `run-${index}`,
+    battleTime: `2026-11-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`,
+    mode: index % 2 === 0 ? 'gemGrab' : 'brawlBall',
+    map: index % 2 === 0 ? 'Double Trouble' : 'Pinhole Punt',
+    battleType: 'ranked',
+    result: index % 3 === 0 ? 'victory' : 'defeat',
+    trophyChange: index % 3 === 0 ? 8 : -4,
+  }));
+  return {
+    kind: 'ok' as const,
+    value: {
+      player: identity(),
+      period,
+      battles,
+      wins: battles.filter((battle) => battle.result === 'victory').length,
+      losses: battles.filter((battle) => battle.result === 'defeat').length,
+      draws: 0,
+      trophyChange: battles.reduce((total, battle) => total + battle.trophyChange, 0),
+      topModes: [{ mode: 'gemGrab', count: Math.ceil(count / 2) }],
+      firstBattleAt: battles[battles.length - 1]?.battleTime ?? null,
+      latestBattleAt: battles[0]?.battleTime ?? null,
     },
   };
 }
@@ -326,6 +360,58 @@ describe('/player-history command', () => {
     mocks.service.searchPlayers.mockResolvedValue([identity()]);
     await handlePlayerHistoryAutocomplete(autocompleteInteraction('tag', 'alp'));
     await handlePlayerHistoryAutocomplete(autocompleteInteraction('period', '7'));
+    expect(mocks.service.searchPlayers).toHaveBeenCalledOnce();
+  });
+});
+
+describe('/player-battles command', () => {
+  it('defaults to 30 days and keeps period/tag in pagination state', async () => {
+    mocks.service.loadPlayerBattles.mockResolvedValue(battlesResult(12));
+    const interaction = chatInteraction({ tag: '#2c0y' });
+
+    await handlePlayerBattles(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect(mocks.service.loadPlayerBattles).toHaveBeenCalledWith({
+      tag: '#2c0y',
+      period: '30d',
+      guildId: 'guild-1',
+    });
+    expect(payload(interaction, 'editReply').components[0].toJSON().components[0]?.custom_id).toBe(
+      'player-battles:page:2:30d|2C0Y',
+    );
+  });
+
+  it('restores state from buttons and ignores malformed states', async () => {
+    mocks.service.loadPlayerBattles.mockResolvedValue(battlesResult(12, '7d'));
+    const button = buttonInteraction('player-battles:page:2:7d|2C0Y');
+    await handlePlayerBattlesComponent(button);
+    expect(mocks.service.loadPlayerBattles).toHaveBeenCalledWith({
+      tag: '2C0Y',
+      period: '7d',
+      guildId: 'guild-1',
+    });
+    expect(payload(button, 'editReply').embeds[0].toJSON().footer?.text).toContain('Page 2 / 2');
+
+    await handlePlayerBattlesComponent(buttonInteraction('player-battles:page:2:bad'));
+    expect(mocks.service.loadPlayerBattles).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a safe empty battle view', async () => {
+    mocks.service.loadPlayerBattles.mockResolvedValue(battlesResult(0));
+    const interaction = chatInteraction({ tag: '#2c0y' });
+
+    await handlePlayerBattles(interaction);
+
+    expect(payload(interaction, 'editReply').embeds[0].toJSON().fields.at(-1)?.value).toContain(
+      'No stored battle-log entries',
+    );
+  });
+
+  it('only autocompletes the tag option', async () => {
+    mocks.service.searchPlayers.mockResolvedValue([identity()]);
+    await handlePlayerBattlesAutocomplete(autocompleteInteraction('tag', 'alp'));
+    await handlePlayerBattlesAutocomplete(autocompleteInteraction('period', '7'));
     expect(mocks.service.searchPlayers).toHaveBeenCalledOnce();
   });
 });

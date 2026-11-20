@@ -53,6 +53,7 @@ try {
     'membership_events',
     'club_snapshots',
     'player_snapshots',
+    'player_battles',
     'sync_runs',
     'notifications',
     'user_roles',
@@ -79,8 +80,9 @@ try {
        FROM pg_policies
       WHERE schemaname = 'public'
         AND tablename = ANY($1::text[])
-        AND cmd = 'SELECT'`,
-    [['membership_events', 'audit_logs']],
+        AND cmd = 'SELECT'
+        AND ('authenticated' = ANY(roles) OR 'PUBLIC' = ANY(roles))`,
+    [['membership_events', 'player_snapshots', 'player_battles', 'audit_logs']],
   );
   const eventPolicy = policies.rows.find((row) => row.tablename === 'membership_events');
   check(eventPolicy !== undefined, 'membership_events SELECT policy is missing');
@@ -97,6 +99,29 @@ try {
     auditPolicy === undefined || auditPolicy.qual.includes('is_global_owner'),
     'audit_logs SELECT policy is not owner-only',
   );
+
+  const playerAccessFunction = await client.query(
+    `SELECT 1
+       FROM pg_proc p
+       JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public'
+        AND p.proname = 'has_player_access'
+        AND p.pronargs = 2
+        AND pg_get_function_identity_arguments(p.oid) LIKE '%uuid%uuid%'`,
+  );
+  check(playerAccessFunction.rowCount === 1, 'public.has_player_access(uuid, uuid) is missing');
+
+  for (const table of ['player_snapshots', 'player_battles']) {
+    const tablePolicies = policies.rows.filter((row) => row.tablename === table);
+    check(tablePolicies.length === 1, `${table} must have exactly one client SELECT policy`);
+    for (const policy of tablePolicies) {
+      const qual = String(policy.qual ?? '');
+      check(
+        qual.includes('has_player_access') && !/\btrue\b/i.test(qual),
+        `${table} SELECT policy is not player-scoped`,
+      );
+    }
+  }
 
   const grants = await client.query(
     `SELECT table_name, grantee, privilege_type
@@ -134,7 +159,7 @@ try {
   }
 
   console.log(
-    `[verify:rls] OK: ${rlsTables.length} tables have RLS, event history is club-scoped, audit log is owner-only, and service-only grants are intact.`,
+    `[verify:rls] OK: ${rlsTables.length} tables have RLS, event/player history is scoped, audit log is owner-only, and service-only grants are intact.`,
   );
 } catch (error) {
   console.error('[verify:rls] Database check failed:', error instanceof Error ? error.message : 'unknown error');

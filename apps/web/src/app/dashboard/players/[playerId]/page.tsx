@@ -8,6 +8,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { getAccessibleReadClubIds, requirePageSession } from '@/lib/auth/session';
 import {
+  getPlayerBattles,
   getPlayerById,
   getPlayerEvents,
   getPlayerMemberships,
@@ -25,11 +26,12 @@ export default async function PlayerProfilePage({
   const scopeOptions = scope === null ? {} : { allowedClubIds: [...scope] };
   const { playerId } = await params;
 
-  const [playerResult, memberships, events, snapshots] = await Promise.all([
+  const [playerResult, memberships, events, snapshots, battles] = await Promise.all([
     getPlayerById(playerId, scopeOptions),
     getPlayerMemberships(playerId, scopeOptions),
     getPlayerEvents(playerId, scopeOptions),
-    getPlayerSnapshots(playerId),
+    getPlayerSnapshots(playerId, scopeOptions),
+    getPlayerBattles(playerId, scopeOptions),
   ]);
 
   if (playerResult.rows.length === 0) {
@@ -46,6 +48,19 @@ export default async function PlayerProfilePage({
   const chartData = snapshots.rows
     .filter((snapshot) => snapshot.trophies !== null)
     .map((snapshot) => ({ label: formatDateTime(snapshot.captured_at), value: snapshot.trophies as number }));
+
+  const battleRows = battles.rows.map((battle) => {
+    const modeMap = [battle.mode, battle.map]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join(' / ');
+    return {
+      id: battle.id,
+      time: formatDateTime(battle.battle_time),
+      modeMap: modeMap === '' ? '—' : modeMap,
+      result: battle.result ?? '—',
+      trophyChange: battle.trophy_change === null ? '—' : formatNumber(battle.trophy_change),
+    };
+  });
 
   const statistics = [
     { label: 'Current trophies', value: player.trophies },
@@ -213,6 +228,39 @@ export default async function PlayerProfilePage({
                     <TableCell>{formatDateTime(snapshot.captured_at)}</TableCell>
                     <TableCell className="text-right">{formatNumber(snapshot.trophies)}</TableCell>
                     <TableCell className="font-mono text-xs text-muted">{snapshot.payload_hash.slice(0, 16)}…</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Recent battle history</CardTitle>
+          <CardDescription>Collected battle-log entries, newest first.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {battleRows.length === 0 ? (
+            <p className="muted-text py-6 text-center text-sm">No battle records collected.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Time</TableHead>
+                  <TableHead>Mode / map</TableHead>
+                  <TableHead>Result</TableHead>
+                  <TableHead className="text-right">Trophy change</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {battleRows.map((battle) => (
+                  <TableRow key={battle.id}>
+                    <TableCell>{battle.time}</TableCell>
+                    <TableCell>{battle.modeMap}</TableCell>
+                    <TableCell>{battle.result}</TableCell>
+                    <TableCell className="text-right">{battle.trophyChange}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

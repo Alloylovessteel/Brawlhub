@@ -13,6 +13,8 @@ import {
 import type { Page } from '../discord/pagination';
 import type {
   ClubMembershipStatus,
+  PlayerBattleHistoryView,
+  PlayerBattleRecord,
   PlayerClubRef,
   PlayerClubsView,
   PlayerComparisonView,
@@ -425,6 +427,89 @@ export function buildPlayerHistoryPageEmbed(
     embed.addFields({
       name: 'Club Membership Context',
       value: truncate(lines.join('\n'), 1024),
+    });
+  }
+
+  return fitEmbedToDiscordLimits(embed);
+}
+
+function battleResultLabel(result: string | null): string {
+  switch (result?.toLowerCase()) {
+    case 'victory':
+      return 'Victory';
+    case 'defeat':
+      return 'Defeat';
+    case 'draw':
+    case 'tie':
+      return 'Draw';
+    default:
+      return result === null ? 'Result not stored' : result;
+  }
+}
+
+/** Build a paginated `/player-battles` embed from stored battle-log rows. */
+export function buildPlayerBattlesPageEmbed(
+  view: PlayerBattleHistoryView,
+  page: Page<PlayerBattleRecord>,
+  config: PlayerEmbedConfig,
+): EmbedBuilder {
+  const emojis = profileEmojis(config);
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(truncate(`${playerName(view, config)} — Battle History`, 256))
+    .setDescription(
+      truncate(
+        `${PERIOD_LABELS[view.period]} • ${page.total} stored battle${page.total === 1 ? '' : 's'}` +
+          (view.latestBattleAt === null
+            ? ''
+            : `\nLatest: ${formatAbsoluteTime(view.latestBattleAt) ?? view.latestBattleAt}`),
+        2048,
+      ),
+    )
+    .setFooter({
+      text: truncate(
+        `${PERIOD_LABELS[view.period]} • Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total} • Official battle-log data only`,
+        2048,
+      ),
+    });
+
+  embed.addFields({
+    name: 'Stored Results',
+    value: `${emojis.wins} ${view.wins} wins • ${view.losses} losses • ${view.draws} draws`,
+  });
+  if (view.trophyChange !== null) {
+    embed.addFields({ name: 'Trophy Change', value: formatDelta(view.trophyChange) });
+  }
+  if (view.topModes.length > 0) {
+    embed.addFields({
+      name: 'Most Recorded Modes',
+      value: view.topModes.map((entry) => `• ${escapeMarkdown(entry.mode)} — ${entry.count}`).join('\n'),
+    });
+  }
+
+  if (page.items.length === 0) {
+    embed.addFields({
+      name: 'Battles',
+      value: 'No stored battle-log entries exist for this player in the selected period.',
+    });
+  } else {
+    page.items.forEach((battle) => {
+      embed.addFields({
+        name: truncate(formatAbsoluteTime(battle.battleTime) ?? battle.battleTime, 256),
+        value: truncate(
+          [
+            battle.mode === null ? null : `Mode: ${escapeMarkdown(battle.mode)}`,
+            battle.map === null ? null : `Map: ${escapeMarkdown(battle.map)}`,
+            `Result: ${battleResultLabel(battle.result)}`,
+            battle.trophyChange === null
+              ? null
+              : `Trophy change: ${formatDelta(battle.trophyChange)}`,
+          ]
+            .filter((line): line is string => line !== null)
+            .join('\n'),
+          1024,
+        ),
+      });
     });
   }
 

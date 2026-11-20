@@ -86,6 +86,19 @@ export interface PlayerSnapshotRow {
   payload_hash: string;
 }
 
+export interface PlayerBattleRow {
+  id: string;
+  player_id: string;
+  sync_run_id: string | null;
+  battle_time: string;
+  mode: string | null;
+  map: string | null;
+  battle_type: string | null;
+  result: string | null;
+  trophy_change: number | null;
+  created_at: string;
+}
+
 export interface SyncRunRow {
   id: string;
   scope: string;

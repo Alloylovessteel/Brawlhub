@@ -74,6 +74,12 @@ import {
   handlePlayerHistoryComponent,
 } from './player-history.js';
 import {
+  playerBattlesCommandData,
+  handlePlayerBattles,
+  handlePlayerBattlesAutocomplete,
+  handlePlayerBattlesComponent,
+} from './player-battles.js';
+import {
   playerClubsCommandData,
   handlePlayerClubs,
   handlePlayerClubsAutocomplete,
@@ -297,6 +303,12 @@ export const commands: readonly CommandDefinition[] = [
     handle: handlePlayerHistory,
     autocomplete: handlePlayerHistoryAutocomplete,
     handleComponent: handlePlayerHistoryComponent,
+  },
+  {
+    data: playerBattlesCommandData,
+    handle: handlePlayerBattles,
+    autocomplete: handlePlayerBattlesAutocomplete,
+    handleComponent: handlePlayerBattlesComponent,
   },
   {
     data: playerClubsCommandData,

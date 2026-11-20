@@ -104,15 +104,14 @@ All sync-derived writes are upserts with conflict handling so repeated runs conv
 3. A trusted sync job (later phase) takes the advisory lock, records a `sync_run`, calls the Brawl Stars API with the Bearer key, writes snapshots, derives temporal memberships and `membership_events`, and emits idempotent notifications.
 4. The bot uses server-side credentials for its commands; no Discord OAuth tokens are persisted by the app.
 
-## Phase roadmap
+## Delivery phases
 
 | Phase | Scope | Status |
 | --- | --- | --- |
-| 1 | Foundation: root configs, `.env.example`, migration runner, initial RLS schema, web health endpoint, bot ping skeleton, `shared` / `database` / `logging` packages | **Current** |
-| 2 | Brawl Stars API client + sync engine (`sync_runs`, advisory lock, snapshots, memberships, events) | Planned |
-| 3 | Discord auth flow wired into the web app + role administration | Planned |
-| 4 | Discord bot commands beyond `ping` | Planned |
-| 5 | Dashboard UI | Planned |
-| 6 | Notifications, hardening, and observability | Planned |
+| 1 | Verified main/alt accounts, Discord identity links, admin authorization and guild-scoped configuration | Implemented |
+| 2 / 2B | Official API sync, registered guild clubs, club commands, overview toggles, club logs and scheduled reports | Implemented |
+| 3 | Player profiles, trophy/membership history, official battle-log history in bot and web, scoped history RLS | Implemented |
+| 4 | Ranked-role commands (`/fn`), `/auto setup`, and full `/update` refresh | Next |
+| 5 | Image and asset presentation work | Deferred |
 
-Only the Phase 1 foundation exists today; later phases are design targets, not shipped features.
+Every phase keeps reads and writes inside the invoking Discord guild. Player and club statistics, rosters and battle logs come only from the official Brawl Stars API or stored official snapshots; BrawlAPI supplies static metadata and assets only.

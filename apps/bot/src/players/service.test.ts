@@ -14,6 +14,7 @@ vi.mock('@brawlhub/brawl-stars', async (importOriginal) => {
 import { BrawlStarsApiError } from '@brawlhub/brawl-stars';
 import {
   clearPlayerApiCache,
+  loadPlayerBattles,
   loadPlayerClubs,
   loadPlayerCompare,
   loadPlayerHistory,
@@ -27,6 +28,8 @@ type Tables = Record<string, Row[]>;
 interface Call {
   readonly table: string;
   readonly filters: Row;
+  readonly ins: Record<string, unknown[]>;
+  readonly nulls: string[];
   readonly or: string | null;
   readonly orders: number;
   readonly limit: number | null;
@@ -39,6 +42,8 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
   function from(table: string) {
     const state = {
       filters: {} as Row,
+      ins: {} as Record<string, unknown[]>,
+      nulls: [] as string[],
       or: null as string | null,
       orders: 0,
       limit: null as number | null,
@@ -49,6 +54,12 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
       let result = [...(tables[table] ?? [])];
       for (const [field, value] of Object.entries(state.filters)) {
         result = result.filter((row) => row[field] === value);
+      }
+      for (const [field, values] of Object.entries(state.ins)) {
+        result = result.filter((row) => values.includes(row[field]));
+      }
+      for (const field of state.nulls) {
+        result = result.filter((row) => row[field] === null);
       }
       if (state.or !== null) {
         const needle = state.or.match(/ilike\.%([^%]+)%/)?.[1]?.replace(/\\(.)/g, '$1') ?? '';
@@ -66,6 +77,8 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
       calls.push({
         table,
         filters: { ...state.filters },
+        ins: { ...state.ins },
+        nulls: [...state.nulls],
         or: state.or,
         orders: state.orders,
         limit: state.limit,
@@ -85,6 +98,15 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
       select: () => builder,
       eq: (field: string, value: unknown) => {
         state.filters[field] = value;
+        return builder;
+      },
+      in: (field: string, values: readonly unknown[]) => {
+        state.ins[field] = [...values];
+        return builder;
+      },
+      is: (field: string, value: unknown) => {
+        if (value === null) state.nulls.push(field);
+        else state.filters[field] = value;
         return builder;
       },
       or: (expression: string) => {
@@ -166,11 +188,26 @@ const EVENTS: Row[] = [
   { id: 'e3', player_id: 'p3', event_type: 'leave', detected_at: '2026-11-11T00:00:00.000Z', from_club: CLUB_A, to_club: null },
 ];
 
+const CLUBS: Row[] = [
+  { id: 'club-a', guild_id: 'guild-1', tag: '8QCL', name: 'Alpha Club', archived_at: null },
+  { id: 'club-b', guild_id: 'guild-2', tag: '2C0Y', name: 'Bravo Club', archived_at: null },
+];
+
+const BATTLES: Row[] = [
+  { id: 'b1', player_id: 'p1', sync_run_id: 'run-3', battle_time: '2026-11-17T12:00:00.000Z', mode: 'gemGrab', map: 'Double Trouble', battle_type: 'ranked', result: 'victory', trophy_change: 8 },
+  { id: 'b2', player_id: 'p1', sync_run_id: 'run-2', battle_time: '2026-11-10T12:00:00.000Z', mode: 'brawlBall', map: null, battle_type: 'ranked', result: 'defeat', trophy_change: -4 },
+  { id: 'b3', player_id: 'p1', sync_run_id: 'run-1', battle_time: '2026-11-05T12:00:00.000Z', mode: 'showdown', map: null, battle_type: 'solo', result: 'victory', trophy_change: 5 },
+  { id: 'b4', player_id: 'p1', sync_run_id: 'run-running', battle_time: '2026-11-18T11:00:00.000Z', mode: 'gemGrab', map: 'Double Trouble', battle_type: 'ranked', result: 'victory', trophy_change: 8 },
+  { id: 'b5', player_id: 'p2', sync_run_id: 'run-3', battle_time: '2026-11-17T12:00:00.000Z', mode: 'gemGrab', map: 'Double Trouble', battle_type: 'ranked', result: 'victory', trophy_change: 8 },
+];
+
 function tables(): Tables {
   return {
     players: PLAYERS.map((row) => ({ ...row })),
+    clubs: CLUBS.map((row) => ({ ...row })),
     sync_runs: RUNS.map((row) => ({ ...row })),
     player_snapshots: SNAPSHOTS.map((row) => ({ ...row })),
+    player_battles: BATTLES.map((row) => ({ ...row })),
     club_memberships: MEMBERSHIPS.map((row) => ({ ...row })),
     membership_events: EVENTS.map((row) => ({ ...row })),
   };
@@ -363,6 +400,67 @@ describe('player service', () => {
     if (stale.kind !== 'ok') return;
     expect(stale.value.currentClub).toBeNull();
     expect(stale.value.memberships[0]?.status).toBe('incomplete');
+  });
+
+  it('summarizes only completed official battles in the selected period', async () => {
+    const result = await loadPlayerBattles(
+      { tag: '2C0Y', period: '30d', now: NOW, guildId: 'guild-1' },
+      { db: createFakeDb(tables()) as never },
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.battles.map((battle) => battle.id)).toEqual(['b1', 'b2', 'b3']);
+    expect(result.value.wins).toBe(2);
+    expect(result.value.losses).toBe(1);
+    expect(result.value.draws).toBe(0);
+    expect(result.value.trophyChange).toBe(9);
+    expect(result.value.topModes).toEqual([
+      { mode: 'brawlBall', count: 1 },
+      { mode: 'gemGrab', count: 1 },
+      { mode: 'showdown', count: 1 },
+    ]);
+    expect(result.value.firstBattleAt).toBe('2026-11-05T12:00:00.000Z');
+    expect(result.value.latestBattleAt).toBe('2026-11-17T12:00:00.000Z');
+
+    const short = await loadPlayerBattles(
+      { tag: '2C0Y', period: '7d', now: NOW, guildId: 'guild-1' },
+      { db: createFakeDb(tables()) as never },
+    );
+    expect(short.kind).toBe('ok');
+    if (short.kind !== 'ok') return;
+    expect(short.value.battles.map((battle) => battle.id)).toEqual(['b1']);
+  });
+
+  it('rejects stored history reads for players outside the invoking guild', async () => {
+    const battleDb = createFakeDb(tables());
+    await expect(
+      loadPlayerBattles(
+        { tag: 'Q8VR', period: '30d', now: NOW, guildId: 'guild-1' },
+        { db: battleDb as never },
+      ),
+    ).resolves.toEqual({ kind: 'not-found', tag: 'Q8VR' });
+    expect(battleDb.calls.some((call) => call.table === 'player_battles')).toBe(false);
+
+    await expect(
+      loadPlayerHistory(
+        { tag: 'Q8VR', period: '30d', now: NOW, guildId: 'guild-1' },
+        { db: createFakeDb(tables()) as never },
+      ),
+    ).resolves.toEqual({ kind: 'not-found', tag: 'Q8VR' });
+
+    await expect(
+      loadPlayerClubs(
+        { tag: 'Q8VR', now: NOW, guildId: 'guild-1' },
+        { db: createFakeDb(tables()) as never },
+      ),
+    ).resolves.toEqual({ kind: 'not-found', tag: 'Q8VR' });
+
+    await expect(
+      loadPlayerCompare(
+        { firstTag: '2C0Y', secondTag: 'Q8VR', period: '30d', now: NOW, guildId: 'guild-1' },
+        { db: createFakeDb(tables()) as never },
+      ),
+    ).resolves.toEqual({ kind: 'not-found', tag: 'Q8VR' });
   });
 
   it('compares aligned players and warns when snapshot windows differ', async () => {

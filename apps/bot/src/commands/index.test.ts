@@ -74,6 +74,7 @@ describe('command registry', () => {
       'events',
       'me',
       'player-history',
+      'player-battles',
       'player-clubs',
       'player-compare',
       'leaderboard',

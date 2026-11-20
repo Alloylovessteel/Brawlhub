@@ -1,6 +1,6 @@
 # Phase 3 foundations: authentication, permissions and data access
 
-This document records the Phase 3 foundation decisions before dashboard UI work begins. It is based on a review of the existing Next.js app, Supabase migrations, sync engine and Discord bot.
+This document records the Phase 3 foundation decisions that the implemented dashboard and bot history features follow. It is based on a review of the Next.js app, Supabase migrations, sync engine and Discord bot.
 
 ## Existing architecture confirmed
 
