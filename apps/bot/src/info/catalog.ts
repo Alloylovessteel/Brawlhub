@@ -189,6 +189,13 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
           'Search by player tag. Discord identity search is restricted to authorised staff.',
         permission: 'members:verify for discord searches',
       },
+      {
+        name: 'fn',
+        usage: '/fn list | /fn set tier:DIAMOND role:@ROLE | /fn me',
+        description:
+          'View ranked roles, map an official tier to a Discord role, or refresh your own role.',
+        permission: 'clubs:write for /fn set',
+      },
     ],
   },
   {
@@ -272,6 +279,20 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         usage: '/audit',
         description: 'View a read-only, paginated audit log.',
         permission: 'audit:read (server owner)',
+      },
+      {
+        name: 'auto',
+        usage: '/auto setup',
+        description:
+          'Create or reuse ranked roles and post the verification guide without creating channels.',
+        permission: 'clubs:write',
+      },
+      {
+        name: 'update',
+        usage: '/update',
+        description:
+          'Refresh ranked roles for verified main accounts in this server from stored official data.',
+        permission: 'clubs:write',
       },
     ],
   },

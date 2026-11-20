@@ -205,6 +205,21 @@ import {
 } from './help.js';
 import { aboutCommandData, handleAbout } from './about.js';
 import { statusCommandData, handleStatus } from './status.js';
+import {
+  fnCommandData,
+  handleFn,
+  handleFnComponent,
+} from './fn.js';
+import {
+  autoCommandData,
+  handleAuto,
+  handleAutoComponent,
+} from './auto.js';
+import {
+  updateCommandData,
+  handleUpdate,
+  handleUpdateComponent,
+} from './update.js';
 
 const logger = createLogger('bot');
 
@@ -441,6 +456,21 @@ export const commands: readonly CommandDefinition[] = [
   {
     data: statusCommandData,
     handle: handleStatus,
+  },
+  {
+    data: fnCommandData,
+    handle: handleFn,
+    handleComponent: handleFnComponent,
+  },
+  {
+    data: autoCommandData,
+    handle: handleAuto,
+    handleComponent: handleAutoComponent,
+  },
+  {
+    data: updateCommandData,
+    handle: handleUpdate,
+    handleComponent: handleUpdateComponent,
   },
 ];
 

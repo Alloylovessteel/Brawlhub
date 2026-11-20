@@ -25,6 +25,11 @@ export interface GuildSettingsView {
   readonly reportDailyChannelId: string | null;
   readonly reportWeeklyChannelId: string | null;
   readonly reportMonthlyChannelId: string | null;
+  /** Phase 4: official ranked tier to Discord role mapping for this guild. */
+  readonly rankedRoleIds: Readonly<Record<string, string>>;
+  /** Phase 4: where this guild's verification message was posted. */
+  readonly verificationChannelId: string | null;
+  readonly verificationMessageId: string | null;
   readonly updatedAt: string | null;
 }
 

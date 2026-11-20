@@ -251,8 +251,9 @@ export async function findVerifiedPlayerForDiscordUser(
   return { tag: selected.tag, name: selected.name };
 }
 
-/** A link as shown to staff, including the owning Discord user. */
+/** A link as shown to staff, including the owning Discord user and player ID. */
 export interface RegisteredLinkView extends LinkedAccountView {
+  readonly playerId: string;
   readonly discordUserId: string;
   readonly discordUsername: string | null;
 }
@@ -319,9 +320,11 @@ export async function listGuildVerifiedLinks(
     if (profile === null || typeof profile !== 'object') return [];
     const profileRow = profile as Record<string, unknown>;
     const discordUserId = asString(profileRow.discord_user_id);
-    if (discordUserId === null) return [];
+    const playerId = asString(row.player_id);
+    if (discordUserId === null || playerId === null) return [];
     return [{
       ...link,
+      playerId,
       discordUserId,
       discordUsername: asString(profileRow.username),
     }];

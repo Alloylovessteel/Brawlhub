@@ -102,6 +102,9 @@ describe('command registry', () => {
       'help',
       'about',
       'status',
+      'fn',
+      'auto',
+      'update',
     ]);
     expect(commands.find((command) => command.data.name === 'competition')?.autocomplete).toBeTypeOf(
       'function',
@@ -130,6 +133,11 @@ describe('command registry', () => {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
     for (const name of ['club-overview', 'clublogs']) {
+      expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
+        'function',
+      );
+    }
+    for (const name of ['fn', 'auto', 'update']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );

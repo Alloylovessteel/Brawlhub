@@ -226,6 +226,17 @@ function asStringArray(value: unknown): string[] {
     : [];
 }
 
+function parseRoleIdMap(value: unknown): Record<string, string> {
+  const source = record(value);
+  if (source === null) return {};
+  const result: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(source)) {
+    const roleId = asString(raw);
+    if (roleId !== null && /^\d{17,20}$/.test(roleId)) result[key] = roleId;
+  }
+  return result;
+}
+
 function parseTimestamp(value: unknown): number | null {
   const text = asString(value);
   if (text === null) return null;
@@ -287,6 +298,9 @@ interface GuildSettingsRow {
   report_daily_channel_id: string | null;
   report_weekly_channel_id: string | null;
   report_monthly_channel_id: string | null;
+  ranked_role_ids: Record<string, unknown> | null;
+  verification_channel_id: string | null;
+  verification_message_id: string | null;
   updated_at: string | null;
 }
 
@@ -297,7 +311,7 @@ async function readGuildSettingsRow(
   const result = await db
     .from('guild_settings')
     .select(
-      'guild_id, primary_club_id, announcement_channel_id, verified_role_id, overview_channel_id, overview_message_id, overview_fields, report_daily_channel_id, report_weekly_channel_id, report_monthly_channel_id, updated_at',
+      'guild_id, primary_club_id, announcement_channel_id, verified_role_id, overview_channel_id, overview_message_id, overview_fields, report_daily_channel_id, report_weekly_channel_id, report_monthly_channel_id, ranked_role_ids, verification_channel_id, verification_message_id, updated_at',
     )
     .eq('guild_id', guildId)
     .maybeSingle();
@@ -345,6 +359,9 @@ export async function loadGuildSettings(
     reportDailyChannelId: asString(row?.['report_daily_channel_id']),
     reportWeeklyChannelId: asString(row?.['report_weekly_channel_id']),
     reportMonthlyChannelId: asString(row?.['report_monthly_channel_id']),
+    rankedRoleIds: parseRoleIdMap(row?.['ranked_role_ids']),
+    verificationChannelId: asString(row?.['verification_channel_id']),
+    verificationMessageId: asString(row?.['verification_message_id']),
     updatedAt: asString(row?.['updated_at']),
   };
 }
@@ -410,6 +427,9 @@ export async function updateGuildSettings(
     report_daily_channel_id: asString(existing?.['report_daily_channel_id']),
     report_weekly_channel_id: asString(existing?.['report_weekly_channel_id']),
     report_monthly_channel_id: asString(existing?.['report_monthly_channel_id']),
+    ranked_role_ids: parseRoleIdMap(existing?.['ranked_role_ids']),
+    verification_channel_id: asString(existing?.['verification_channel_id']),
+    verification_message_id: asString(existing?.['verification_message_id']),
     updated_at: asString(existing?.['updated_at']),
   };
   if (input.field === 'primaryClubId') next.primary_club_id = value;
@@ -436,6 +456,9 @@ export async function updateGuildSettings(
       report_daily_channel_id: next.report_daily_channel_id,
       report_weekly_channel_id: next.report_weekly_channel_id,
       report_monthly_channel_id: next.report_monthly_channel_id,
+      ranked_role_ids: next.ranked_role_ids,
+      verification_channel_id: next.verification_channel_id,
+      verification_message_id: next.verification_message_id,
     },
     { onConflict: 'guild_id' },
   );

@@ -111,7 +111,7 @@ All sync-derived writes are upserts with conflict handling so repeated runs conv
 | 1 | Verified main/alt accounts, Discord identity links, admin authorization and guild-scoped configuration | Implemented |
 | 2 / 2B | Official API sync, registered guild clubs, club commands, overview toggles, club logs and scheduled reports | Implemented |
 | 3 | Player profiles, trophy/membership history, official battle-log history in bot and web, scoped history RLS | Implemented |
-| 4 | Ranked-role commands (`/fn`), `/auto setup`, and full `/update` refresh | Next |
+| 4 | Ranked-role commands (`/fn`), `/auto setup`, and full `/update` refresh | Implemented |
 | 5 | Image and asset presentation work | Deferred |
 
 Every phase keeps reads and writes inside the invoking Discord guild. Player and club statistics, rosters and battle logs come only from the official Brawl Stars API or stored official snapshots; BrawlAPI supplies static metadata and assets only.
