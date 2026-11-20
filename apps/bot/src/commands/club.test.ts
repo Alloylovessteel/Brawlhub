@@ -49,9 +49,11 @@ function chatInteraction(
   tag: string | null = null,
   guildId: string | null = 'guild-1',
   options: Record<string, unknown> = {},
+  userId = 'user-1',
 ) {
   const interaction = {
     guildId,
+    user: { id: userId },
     options: {
       getString: vi.fn((name: string) =>
         name === 'tag' ? tag : (options[name] ?? null),
@@ -94,10 +96,12 @@ function selectInteraction(
   customId: string,
   values: string[],
   guildId: string | null = 'guild-1',
+  userId = 'user-1',
 ) {
   const interaction = {
     customId,
     guildId,
+    user: { id: userId },
     values,
     isStringSelectMenu: vi.fn(() => true),
     replied: false,
@@ -105,6 +109,7 @@ function selectInteraction(
     deferReply: vi.fn(async () => {
       interaction.deferred = true;
     }),
+    deferUpdate: vi.fn(async () => undefined),
     editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
@@ -245,6 +250,54 @@ describe('/club command', () => {
         content: expect.stringContaining('authorised user must register/link'),
       }),
     );
+  });
+
+  it('preserves /club options when resolving a tagless lookup through the chooser', async () => {
+    const base = {
+      ...okView().view,
+      rosterSource: 'snapshot' as const,
+      completedRunIds: new Set<string>(),
+      latestSnapshot: null,
+      roster: [],
+    };
+    mocks.service.loadClubMemberDetails
+      .mockResolvedValueOnce({ kind: 'no-default' })
+      .mockResolvedValueOnce({
+        kind: 'ok',
+        value: { ...base, members: [], sort: 'highest', filter: 'ranked', search: 'Leader' },
+      });
+    mocks.service.getRegisteredClubs.mockResolvedValue([
+      { ...okView().view.club, tag: '2C0Y', name: 'Alpha' },
+      { ...okView().view.club, id: 'club-2', tag: 'TAG2', name: 'Beta' },
+    ]);
+    const interaction = chatInteraction(null, 'guild-1', {
+      section: 'details',
+      sort: 'highest',
+      filter: 'ranked',
+      member: 'Leader',
+    });
+
+    await handleClub(interaction);
+
+    const chooserPayload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    const customId = chooserPayload.components[0].toJSON().components[0].custom_id as string;
+    expect(customId).toMatch(/^club:choose:/);
+
+    const select = selectInteraction(customId, ['TAG2']);
+    await handleClubComponent(select);
+
+    expect(select.deferUpdate).toHaveBeenCalledOnce();
+    expect(mocks.service.loadClubMemberDetails).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        tag: 'TAG2',
+        guildId: 'guild-1',
+        sort: 'highest',
+        filter: 'ranked',
+        search: 'Leader',
+      }),
+    );
+    const payload = (select.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(payload.embeds).toHaveLength(1);
   });
 
   it('renders an embed without unavailable fields when data is missing', async () => {

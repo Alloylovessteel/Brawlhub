@@ -23,7 +23,9 @@ import {
 import {
   DEFAULT_PAGINATION_STATE,
   paginationStateForTag,
+  readClubChooserSelection,
   replyClubLookupFailure,
+  replyWithClubChooserIfNeeded,
   respondWithClubChoices,
   tagFromPaginationState,
 } from './club-utils';
@@ -131,6 +133,11 @@ export async function handleClubHistory(interaction: ChatInputCommandInteraction
   const built = await loadPage(tag, interaction.guildId, period, 1);
 
   if (built.kind === 'lookup-failure') {
+    if (
+      await replyWithClubChooserIfNeeded(interaction, COMMAND_NAME, built.failure, { period })
+    ) {
+      return;
+    }
     await replyClubLookupFailure(interaction, built.failure);
     return;
   }
@@ -139,6 +146,37 @@ export async function handleClubHistory(interaction: ChatInputCommandInteraction
 }
 
 export async function handleClubHistoryComponent(interaction: CommandComponentInteraction): Promise<void> {
+  const chooser = readClubChooserSelection<{ readonly period: HistoryPeriod }>(interaction, COMMAND_NAME);
+  if (chooser.kind !== 'none') {
+    try {
+      await interaction.deferUpdate();
+      if (chooser.kind === 'expired') {
+        await interaction.editReply({
+          content: 'That club chooser expired. Run the command again.',
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      const built = await loadPage(chooser.tag, interaction.guildId, chooser.state.period, 1);
+      if (built.kind === 'lookup-failure') {
+        await interaction.editReply({
+          content: 'This club is no longer available.',
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      await interaction.editReply({ ...built.payload, content: null, allowedMentions: { parse: [] } });
+    } catch (error) {
+      logger.error('Club history chooser failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      });
+      await replyWithSafeError(interaction);
+    }
+    return;
+  }
+
   if (!isPaginationButtonWithState(interaction, COMMAND_NAME)) return;
   const parsed = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   if (parsed === null) return;

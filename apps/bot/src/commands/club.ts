@@ -40,6 +40,8 @@ import {
   DEFAULT_PAGINATION_STATE,
   mapClubLookupFailureMessage,
   paginationStateForTag,
+  readClubChooserSelection,
+  replyWithClubChooserIfNeeded,
   respondWithClubChoices,
   tagFromPaginationState,
 } from './club-utils';
@@ -137,6 +139,7 @@ function apiNotice(issue: ApiIssue | null): string | undefined {
 export interface ClubDetailsReply {
   readonly content?: string;
   readonly embeds: EmbedBuilder[];
+  readonly failure?: ClubLookupFailure;
 }
 
 /** Shared renderer for the club overview select menu and the `/club` overview section. */
@@ -154,7 +157,7 @@ export async function buildClubDetailsReply(
   });
 
   if (result.kind === 'invalid-tag') {
-    return { content: INVALID_TAG_MESSAGE, embeds: [] };
+    return { content: INVALID_TAG_MESSAGE, embeds: [], failure: result };
   }
 
   if (result.kind === 'unregistered') {
@@ -163,6 +166,7 @@ export async function buildClubDetailsReply(
         `Club #${result.tag} is not registered with BrawlHub. ` +
         'An authorised user must register/link the club first.',
       embeds: [],
+      failure: result,
     };
   }
 
@@ -172,6 +176,7 @@ export async function buildClubDetailsReply(
         'No default club is configured for this server and more than one club is registered. ' +
         'Use `/club tag:<tag>` to choose one.',
       embeds: [],
+      failure: result,
     };
   }
 
@@ -190,11 +195,15 @@ interface ClubSectionState {
   readonly previous: boolean;
 }
 
-interface ClubSectionReply {
+interface ClubSectionContent {
   readonly content?: string;
   readonly embeds: EmbedBuilder[];
   readonly components: ActionRowBuilder<ButtonBuilder>[];
 }
+
+type ClubSectionReply =
+  | ({ readonly kind: 'ok' } & ClubSectionContent)
+  | { readonly kind: 'lookup-failure'; readonly failure: ClubLookupFailure };
 
 function isClubSection(value: string): value is ClubSection {
   return SECTION_CHOICES.some((choice) => choice.value === value);
@@ -241,7 +250,7 @@ function decodeSectionState(raw: string): ClubSectionState | null {
 }
 
 function failureReply(failure: ClubLookupFailure): ClubSectionReply {
-  return { content: mapClubLookupFailureMessage(failure), embeds: [], components: [] };
+  return { kind: 'lookup-failure', failure };
 }
 
 /** Build the requested `/club` section, with stored-data-only details and previous members. */
@@ -261,7 +270,7 @@ async function buildClubSectionReply(
     });
     if (result.kind !== 'ok') return failureReply(result);
     embeds.push(buildClubPreviousMembersEmbed(result.value, config));
-    return { embeds, components };
+    return { kind: 'ok', embeds, components };
   }
 
   if (input.section === 'staff') {
@@ -270,9 +279,10 @@ async function buildClubSectionReply(
     embeds.push(buildClubStaffEmbed(result.value, config));
   } else if (input.section === 'overview') {
     const reply = await buildClubDetailsReply(input.tag, input.guildId, config, now);
+    if (reply.failure !== undefined) return failureReply(reply.failure);
     content = reply.content;
     if (reply.embeds.length === 0) {
-      return { ...(content === undefined ? {} : { content }), embeds: [], components: [] };
+      return { kind: 'ok', ...(content === undefined ? {} : { content }), embeds: [], components: [] };
     }
     embeds.push(...reply.embeds);
   } else {
@@ -307,7 +317,7 @@ async function buildClubSectionReply(
     if (result.kind === 'ok') embeds.push(buildClubPreviousMembersEmbed(result.value, config));
   }
 
-  return { ...(content === undefined ? {} : { content }), embeds, components };
+  return { kind: 'ok', ...(content === undefined ? {} : { content }), embeds, components };
 }
 
 /** Handle `/club` with optional sections, sorting, filters and previous members. */
@@ -332,6 +342,23 @@ export async function handleClub(interaction: ChatInputCommandInteraction): Prom
       config,
       new Date(),
     );
+    if (reply.kind === 'lookup-failure') {
+      if (
+        await replyWithClubChooserIfNeeded(interaction, COMMAND_NAME, reply.failure, {
+          ...state,
+          tag: undefined,
+        })
+      ) {
+        return;
+      }
+      await interaction.editReply({
+        content: mapClubLookupFailureMessage(reply.failure),
+        embeds: [],
+        components: [],
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
     await interaction.editReply({
       ...(reply.content === undefined ? {} : { content: reply.content }),
       embeds: reply.embeds,
@@ -347,6 +374,46 @@ export async function handleClub(interaction: ChatInputCommandInteraction): Prom
 }
 
 export async function handleClubComponent(interaction: CommandComponentInteraction): Promise<void> {
+  const chooser = readClubChooserSelection<ClubSectionState>(interaction, COMMAND_NAME);
+  if (chooser.kind !== 'none') {
+    try {
+      await interaction.deferUpdate();
+      if (chooser.kind === 'expired') {
+        await interaction.editReply({
+          content: 'That club chooser expired. Run the command again.',
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      const reply = await buildClubSectionReply(
+        { ...chooser.state, tag: chooser.tag, guildId: interaction.guildId },
+        getBotConfig(),
+        new Date(),
+      );
+      if (reply.kind === 'lookup-failure') {
+        await interaction.editReply({
+          content: 'This club is no longer available.',
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      await interaction.editReply({
+        ...(reply.content === undefined ? {} : { content: reply.content }),
+        embeds: reply.embeds,
+        components: reply.components,
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      logger.error('Club chooser failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      });
+      await replyWithSafeError(interaction);
+    }
+    return;
+  }
+
   if (!isPaginationButtonWithState(interaction, COMMAND_NAME)) return;
   const parsed = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   if (parsed === null) return;

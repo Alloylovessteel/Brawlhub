@@ -23,7 +23,9 @@ import {
 } from '../discord/pagination';
 import {
   paginationStateForTag,
+  readClubChooserSelection,
   replyClubLookupFailure,
+  replyWithClubChooserIfNeeded,
   respondWithClubChoices,
   tagFromPaginationState,
 } from './club-utils';
@@ -99,6 +101,7 @@ export async function handleClubLeaderboard(interaction: ChatInputCommandInterac
   const built = await loadPage(tag, interaction.guildId, 1);
 
   if (built.kind === 'lookup-failure') {
+    if (await replyWithClubChooserIfNeeded(interaction, COMMAND_NAME, built.failure, null)) return;
     await replyClubLookupFailure(interaction, built.failure);
     return;
   }
@@ -107,6 +110,37 @@ export async function handleClubLeaderboard(interaction: ChatInputCommandInterac
 }
 
 export async function handleClubLeaderboardComponent(interaction: CommandComponentInteraction): Promise<void> {
+  const chooser = readClubChooserSelection<null>(interaction, COMMAND_NAME);
+  if (chooser.kind !== 'none') {
+    try {
+      await interaction.deferUpdate();
+      if (chooser.kind === 'expired') {
+        await interaction.editReply({
+          content: 'That club chooser expired. Run the command again.',
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      const built = await loadPage(chooser.tag, interaction.guildId, 1);
+      if (built.kind === 'lookup-failure') {
+        await interaction.editReply({
+          content: 'This club is no longer available.',
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      await interaction.editReply({ ...built.payload, content: null, allowedMentions: { parse: [] } });
+    } catch (error) {
+      logger.error('Club leaderboard chooser failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      });
+      await replyWithSafeError(interaction);
+    }
+    return;
+  }
+
   if (!isPaginationButtonWithState(interaction, COMMAND_NAME)) return;
   const parsed = parsePaginationCustomIdWithState(interaction.customId, COMMAND_NAME);
   if (parsed === null) return;

@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AutocompleteInteraction, ButtonInteraction, ChatInputCommandInteraction } from 'discord.js';
+import type {
+  AutocompleteInteraction,
+  ButtonInteraction,
+  ChatInputCommandInteraction,
+  StringSelectMenuInteraction,
+} from 'discord.js';
 
 const mocks = vi.hoisted(() => ({
   config: {
@@ -35,9 +40,10 @@ vi.mock('../clubs/service', () => mocks.service);
 import { handleClubLeaderboard, handleClubLeaderboardAutocomplete, handleClubLeaderboardComponent } from './club-leaderboard';
 import { handleClubMembers, handleClubMembersAutocomplete, handleClubMembersComponent } from './club-members';
 
-function chatInteraction(options: Record<string, string | null> = {}) {
+function chatInteraction(options: Record<string, string | null> = {}, userId = 'user-1') {
   const interaction = {
     guildId: 'guild-1',
+    user: { id: userId },
     options: { getString: vi.fn((name: string) => options[name] ?? null) },
     replied: false,
     deferred: false,
@@ -51,10 +57,11 @@ function chatInteraction(options: Record<string, string | null> = {}) {
   return interaction as unknown as ChatInputCommandInteraction;
 }
 
-function buttonInteraction(customId: string) {
+function buttonInteraction(customId: string, userId = 'user-1') {
   return {
     customId,
     guildId: 'guild-1',
+    user: { id: userId },
     deferred: false,
     replied: false,
     deferUpdate: vi.fn(async () => undefined),
@@ -62,6 +69,27 @@ function buttonInteraction(customId: string) {
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
   } as unknown as ButtonInteraction;
+}
+
+function selectInteraction(
+  customId: string,
+  values: string[],
+  guildId = 'guild-1',
+  userId = 'user-1',
+) {
+  return {
+    customId,
+    guildId,
+    user: { id: userId },
+    values,
+    isStringSelectMenu: vi.fn(() => true),
+    deferred: false,
+    replied: false,
+    deferUpdate: vi.fn(async () => undefined),
+    editReply: vi.fn(async () => undefined),
+    reply: vi.fn(async () => undefined),
+    followUp: vi.fn(async () => undefined),
+  } as unknown as StringSelectMenuInteraction;
 }
 
 function autocompleteInteraction(name: string, value: string) {
@@ -119,7 +147,10 @@ function leaderboardResult(count: number) {
   return { kind: 'ok' as const, value: { ...synced(), entries } };
 }
 
-function payloadOf(interaction: ChatInputCommandInteraction | ButtonInteraction, method: 'reply' | 'editReply'): any {
+function payloadOf(
+  interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction,
+  method: 'reply' | 'editReply',
+): any {
   return (interaction[method] as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as any;
 }
 
@@ -200,6 +231,63 @@ describe('/club-members command', () => {
 
     expect(mocks.service.filterRegisteredClubs).toHaveBeenCalledWith(clubs, 'alp');
     expect(interaction.respond).toHaveBeenCalledWith([{ name: 'Alpha (#2C0Y)', value: '2C0Y' }]);
+  });
+
+  it('offers a club chooser when the tagless lookup has no default', async () => {
+    mocks.service.loadMemberView.mockResolvedValueOnce({ kind: 'no-default' });
+    mocks.service.getRegisteredClubs.mockResolvedValue([
+      CLUB,
+      { ...CLUB, id: 'club-2', tag: 'TAG2', name: 'Beta' },
+    ]);
+    const interaction = chatInteraction();
+
+    await handleClubMembers(interaction);
+
+    const payload = payloadOf(interaction, 'editReply');
+    expect(payload.content).toContain('2 registered clubs');
+    const menu = payload.components[0].toJSON().components[0];
+    expect(menu.custom_id).toMatch(/^club-members:choose:/);
+    expect(menu.options.map((option: { value: string }) => option.value)).toEqual(['2C0Y', 'TAG2']);
+    expect(menu.min_values).toBe(1);
+    expect(menu.max_values).toBe(1);
+  });
+
+  it('continues the command with the club chosen from the chooser', async () => {
+    mocks.service.loadMemberView
+      .mockResolvedValueOnce({ kind: 'no-default' })
+      .mockResolvedValueOnce(memberResult(2));
+    mocks.service.getRegisteredClubs.mockResolvedValue([
+      CLUB,
+      { ...CLUB, id: 'club-2', tag: 'TAG2', name: 'Beta' },
+    ]);
+    const interaction = chatInteraction();
+    await handleClubMembers(interaction);
+    const customId = payloadOf(interaction, 'editReply').components[0].toJSON().components[0].custom_id as string;
+    const select = selectInteraction(customId, ['TAG2']);
+
+    await handleClubMembersComponent(select);
+
+    expect(select.deferUpdate).toHaveBeenCalledOnce();
+    expect(mocks.service.loadMemberView).toHaveBeenLastCalledWith({
+      tag: 'TAG2',
+      guildId: 'guild-1',
+    });
+    expect(payloadOf(select, 'editReply').embeds).toHaveLength(1);
+  });
+
+  it('does not let another user use a club chooser', async () => {
+    mocks.service.loadMemberView.mockResolvedValueOnce({ kind: 'no-default' });
+    mocks.service.getRegisteredClubs.mockResolvedValue([CLUB, { ...CLUB, id: 'club-2', tag: 'TAG2' }]);
+    const interaction = chatInteraction();
+    await handleClubMembers(interaction);
+    const customId = payloadOf(interaction, 'editReply').components[0].toJSON().components[0].custom_id as string;
+    const select = selectInteraction(customId, ['TAG2'], 'guild-1', 'user-2');
+
+    await handleClubMembersComponent(select);
+
+    expect(select.deferUpdate).toHaveBeenCalledOnce();
+    expect(payloadOf(select, 'editReply').content).toContain('expired');
+    expect(mocks.service.loadMemberView).toHaveBeenCalledTimes(1);
   });
 });
 

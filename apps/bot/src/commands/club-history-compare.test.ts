@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AutocompleteInteraction, ButtonInteraction, ChatInputCommandInteraction } from 'discord.js';
+import type {
+  AutocompleteInteraction,
+  ButtonInteraction,
+  ChatInputCommandInteraction,
+  StringSelectMenuInteraction,
+} from 'discord.js';
 
 const mocks = vi.hoisted(() => ({
   config: {
@@ -35,9 +40,10 @@ vi.mock('../clubs/service', () => mocks.service);
 import { handleClubCompare, handleClubCompareAutocomplete } from './club-compare';
 import { handleClubHistory, handleClubHistoryAutocomplete, handleClubHistoryComponent } from './club-history';
 
-function chatInteraction(options: Record<string, string | null> = {}) {
+function chatInteraction(options: Record<string, string | null> = {}, userId = 'user-1') {
   const interaction = {
     guildId: 'guild-1',
+    user: { id: userId },
     options: { getString: vi.fn((name: string) => options[name] ?? null) },
     replied: false,
     deferred: false,
@@ -51,10 +57,11 @@ function chatInteraction(options: Record<string, string | null> = {}) {
   return interaction as unknown as ChatInputCommandInteraction;
 }
 
-function buttonInteraction(customId: string) {
+function buttonInteraction(customId: string, userId = 'user-1') {
   return {
     customId,
     guildId: 'guild-1',
+    user: { id: userId },
     deferred: false,
     replied: false,
     deferUpdate: vi.fn(async () => undefined),
@@ -62,6 +69,22 @@ function buttonInteraction(customId: string) {
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
   } as unknown as ButtonInteraction;
+}
+
+function selectInteraction(customId: string, values: string[], userId = 'user-1') {
+  return {
+    customId,
+    guildId: 'guild-1',
+    user: { id: userId },
+    values,
+    isStringSelectMenu: vi.fn(() => true),
+    deferred: false,
+    replied: false,
+    deferUpdate: vi.fn(async () => undefined),
+    editReply: vi.fn(async () => undefined),
+    reply: vi.fn(async () => undefined),
+    followUp: vi.fn(async () => undefined),
+  } as unknown as StringSelectMenuInteraction;
 }
 
 function autocompleteInteraction(name: string, value: string) {
@@ -172,7 +195,10 @@ function compareResult(aligned: boolean) {
   };
 }
 
-function replyPayload(interaction: ChatInputCommandInteraction | ButtonInteraction, method: 'reply' | 'editReply'): any {
+function replyPayload(
+  interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction,
+  method: 'reply' | 'editReply',
+): any {
   return (interaction[method] as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as any;
 }
 
@@ -250,6 +276,28 @@ describe('/club-history command', () => {
     await handleClubHistoryAutocomplete(period);
     expect(period.respond).toHaveBeenCalledWith([]);
     expect(mocks.service.filterRegisteredClubs).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the requested period when a tagless history lookup uses the chooser', async () => {
+    mocks.service.loadHistoryView
+      .mockResolvedValueOnce({ kind: 'no-default' })
+      .mockResolvedValueOnce(historyResult(2, '7d'));
+    mocks.service.getRegisteredClubs.mockResolvedValue([CLUB_A, CLUB_B]);
+    const interaction = chatInteraction({ period: '7d' });
+
+    await handleClubHistory(interaction);
+
+    const customId = replyPayload(interaction, 'editReply').components[0].toJSON().components[0]
+      .custom_id as string;
+    expect(customId).toMatch(/^club-history:choose:/);
+
+    const select = selectInteraction(customId, ['Q8VR']);
+    await handleClubHistoryComponent(select);
+
+    expect(mocks.service.loadHistoryView).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tag: 'Q8VR', period: '7d', guildId: 'guild-1' }),
+    );
+    expect(replyPayload(select, 'editReply').embeds).toHaveLength(1);
   });
 });
 
