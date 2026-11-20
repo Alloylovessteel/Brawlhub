@@ -242,13 +242,8 @@ describe('club data service', () => {
     expect(calls.every((call) => call.table === 'clubs')).toBe(true);
   });
 
-  it('resolves the guild default club from guild_settings', async () => {
-    const { db } = createFakeDb({
-      ...standardHandlers(),
-      'guild_settings:select': () => ({
-        data: { guild_id: 'guild-1', primary_club_id: CLUB.id },
-      }),
-    });
+  it('uses the only registered club in the guild when no tag is supplied', async () => {
+    const { db } = createFakeDb(standardHandlers());
 
     const result = await loadClubView({ guildId: 'guild-1' }, { db, api: api(), useCache: false });
 
@@ -256,9 +251,8 @@ describe('club data service', () => {
     if (result.kind === 'ok') expect(result.view.club.id).toBe(CLUB.id);
   });
 
-  it('reports no default when several clubs are registered and none is configured', async () => {
+  it('reports no default when several clubs are registered in the guild', async () => {
     const { db } = createFakeDb({
-      'guild_settings:select': () => ({ data: null }),
       'clubs:select': () => ({ data: [CLUB, { ...CLUB, id: 'club-2', tag: 'Q8VR' }] }),
     });
 

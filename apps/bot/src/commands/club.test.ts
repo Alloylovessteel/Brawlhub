@@ -182,7 +182,7 @@ beforeEach(() => {
 });
 
 describe('/club command', () => {
-  it('uses the default club when no tag is supplied', async () => {
+  it('uses the only registered club when no tag is supplied', async () => {
     mocks.service.loadClubView.mockResolvedValue(okView());
     const interaction = chatInteraction();
 

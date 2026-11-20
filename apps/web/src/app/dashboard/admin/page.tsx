@@ -346,7 +346,7 @@ export default async function AdminPage({
                   <div key={setting.guild_id} className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm">
                     <p className="font-mono text-xs">{setting.guild_id}</p>
                     <p className="muted-text text-xs">
-                      Primary club: {clubById.get(setting.primary_club_id ?? '')?.name ?? 'None'} · Updated {formatDateTime(setting.updated_at)}
+                      Updated {formatDateTime(setting.updated_at)}
                     </p>
                   </div>
                 ))}
@@ -356,15 +356,6 @@ export default async function AdminPage({
               <div className="md:col-span-2">
                 <label htmlFor="guildId" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Guild ID</label>
                 <Input id="guildId" name="guildId" defaultValue={guildSettings.rows[0]?.guild_id ?? process.env.DISCORD_GUILD_ID ?? ''} required inputMode="numeric" pattern="[0-9]{17,20}" className="font-mono" />
-              </div>
-              <div className="md:col-span-2">
-                <label htmlFor="primaryClubId" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Primary club</label>
-                <Select id="primaryClubId" name="primaryClubId" defaultValue={guildSettings.rows[0]?.primary_club_id ?? ''} className="w-full">
-                  <option value="">None</option>
-                  {clubs.rows.map((club) => (
-                    <option key={club.id} value={club.id}>{club.name} ({formatTag(club.tag)})</option>
-                  ))}
-                </Select>
               </div>
               <div>
                 <label htmlFor="announcementChannelId" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Announcement channel ID</label>

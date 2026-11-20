@@ -34,7 +34,6 @@ const log = createLogger('bot');
 
 const AUDIT_LOG_LIMIT = 200;
 const DETAIL_STRING_LIMIT = 200;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const FORBIDDEN_MESSAGES: Readonly<Record<Permission, string>> = {
   'clubs:read': 'You do not have permission to view BrawlHub club data.',
@@ -61,7 +60,6 @@ const AUDIT_DETAIL_KEYS = [
   'playersUpserted',
   'snapshotsWritten',
   'membershipEvents',
-  'primaryClubId',
 ] as const;
 
 /** Expected administration failures; raw database errors remain hidden. */
@@ -289,7 +287,6 @@ export async function requireGlobalPermission(
 
 interface GuildSettingsRow {
   guild_id: string;
-  primary_club_id: string | null;
   announcement_channel_id: string | null;
   verified_role_id: string | null;
   overview_channel_id: string | null;
@@ -311,7 +308,7 @@ async function readGuildSettingsRow(
   const result = await db
     .from('guild_settings')
     .select(
-      'guild_id, primary_club_id, announcement_channel_id, verified_role_id, overview_channel_id, overview_message_id, overview_fields, report_daily_channel_id, report_weekly_channel_id, report_monthly_channel_id, ranked_role_ids, verification_channel_id, verification_message_id, updated_at',
+      'guild_id, announcement_channel_id, verified_role_id, overview_channel_id, overview_message_id, overview_fields, report_daily_channel_id, report_weekly_channel_id, report_monthly_channel_id, ranked_role_ids, verification_channel_id, verification_message_id, updated_at',
     )
     .eq('guild_id', guildId)
     .maybeSingle();
@@ -330,27 +327,8 @@ export async function loadGuildSettings(
   const db = dbFor(options);
   const row = await readGuildSettingsRow(parsedGuildId.data, db);
 
-  let primaryClubTag: string | null = null;
-  let primaryClubName: string | null = null;
-  if (row?.primary_club_id !== null && row?.primary_club_id !== undefined) {
-    const club = await db
-      .from('clubs')
-      .select('tag, name')
-      .eq('id', row.primary_club_id)
-      .eq('guild_id', parsedGuildId.data)
-      .is('archived_at', null)
-      .maybeSingle();
-    requireOk(club.error, 'Read primary club');
-    const clubRow = record(club.data);
-    primaryClubTag = asString(clubRow?.['tag']);
-    primaryClubName = asString(clubRow?.['name']);
-  }
-
   return {
     guildId: parsedGuildId.data,
-    primaryClubId: asString(row?.['primary_club_id']),
-    primaryClubTag,
-    primaryClubName,
     announcementChannelId: asString(row?.['announcement_channel_id']),
     verifiedRoleId: asString(row?.['verified_role_id']),
     overviewChannelId: asString(row?.['overview_channel_id']),
@@ -369,29 +347,8 @@ export async function loadGuildSettings(
 async function validateSettingValue(
   field: GuildSettingsField,
   value: string | null,
-  guildId: string,
-  db: DatabaseClient,
 ): Promise<string | null> {
   if (value === null) return null;
-
-  if (field === 'primaryClubId') {
-    const normalized = value.trim();
-    if (!UUID_PATTERN.test(normalized)) {
-      throw new AdminServiceError('invalid_club', 'Select a registered club from the autocomplete list.');
-    }
-    const club = await db
-      .from('clubs')
-      .select('id')
-      .eq('id', normalized)
-      .eq('guild_id', guildId)
-      .is('archived_at', null)
-      .maybeSingle();
-    requireOk(club.error, 'Validate primary club');
-    if (club.data === null) {
-      throw new AdminServiceError('invalid_club', 'That club is not registered with BrawlHub in this server.');
-    }
-    return normalized;
-  }
 
   const parsed = discordIdSchema.safeParse(value);
   if (!parsed.success) {
@@ -414,11 +371,10 @@ export async function updateGuildSettings(
 
   const db = dbFor(options);
   const existing = await readGuildSettingsRow(parsedGuildId.data, db);
-  const value = await validateSettingValue(input.field, input.value, parsedGuildId.data, db);
+  const value = await validateSettingValue(input.field, input.value);
 
   const next: GuildSettingsRow = {
     guild_id: parsedGuildId.data,
-    primary_club_id: asString(existing?.['primary_club_id']),
     announcement_channel_id: asString(existing?.['announcement_channel_id']),
     verified_role_id: asString(existing?.['verified_role_id']),
     overview_channel_id: asString(existing?.['overview_channel_id']),
@@ -432,7 +388,6 @@ export async function updateGuildSettings(
     verification_message_id: asString(existing?.['verification_message_id']),
     updated_at: asString(existing?.['updated_at']),
   };
-  if (input.field === 'primaryClubId') next.primary_club_id = value;
   if (input.field === 'announcementChannelId') next.announcement_channel_id = value;
   if (input.field === 'verifiedRoleId') next.verified_role_id = value;
   if (input.field === 'overviewChannelId') {
@@ -447,7 +402,6 @@ export async function updateGuildSettings(
   const saved = await db.from('guild_settings').upsert(
     {
       guild_id: next.guild_id,
-      primary_club_id: next.primary_club_id,
       announcement_channel_id: next.announcement_channel_id,
       verified_role_id: next.verified_role_id,
       overview_channel_id: next.overview_channel_id,
@@ -465,9 +419,6 @@ export async function updateGuildSettings(
   requireOk(saved.error, 'Save guild settings');
 
   const changedFields: string[] = [];
-  if ((existing?.['primary_club_id'] ?? null) !== next.primary_club_id) {
-    changedFields.push('primaryClubId');
-  }
   if ((existing?.['announcement_channel_id'] ?? null) !== next.announcement_channel_id) {
     changedFields.push('announcementChannelId');
   }
@@ -494,7 +445,7 @@ export async function updateGuildSettings(
       targetType: 'guild',
       targetId: parsedGuildId.data,
       guildId: parsedGuildId.data,
-      details: { changedFields, primaryClubId: next.primary_club_id },
+      details: { changedFields },
     },
     { db },
   );

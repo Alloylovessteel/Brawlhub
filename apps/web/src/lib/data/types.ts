@@ -132,7 +132,6 @@ export interface AuditLogRow {
 
 export interface GuildSettingsRow {
   guild_id: string;
-  primary_club_id: string | null;
   announcement_channel_id: string | null;
   verified_role_id: string | null;
   updated_at: string;

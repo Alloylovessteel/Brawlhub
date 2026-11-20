@@ -105,7 +105,6 @@ import {
 import {
   clearPendingSettingsChanges,
   handleSettings,
-  handleSettingsAutocomplete,
   handleSettingsComponent,
   settingsCommandData,
 } from './settings';
@@ -130,9 +129,6 @@ function preview() {
 function settings() {
   return {
     guildId: GUILD_ID,
-    primaryClubId: CLUB_ID,
-    primaryClubTag: '2UG9',
-    primaryClubName: 'Alpha',
     announcementChannelId: null,
     verifiedRoleId: null,
     overviewChannelId: null,
@@ -548,8 +544,6 @@ describe('/settings', () => {
       'roles-view',
       'set-role-mapping',
       'clear-role-mapping',
-      'set-primary-club',
-      'clear-primary-club',
       'set-announcement-channel',
       'clear-announcement-channel',
       'set-overview-channel',
@@ -583,7 +577,7 @@ describe('/settings', () => {
   });
 
   it('requires confirmation before changing a setting', async () => {
-    const start = chat('set-primary-club', { club: CLUB_ID });
+    const start = chat('set-announcement-channel', { channel: { id: CHANNEL_ID } });
     await handleSettings(start);
     expect(start.deferReply).toHaveBeenCalledWith({ flags: 64 });
     const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
@@ -597,8 +591,8 @@ describe('/settings', () => {
     expect(mocks.service.updateGuildSettings).toHaveBeenCalledWith(
       expect.objectContaining({
         guildId: GUILD_ID,
-        field: 'primaryClubId',
-        value: CLUB_ID,
+        field: 'announcementChannelId',
+        value: CHANNEL_ID,
       }),
     );
     expect(payload(confirmation, 'editReply').embeds).toEqual([{ kind: 'settings-updated' }]);
@@ -649,9 +643,9 @@ describe('/settings', () => {
 
   it('shows validation errors from the settings service', async () => {
     mocks.service.updateGuildSettings.mockRejectedValueOnce(
-      new mocks.AdminServiceError('invalid_club', 'That club is not registered with BrawlHub.'),
+      new mocks.AdminServiceError('invalid_role', 'That role is not registered with BrawlHub.'),
     );
-    const start = chat('set-primary-club', { club: CLUB_ID });
+    const start = chat('set-verified-role', { role: { id: ROLE_ID } });
     await handleSettings(start);
     const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
 
@@ -674,20 +668,6 @@ describe('/settings', () => {
     expect(payload(replay, 'editReply').content).toContain('no longer valid');
   });
 
-  it('provides registered club autocomplete only to authorised users', async () => {
-    const interaction = autocomplete('club', '2UG');
-
-    await handleSettingsAutocomplete(interaction);
-
-    expect((interaction.respond as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual([
-      { name: 'Alpha (#2UG9)', value: CLUB_ID },
-    ]);
-
-    mocks.service.requireGlobalPermission.mockRejectedValueOnce(forbidden());
-    const unauthorized = autocomplete('club', '2UG');
-    await handleSettingsAutocomplete(unauthorized);
-    expect((unauthorized.respond as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual([]);
-  });
 });
 
 describe('/audit', () => {

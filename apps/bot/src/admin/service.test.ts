@@ -278,27 +278,9 @@ describe('guild settings service', () => {
     const settings = await loadGuildSettings(GUILD_ID);
     expect(settings).toMatchObject({
       guildId: GUILD_ID,
-      primaryClubId: null,
       announcementChannelId: null,
       verifiedRoleId: null,
     });
-  });
-
-  it('resolves the primary club name and tag for display', async () => {
-    setHandler('guild_settings:select', () => ({
-      data: {
-        guild_id: GUILD_ID,
-        primary_club_id: CLUB_ID,
-        announcement_channel_id: null,
-        verified_role_id: null,
-        updated_at: '2026-11-18T00:00:00.000Z',
-      },
-    }));
-    setHandler('clubs:select', () => ({ data: { tag: '2UG9', name: 'Alpha' } }));
-
-    const settings = await loadGuildSettings(GUILD_ID);
-    expect(settings.primaryClubTag).toBe('2UG9');
-    expect(settings.primaryClubName).toBe('Alpha');
   });
 
   it('rejects invalid Discord channel IDs without writing', async () => {
@@ -315,26 +297,10 @@ describe('guild settings service', () => {
     expect(fake.calls.some((call) => call.operation === 'upsert')).toBe(false);
   });
 
-  it('rejects unknown primary clubs without writing', async () => {
-    setHandler('guild_settings:select', () => ({ data: null }));
-    setHandler('clubs:select', () => ({ data: null }));
-
-    await expect(
-      updateGuildSettings({
-        actor: actor(),
-        guildId: GUILD_ID,
-        field: 'primaryClubId',
-        value: CLUB_ID,
-      }),
-    ).rejects.toMatchObject({ code: 'invalid_club' });
-    expect(fake.calls.some((call) => call.operation === 'upsert')).toBe(false);
-  });
-
   it('upserts the supported field and writes an audit event', async () => {
     setHandler('guild_settings:select', () => ({
       data: {
         guild_id: GUILD_ID,
-        primary_club_id: null,
         announcement_channel_id: null,
         verified_role_id: null,
         updated_at: '2026-11-18T00:00:00.000Z',
@@ -346,8 +312,7 @@ describe('guild settings service', () => {
       return {
         data: {
           guild_id: GUILD_ID,
-          primary_club_id: null,
-          announcement_channel_id: settingsReadCount > 1 ? '999999999999999999' : null,
+            announcement_channel_id: settingsReadCount > 1 ? '999999999999999999' : null,
           verified_role_id: null,
           updated_at: '2026-11-18T00:00:00.000Z',
         },
@@ -381,7 +346,6 @@ describe('guild settings service', () => {
     setHandler('guild_settings:select', () => ({
       data: {
         guild_id: GUILD_ID,
-        primary_club_id: null,
         announcement_channel_id: '999999999999999999',
         verified_role_id: null,
         updated_at: null,
@@ -416,7 +380,6 @@ describe('guild settings service', () => {
     setHandler('guild_settings:select', () => ({
       data: {
         guild_id: GUILD_ID,
-        primary_club_id: null,
         announcement_channel_id: null,
         verified_role_id: null,
         updated_at: '2026-11-18T00:00:00.000Z',
@@ -445,7 +408,6 @@ describe('guild settings service', () => {
       data: {
         guild_id: GUILD_ID,
         overview_fields: ['members', 'bogus', 'members'],
-        primary_club_id: null,
         announcement_channel_id: null,
         verified_role_id: null,
         updated_at: null,
@@ -527,7 +489,7 @@ describe('audit service', () => {
   it('sanitises details to an allowlist and redacts unknown values', () => {
     const safe = sanitizeAuditDetails({
       reason: 'cheating',
-      changedFields: ['primaryClubId'],
+      changedFields: ['announcementChannelId'],
       clubsProcessed: 3,
       apiToken: 'super-secret',
       nested: { password: 'secret' },
@@ -535,7 +497,7 @@ describe('audit service', () => {
 
     expect(safe).toEqual({
       reason: 'cheating',
-      changedFields: ['primaryClubId'],
+      changedFields: ['announcementChannelId'],
       clubsProcessed: 3,
     });
     expect(JSON.stringify(safe)).not.toContain('super-secret');

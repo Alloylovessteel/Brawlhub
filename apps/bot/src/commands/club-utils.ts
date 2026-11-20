@@ -39,7 +39,7 @@ export function paginationStateForTag(tag: string | null | undefined): string {
   return cleanTag(tag);
 }
 
-/** Decode a pagination state, falling back to the guild default when unusable. */
+/** Decode a pagination state, returning an unresolved tag when unusable. */
 export function tagFromPaginationState(state: string): string | undefined {
   if (state === DEFAULT_PAGINATION_STATE) return undefined;
   const parsed = brawlTagSchema.safeParse(state);
@@ -58,8 +58,8 @@ export function mapClubLookupFailureMessage(failure: ClubLookupFailure): string 
       );
     case 'no-default':
       return (
-        'No default club is configured for this server and more than one club is registered. ' +
-        'Use a command with `tag:<tag>` to choose one.'
+        'More than one club is registered in this server. ' +
+        'Use the club chooser or a command with `tag:<tag>` to choose one.'
       );
     case 'same-club':
       return 'Choose two different registered clubs to compare.';

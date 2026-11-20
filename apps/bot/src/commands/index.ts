@@ -168,12 +168,7 @@ import {
 } from './register-club.js';
 import { syncCommandData, handleSync } from './sync.js';
 import { syncStatusCommandData, handleSyncStatus } from './sync-status.js';
-import {
-  settingsCommandData,
-  handleSettings,
-  handleSettingsAutocomplete,
-  handleSettingsComponent,
-} from './settings.js';
+import { settingsCommandData, handleSettings, handleSettingsComponent } from './settings.js';
 import { auditCommandData, handleAudit, handleAuditComponent } from './audit.js';
 import {
   removeClubCommandData,
@@ -430,7 +425,6 @@ export const commands: readonly CommandDefinition[] = [
   {
     data: settingsCommandData,
     handle: handleSettings,
-    autocomplete: handleSettingsAutocomplete,
     handleComponent: handleSettingsComponent,
   },
   {

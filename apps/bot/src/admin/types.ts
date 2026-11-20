@@ -10,9 +10,6 @@ export type { ClubRegistrationPreview };
 
 export interface GuildSettingsView {
   readonly guildId: string;
-  readonly primaryClubId: string | null;
-  readonly primaryClubTag: string | null;
-  readonly primaryClubName: string | null;
   readonly announcementChannelId: string | null;
   readonly verifiedRoleId: string | null;
   /** Channel that receives the auto-updating club overview message. */
@@ -41,7 +38,6 @@ export interface GuildRoleMappingView {
 }
 
 export type GuildSettingsField =
-  | 'primaryClubId'
   | 'announcementChannelId'
   | 'verifiedRoleId'
   | 'overviewChannelId'

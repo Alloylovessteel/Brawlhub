@@ -407,7 +407,7 @@ type NormalizedLookupTag =
   | { readonly ok: true; readonly tag: string | undefined }
   | { readonly ok: false };
 
-/** Shared tag validation for every club command. Blank means "use the default". */
+/** Shared tag validation for every club command. Blank means "resolve from guild registration". */
 function normalizeLookupTag(tag: string | undefined): NormalizedLookupTag {
   if (tag === undefined || tag.trim() === '') {
     return { ok: true, tag: undefined };
@@ -691,20 +691,6 @@ async function findClubByTag(
   return parseClubRow(data);
 }
 
-async function findClubById(
-  id: string,
-  db: DatabaseClient,
-  guildId?: string | null,
-): Promise<ClubRecord | null> {
-  let query = db.from('clubs').select(CLUB_COLUMNS).eq('id', id).is('archived_at', null);
-  if (guildId !== undefined && guildId !== null && guildId.trim() !== '') {
-    query = query.eq('guild_id', guildId.trim());
-  }
-  const { data, error } = await query.maybeSingle();
-  requireOk(error, 'Read default club');
-  return parseClubRow(data);
-}
-
 export async function readCompletedRuns(db: DatabaseClient): Promise<SyncRunRecord[]> {
   const { data, error } = await db
     .from('sync_runs')
@@ -754,22 +740,7 @@ async function resolveClub(input: {
     return findClubByTag(input.tag, input.db, input.guildId);
   }
 
-  if (input.guildId !== undefined && input.guildId !== null) {
-    const { data, error } = await input.db
-      .from('guild_settings')
-      .select('guild_id, primary_club_id')
-      .eq('guild_id', input.guildId)
-      .maybeSingle();
-    requireOk(error, 'Read guild settings');
-    const primaryClubId = asString(record(data)?.['primary_club_id']);
-    if (primaryClubId !== null) {
-      const configured = await findClubById(primaryClubId, input.db, input.guildId);
-      if (configured !== null) return configured;
-    }
-  }
-
-  // With no guild default, an unambiguous single registered club in this scope
-  // is the default.
+  // An unambiguous single registered club in this scope is used automatically.
   const clubs = await readClubs(input.db, input.guildId);
   return clubs.length === 1 ? clubs[0] ?? null : null;
 }

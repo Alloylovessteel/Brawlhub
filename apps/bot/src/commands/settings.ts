@@ -10,10 +10,9 @@ import {
   SlashCommandBuilder,
   StringSelectMenuBuilder,
 } from 'discord.js';
-import type { AutocompleteInteraction, ChatInputCommandInteraction } from 'discord.js';
+import type { ChatInputCommandInteraction } from 'discord.js';
 import type { Role } from '@brawlhub/shared';
 import { createLogger } from '@brawlhub/logging';
-import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
 import { refreshOverviewNow } from '../clubs/overview/service';
 import {
   buildRoleMappingsEmbed,
@@ -62,7 +61,6 @@ type SetupStep =
   | { kind: 'role_add_pick_discord' }
   | { kind: 'role_add_pick_brawlhub'; discordRoleId: string }
   | { kind: 'role_remove_pick' }
-  | { kind: 'primary_club' }
   | { kind: 'announcement_channel' }
   | { kind: 'verified_role' };
 
@@ -142,21 +140,6 @@ export const settingsCommandData = new SlashCommandBuilder()
       .addRoleOption((option) =>
         option.setName('discord_role').setDescription('Discord role mapping to remove').setRequired(true),
       ),
-  )
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('set-primary-club')
-      .setDescription('Set the guild default club')
-      .addStringOption((option) =>
-        option
-          .setName('club')
-          .setDescription('Registered club to use as the default')
-          .setAutocomplete(true)
-          .setRequired(true),
-      ),
-  )
-  .addSubcommand((subcommand) =>
-    subcommand.setName('clear-primary-club').setDescription('Clear the guild default club'),
   )
   .addSubcommand((subcommand) =>
     subcommand
@@ -247,7 +230,6 @@ export const settingsCommandData = new SlashCommandBuilder()
   );
 
 const FIELD_LABELS: Readonly<Record<GuildSettingsField, string>> = {
-  primaryClubId: 'Primary club',
   announcementChannelId: 'Announcement channel',
   verifiedRoleId: 'Verified role',
   overviewChannelId: 'Overview channel',
@@ -281,7 +263,6 @@ function currentValue(
   settings: Awaited<ReturnType<typeof loadGuildSettings>>,
   field: GuildSettingsField,
 ): string | null {
-  if (field === 'primaryClubId') return settings.primaryClubId;
   if (field === 'announcementChannelId') return settings.announcementChannelId;
   if (field === 'overviewChannelId') return settings.overviewChannelId;
   if (field === 'reportDailyChannelId') return settings.reportDailyChannelId;
@@ -338,14 +319,6 @@ async function buildSetupRoot(nonce: string, guildId: string) {
     )
     .addFields(
       {
-        name: 'Primary club',
-        value:
-          settings.primaryClubTag === null
-            ? 'Not configured'
-            : `${settings.primaryClubName ?? 'Club'} (#${settings.primaryClubTag})`,
-        inline: true,
-      },
-      {
         name: 'Announcement channel',
         value: settings.announcementChannelId ? `<#${settings.announcementChannelId}>` : 'Not configured',
         inline: true,
@@ -364,7 +337,6 @@ async function buildSetupRoot(nonce: string, guildId: string) {
     .addOptions(
       { label: 'View current settings', value: 'view', description: 'Show settings and role mappings' },
       { label: 'Manage role mappings', value: 'role_mappings', description: 'Map Discord roles to BrawlHub roles' },
-      { label: 'Set/clear primary club', value: 'primary_club', description: 'Default club for this server' },
       { label: 'Set/clear announcement channel', value: 'announcement_channel', description: 'Sync/notification channel' },
       { label: 'Set/clear verified role', value: 'verified_role', description: 'Role for verified members' },
       { label: 'Close', value: 'close', description: 'Close this setup menu' },
@@ -391,38 +363,6 @@ async function buildRoleMappingsView(nonce: string, guildId: string, notice?: st
   return {
     embeds: [embed],
     components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)],
-    allowedMentions: { parse: [] as const },
-  };
-}
-
-async function buildPrimaryClubView(nonce: string, guildId: string) {
-  const [settings, clubs] = await Promise.all([loadGuildSettings(guildId), getRegisteredClubs(guildId)]);
-  const embed = new EmbedBuilder()
-    .setColor(0x5865_f2)
-    .setTitle('Primary club')
-    .setDescription(
-      `Current: ${settings.primaryClubTag ? `${settings.primaryClubName ?? 'Club'} (#${settings.primaryClubTag})` : 'Not configured'}. Choose a registered club below or clear it.`,
-    );
-  const options = clubs.slice(0, 24).map((club) => ({
-    label: `${club.name} (#${club.tag})`.slice(0, 100),
-    value: club.id,
-    description: 'Set as this server’s default club'.slice(0, 100),
-  }));
-  options.push({ label: 'Clear primary club', value: '__clear__', description: 'Remove the default club setting' });
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId(setupCustomId(nonce, 'primary_club_select'))
-    .setPlaceholder(options.length === 1 ? 'No registered clubs yet' : 'Select a primary club…')
-    .addOptions(options);
-  const back = new ButtonBuilder()
-    .setCustomId(setupCustomId(nonce, 'back'))
-    .setLabel('Back')
-    .setStyle(ButtonStyle.Secondary);
-  return {
-    embeds: [embed],
-    components: [
-      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu),
-      new ActionRowBuilder<ButtonBuilder>().addComponents(back),
-    ],
     allowedMentions: { parse: [] as const },
   };
 }
@@ -586,14 +526,6 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
       return;
     }
 
-    if (subcommand === 'set-primary-club') {
-      await startChange(interaction, 'primaryClubId', interaction.options.getString('club', true));
-      return;
-    }
-    if (subcommand === 'clear-primary-club') {
-      await startChange(interaction, 'primaryClubId', null);
-      return;
-    }
     if (subcommand === 'set-announcement-channel') {
       await startChange(interaction, 'announcementChannelId', interaction.options.getChannel('channel', true).id);
       return;
@@ -653,35 +585,6 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
       return;
     }
     await replyAdminError(interaction, error);
-  }
-}
-
-export async function handleSettingsAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
-  const focused = interaction.options.getFocused(true);
-  if (focused.name !== 'club') {
-    await interaction.respond([]);
-    return;
-  }
-  try {
-    if (interaction.guildId === null) {
-      await interaction.respond([]);
-      return;
-    }
-    await requireGlobalPermission(interaction.user.id, 'clubs:write', {
-      guildId: interaction.guildId,
-      memberPermissions: interaction.memberPermissions,
-      memberRoleIds: getInteractionMemberRoleIds(interaction.member),
-      isGuildOwner: interaction.guild?.ownerId === interaction.user.id,
-      discordUsername: interaction.user.username,
-    });
-    const clubs = await getRegisteredClubs(interaction.guildId);
-    const choices = filterRegisteredClubs(clubs, String(focused.value)).map((club) => ({
-      name: `${club.name} (#${club.tag})`,
-      value: club.id,
-    }));
-    await interaction.respond(choices);
-  } catch {
-    await interaction.respond([]).catch(() => undefined);
   }
 }
 
@@ -785,11 +688,6 @@ async function handleSetupInteraction(interaction: CommandComponentInteraction):
     if (choice === 'role_mappings') {
       session.step = { kind: 'role_mappings' };
       await interaction.editReply(await buildRoleMappingsView(parsed.nonce, guildId));
-      return true;
-    }
-    if (choice === 'primary_club') {
-      session.step = { kind: 'primary_club' };
-      await interaction.editReply(await buildPrimaryClubView(parsed.nonce, guildId));
       return true;
     }
     if (choice === 'announcement_channel') {
@@ -910,22 +808,6 @@ async function handleSetupInteraction(interaction: CommandComponentInteraction):
     const mappings = await clearGuildRoleMapping({ actor, guildId, discordRoleId });
     session.step = { kind: 'role_mappings' };
     await interaction.editReply(await buildRoleMappingsView(parsed.nonce, guildId, `Removed mapping for <@&${discordRoleId}>.`));
-    return true;
-  }
-
-  if (action === 'primary_club_select' && interaction.isStringSelectMenu()) {
-    const selected = interaction.values[0];
-    const value = selected === undefined || selected === '__clear__' ? null : selected;
-    const updated = await updateGuildSettings({
-      actor,
-      guildId,
-      field: 'primaryClubId',
-      value,
-    });
-    session.step = { kind: 'root' };
-    const embed = buildSettingsUpdatedEmbed(updated, ['primaryClubId']);
-    const back = new ButtonBuilder().setCustomId(setupCustomId(parsed.nonce, 'back')).setLabel('Back to setup').setStyle(ButtonStyle.Secondary);
-    await interaction.editReply({ embeds: [embed], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(back)], allowedMentions: { parse: [] } });
     return true;
   }
 

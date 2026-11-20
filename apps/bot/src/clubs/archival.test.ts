@@ -33,7 +33,6 @@ type Handler = (call: QueryCall) => { data?: unknown; error?: unknown };
 
 interface Fixture {
   readonly clubs?: Row[];
-  readonly settings?: Row[];
   readonly tags?: Row[];
   readonly clubSelectError?: { readonly message: string };
   readonly clubUpdateError?: { readonly message: string };
@@ -43,12 +42,10 @@ function createFakeDb(fixture: Fixture = {}): {
   db: Db;
   calls: QueryCall[];
   clubs: Row[];
-  settings: Row[];
   tags: Row[];
 } {
   const calls: QueryCall[] = [];
   const clubs = fixture.clubs === undefined ? [] : [...fixture.clubs];
-  const settings = fixture.settings === undefined ? [] : [...fixture.settings];
   const tags = fixture.tags === undefined ? [] : [...fixture.tags];
 
   const handlers: Record<string, Handler> = {
@@ -72,17 +69,6 @@ function createFakeDb(fixture: Fixture = {}): {
       found['archived_by'] = payload['archived_by'];
       found['archive_reason'] = payload['archive_reason'];
       return { data: [{ id: found['id'] }] };
-    },
-    'guild_settings:update': ({ filters, payload }) => {
-      for (const row of settings) {
-        if (
-          row['guild_id'] === filters['guild_id'] &&
-          row['primary_club_id'] === filters['primary_club_id']
-        ) {
-          row['primary_club_id'] = payload['primary_club_id'];
-        }
-      }
-      return { data: [] };
     },
     'guild_view_tags:delete': ({ filters }) => {
       for (let index = tags.length - 1; index >= 0; index -= 1) {
@@ -169,7 +155,6 @@ function createFakeDb(fixture: Fixture = {}): {
     db: { from: (table: string) => new FakeQuery(table) } as unknown as Db,
     calls,
     clubs,
-    settings,
     tags,
   };
 }
@@ -209,12 +194,8 @@ beforeEach(() => {
 
 describe('archiveGuildClub', () => {
   it('archives non-destructively with guild-scoped writes and records an audit', async () => {
-    const { db, calls, clubs, settings, tags } = createFakeDb({
+    const { db, calls, clubs, tags } = createFakeDb({
       clubs: [activeClub(CLUB_ID), activeClub(OTHER_CLUB_ID)],
-      settings: [
-        { guild_id: GUILD_ID, primary_club_id: CLUB_ID },
-        { guild_id: OTHER_GUILD_ID, primary_club_id: CLUB_ID },
-      ],
       tags: [tag(CLUB_ID), tag(CLUB_ID, OTHER_GUILD_ID), tag(OTHER_CLUB_ID)],
     });
 
@@ -243,16 +224,8 @@ describe('archiveGuildClub', () => {
       },
       activeClub(OTHER_CLUB_ID),
     ]);
-    expect(settings).toEqual([
-      { guild_id: GUILD_ID, primary_club_id: null },
-      { guild_id: OTHER_GUILD_ID, primary_club_id: CLUB_ID },
-    ]);
     expect(tags).toEqual([tag(CLUB_ID, OTHER_GUILD_ID), tag(OTHER_CLUB_ID)]);
-    expect(calls.find((call) => call.table === 'guild_settings')).toMatchObject({
-      operation: 'update',
-      payload: { primary_club_id: null },
-      filters: { guild_id: GUILD_ID, primary_club_id: CLUB_ID },
-    });
+    expect(calls.some((call) => call.table === 'guild_settings')).toBe(false);
     expect(calls.find((call) => call.table === 'guild_view_tags')).toMatchObject({
       operation: 'delete',
       filters: { guild_id: GUILD_ID, club_id: CLUB_ID },
@@ -269,22 +242,6 @@ describe('archiveGuildClub', () => {
       }),
       { db },
     );
-  });
-
-  it('clears the primary club only when it matches the archived club', async () => {
-    const { db, settings } = createFakeDb({
-      clubs: [activeClub(CLUB_ID)],
-      settings: [
-        { guild_id: GUILD_ID, primary_club_id: OTHER_CLUB_ID },
-        { guild_id: OTHER_GUILD_ID, primary_club_id: CLUB_ID },
-      ],
-    });
-
-    await expect(archiveGuildClub(input(), { db })).resolves.toEqual({ kind: 'archived' });
-    expect(settings).toEqual([
-      { guild_id: GUILD_ID, primary_club_id: OTHER_CLUB_ID },
-      { guild_id: OTHER_GUILD_ID, primary_club_id: CLUB_ID },
-    ]);
   });
 
   it('returns not-found for a club in another guild without writing', async () => {
@@ -308,17 +265,15 @@ describe('archiveGuildClub', () => {
     expect(calls).toEqual([]);
   });
 
-  it('returns already-archived without clearing settings or view tags', async () => {
-    const { db, calls, settings, tags } = createFakeDb({
+  it('returns already-archived without deleting view tags', async () => {
+    const { db, calls, tags } = createFakeDb({
       clubs: [{ ...activeClub(CLUB_ID), archived_at: '2026-11-19T00:00:00.000Z' }],
-      settings: [{ guild_id: GUILD_ID, primary_club_id: CLUB_ID }],
       tags: [tag(CLUB_ID)],
     });
 
     await expect(archiveGuildClub(input(), { db })).resolves.toEqual({ kind: 'already-archived' });
     expect(calls.some((call) => call.table === 'guild_settings')).toBe(false);
     expect(calls.some((call) => call.table === 'guild_view_tags')).toBe(false);
-    expect(settings).toEqual([{ guild_id: GUILD_ID, primary_club_id: CLUB_ID }]);
     expect(tags).toEqual([tag(CLUB_ID)]);
     expect(mocks.recordAdminAudit).not.toHaveBeenCalled();
   });

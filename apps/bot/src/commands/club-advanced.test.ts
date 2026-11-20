@@ -162,7 +162,7 @@ beforeEach(() => {
 });
 
 describe('/club-members command', () => {
-  it('uses the default club and pages the roster ten members at a time', async () => {
+  it('uses the only registered club and pages the roster ten members at a time', async () => {
     mocks.service.loadMemberView.mockResolvedValue(memberResult(12));
     const interaction = chatInteraction();
 

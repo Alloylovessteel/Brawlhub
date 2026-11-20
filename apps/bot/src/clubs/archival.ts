@@ -57,13 +57,6 @@ export async function archiveGuildClub(
   }
   if (!(update.data ?? []).length) return { kind: 'already-archived' };
 
-  // A stale default would otherwise keep pointing at an invisible club.
-  await db
-    .from('guild_settings')
-    .update({ primary_club_id: null })
-    .eq('guild_id', guildId)
-    .eq('primary_club_id', clubId);
-
   // The overview should no longer list the archived club.
   await db.from('guild_view_tags').delete().eq('guild_id', guildId).eq('club_id', clubId);
 

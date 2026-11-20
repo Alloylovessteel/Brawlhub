@@ -173,8 +173,8 @@ export async function buildClubDetailsReply(
   if (result.kind === 'no-default') {
     return {
       content:
-        'No default club is configured for this server and more than one club is registered. ' +
-        'Use `/club tag:<tag>` to choose one.',
+        'More than one club is registered in this server. ' +
+        'Use the club chooser or `/club tag:<tag>` to choose one.',
       embeds: [],
       failure: result,
     };

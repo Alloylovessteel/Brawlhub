@@ -525,7 +525,7 @@ export async function getGuildSettings(): Promise<QueryResult<GuildSettingsRow>>
   const supabase = await createServerSupabaseClient();
   const { data, error } = await supabase
     .from('guild_settings')
-    .select('guild_id, primary_club_id, announcement_channel_id, verified_role_id, updated_at')
+    .select('guild_id, announcement_channel_id, verified_role_id, updated_at')
     .order('guild_id', { ascending: true });
   return { rows: (data ?? []) as GuildSettingsRow[], count: data?.length ?? 0, error: errorText(error) };
 }

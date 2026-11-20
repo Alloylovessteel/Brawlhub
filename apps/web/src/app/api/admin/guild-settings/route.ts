@@ -14,7 +14,6 @@ const snowflakeOrEmpty = z
 
 const guildSettingsSchema = z.object({
   guildId: discordIdSchema,
-  primaryClubId: z.string().trim().optional().default(''),
   announcementChannelId: snowflakeOrEmpty,
   verifiedRoleId: snowflakeOrEmpty,
 });
@@ -40,18 +39,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const parsed = guildSettingsSchema.safeParse({
     guildId: formData.get('guildId'),
-    primaryClubId: formData.get('primaryClubId') ?? '',
     announcementChannelId: formData.get('announcementChannelId') ?? '',
     verifiedRoleId: formData.get('verifiedRoleId') ?? '',
   });
   if (!parsed.success) return NextResponse.json({ error: 'invalid_request' }, { status: 400 });
-
-  let parsedClubId: string | undefined;
-  if (parsed.data.primaryClubId !== '') {
-    const club = z.uuid().safeParse(parsed.data.primaryClubId);
-    if (!club.success) return NextResponse.json({ error: 'invalid_club_id' }, { status: 400 });
-    parsedClubId = club.data;
-  }
 
   const db = createTrustedClient();
   const redirectWith = (status: 'success' | 'error'): NextResponse => {
@@ -62,22 +53,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   };
 
   try {
-    if (parsedClubId !== undefined) {
-      const club = await db
-        .from('clubs')
-        .select('id')
-        .eq('id', parsedClubId)
-        .eq('guild_id', parsed.data.guildId)
-        .is('archived_at', null)
-        .maybeSingle();
-      if (club.error !== null && club.error !== undefined) throw new Error(club.error.message);
-      if (club.data === null) return redirectWith('error');
-    }
-
     const saved = await db.from('guild_settings').upsert(
       {
         guild_id: parsed.data.guildId,
-        primary_club_id: parsedClubId ?? null,
         announcement_channel_id: parsed.data.announcementChannelId,
         verified_role_id: parsed.data.verifiedRoleId,
       },
@@ -91,7 +69,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       target_type: 'guild',
       target_id: parsed.data.guildId,
       guild_id: parsed.data.guildId,
-      details: { primaryClubId: parsedClubId ?? null },
+      details: { changedFields: ['announcementChannelId', 'verifiedRoleId'] },
     });
     if (audit.error !== null && audit.error !== undefined) {
       throw new Error(`Guild settings saved but audit logging failed: ${audit.error.message}`);

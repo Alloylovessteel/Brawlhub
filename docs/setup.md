@@ -128,7 +128,7 @@ npm run sync:run
 
 Replace the `#TAG` placeholders with your actual Brawl Stars club tags. The register script reports `registered` and `rejected` counts and exits non-zero if any tag was rejected; it creates no placeholder clubs. `npm run sync:run` loads the root `.env`, prints the JSON result, and exits non-zero when the status is `failed`.
 
-When a club command is used without `tag:` and the guild has several registered clubs with no primary club configured, the bot shows an actor-bound chooser of that guild's clubs. The selected club continues the original command with its section, sort, filter and period preserved.
+When a club command is used without `tag:`, the bot automatically uses the guild's only registered club. If the guild has several registered clubs, it shows an actor-bound chooser of that guild's clubs; selecting one continues the original command with its section, sort, filter and period preserved.
 
 ### Scheduled sync
 

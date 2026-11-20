@@ -132,14 +132,6 @@ export function buildSettingsViewEmbed(
     .setDescription(`Settings for guild \`${settings.guildId}\`.`)
     .addFields(
       {
-        name: 'Primary club',
-        value:
-          settings.primaryClubTag === null
-            ? 'Not configured'
-            : `${text(settings.primaryClubName)} (#${settings.primaryClubTag})`,
-        inline: INLINE,
-      },
-      {
         name: 'Announcement channel',
         value: settings.announcementChannelId === null ? 'Not configured' : `<#${settings.announcementChannelId}>`,
         inline: INLINE,

@@ -46,7 +46,6 @@ interface Fixture {
   readonly players?: Row[];
   readonly playerSnapshots?: Row[];
   readonly events?: Row[];
-  readonly guildSettings?: Row | null;
   readonly errors?: Readonly<Record<string, string>>;
 }
 
@@ -84,7 +83,6 @@ function createFakeDb(fixture: Fixture = {}): { db: Db; calls: QueryCall[] } {
       }
       return { data: rows };
     },
-    'guild_settings:select': () => errorResult('guild_settings') ?? { data: fixture.guildSettings ?? null },
     'sync_runs:select': () => errorResult('sync_runs') ?? { data: runs },
     'club_snapshots:select': ({ filters }) =>
       errorResult('club_snapshots') ?? {
@@ -570,9 +568,9 @@ describe('advanced club loaders', () => {
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
   });
 
-  it('uses the same guild default resolution when no tag is supplied', async () => {
+  it('uses the only registered guild club when no tag is supplied', async () => {
     const { db } = createFakeDb({
-      guildSettings: { guild_id: 'guild-1', primary_club_id: CLUB_B['id'] },
+      clubs: [CLUB_B],
       snapshotsByClub: FULL_SNAPSHOTS,
     });
 
@@ -627,8 +625,7 @@ describe('advanced club loaders', () => {
       guild_id: 'guild-2',
     };
     const { db, calls } = createFakeDb({
-      clubs: [CLUB_A, CLUB_B, archived, otherGuild],
-      guildSettings: { guild_id: 'guild-1', primary_club_id: CLUB_A['id'] },
+      clubs: [CLUB_A, archived, otherGuild],
       snapshotsByClub: FULL_SNAPSHOTS,
     });
 

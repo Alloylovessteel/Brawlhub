@@ -129,7 +129,7 @@ describe('command registry', () => {
         'function',
       );
     }
-    for (const name of ['settings', 'remove-club', 'view', 'clublogs']) {
+    for (const name of ['remove-club', 'view', 'clublogs']) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
     for (const name of ['club-overview', 'clublogs']) {
