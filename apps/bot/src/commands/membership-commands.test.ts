@@ -86,6 +86,7 @@ import {
   handleMembersAutocomplete,
   handleMembersComponent,
 } from './members';
+import { clearBotRateLimits } from '../discord/rate-limit';
 
 const ACTOR_DISCORD_ID = '111111111111111111';
 const TARGET_DISCORD_ID = '222222222222222222';
@@ -210,6 +211,7 @@ function searchView(count: number, mode: 'player' | 'discord' = 'player') {
 }
 
 beforeEach(() => {
+  clearBotRateLimits();
   for (const fn of Object.values(mocks.memberService)) fn.mockReset();
   for (const fn of Object.values(mocks.playerService)) fn.mockReset();
   for (const fn of Object.values(mocks.verificationService)) {
@@ -370,6 +372,32 @@ describe('/member-verify command', () => {
     expect(reply.content).toContain('Spike');
     expect(reply.content).toContain('28000016');
     expect(reply.content).toContain('official Brawl Stars API');
+  });
+
+  it('rate-limits repeated verification checks', async () => {
+    mocks.verificationService.checkVerification.mockResolvedValue({
+      ok: true,
+      status: 'pending',
+      playerTag: '2C0Y',
+      playerName: 'Alpha',
+      startingIconId: 28000000,
+      targetIconId: 28000016,
+      targetIconName: 'Spike',
+      targetIconUrl: 'https://cdn.brawlify.com/profile-icons/regular/28000016.png',
+      currentIconId: 28000003,
+      expiresAt: 1_732_000_600_000,
+    });
+    const first = chatInteraction({}, 'check');
+    await handleMemberVerify(first);
+    expect(mocks.verificationService.checkVerification).toHaveBeenCalledTimes(1);
+
+    const second = chatInteraction({}, 'check');
+    await handleMemberVerify(second);
+    expect(mocks.verificationService.checkVerification).toHaveBeenCalledTimes(1);
+    const reply = (second.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      content?: string;
+    };
+    expect(reply.content).toContain('Please wait');
   });
 
   it('reports start failures clearly', async () => {

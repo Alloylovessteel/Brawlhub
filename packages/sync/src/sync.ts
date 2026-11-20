@@ -73,6 +73,8 @@ function battleKey(item: BattleLogItem): string {
     item.battle?.duration ?? '',
     item.battle?.trophyChange ?? '',
     item.battle?.rank ?? '',
+    JSON.stringify(item.battle?.teams ?? []),
+    JSON.stringify(item.battle?.starPlayer ?? null),
   ];
   return createHash('sha256').update(parts.join('|')).digest('hex');
 }

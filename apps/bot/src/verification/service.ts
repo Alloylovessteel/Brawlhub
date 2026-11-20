@@ -845,6 +845,14 @@ export async function checkVerification(
         message: `Player ${formatTag(challenge.playerTag)} could not be found in the official API right now.`,
       };
     }
+    if (error instanceof BrawlStarsApiError && error.status === 503) {
+      return {
+        ok: false,
+        code: 'api-unavailable',
+        message:
+          'The official Brawl Stars API is temporarily unavailable for maintenance. Please try again in a few minutes.',
+      };
+    }
     return {
       ok: false,
       code: 'api-unavailable',

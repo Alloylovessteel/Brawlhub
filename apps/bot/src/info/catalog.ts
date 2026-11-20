@@ -347,6 +347,6 @@ export const ABOUT_SECTIONS: readonly { readonly title: string; readonly body: s
   {
     title: 'Important limitations',
     body:
-      'BrawlHub is not affiliated with, endorsed by, or an official product of Supercell. Player ownership is verified only through an explicit in-game icon challenge confirmed via the official Brawl Stars API (players must set the exact required default brawler icon shown by the bot; other icons do not verify, and ownership is never inferred from names, tags, or Discord profiles). Club removal and blacklist commands remain disabled until safe schema support exists. Per-club sync successes and failures are not recorded by the current schema, and data may be stale if synchronisation fails.',
+      'BrawlHub is not affiliated with, endorsed by, or an official product of Supercell. Player ownership is verified only through an explicit in-game icon challenge confirmed via the official Brawl Stars API (players must set the exact required default brawler icon shown by the bot; other icons do not verify, and ownership is never inferred from names, tags, or Discord profiles). Blacklist commands remain disabled until safe schema support exists. Per-club sync successes and failures are not recorded by the current schema, and data may be stale if synchronisation fails.',
   },
 ];

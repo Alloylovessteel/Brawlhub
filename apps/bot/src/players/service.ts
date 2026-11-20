@@ -86,7 +86,7 @@ const PLAYER_SNAPSHOT_COLUMNS =
   'id, player_id, sync_run_id, captured_at, trophies';
 
 const PLAYER_BATTLE_COLUMNS =
-  'id, sync_run_id, battle_time, mode, map, battle_type, result, trophy_change';
+  'id, sync_run_id, battle_time, mode, map, battle_type, result, trophy_change, raw';
 
 const MEMBERSHIP_SELECT =
   'id, club_id, player_id, role, valid_from, valid_to, ' +
@@ -435,8 +435,51 @@ async function readCompletedSnapshots(
   return { snapshots, completedRunIds };
 }
 
+function readBattleExtras(
+  rawValue: unknown,
+  playerTag: string,
+): { readonly brawlerName: string | null; readonly starPlayerName: string | null } {
+  const empty = { brawlerName: null, starPlayerName: null };
+  if (rawValue === null || typeof rawValue !== 'object') return empty;
+  const battle = (rawValue as Record<string, unknown>)['battle'];
+  if (battle === null || typeof battle !== 'object') return empty;
+  const data = battle as Record<string, unknown>;
+
+  const starPlayer = data['starPlayer'];
+  const starPlayerName =
+    starPlayer !== null && typeof starPlayer === 'object'
+      ? asString((starPlayer as Record<string, unknown>)['name'])
+      : null;
+
+  const participants: unknown[] = [];
+  if (Array.isArray(data['teams'])) {
+    for (const team of data['teams']) {
+      if (Array.isArray(team)) participants.push(...team);
+    }
+  }
+  if (Array.isArray(data['players'])) participants.push(...data['players']);
+
+  const wanted = playerTag.replace(/^#+/, '').toUpperCase();
+  const mine = participants.find((participant) => {
+    if (participant === null || typeof participant !== 'object') return false;
+    const tag = asString((participant as Record<string, unknown>)['tag']);
+    return tag !== null && tag.replace(/^#+/, '').toUpperCase() === wanted;
+  });
+  const brawler =
+    mine !== undefined && mine !== null && typeof mine === 'object'
+      ? (mine as Record<string, unknown>)['brawler']
+      : null;
+  const brawlerName =
+    brawler !== null && typeof brawler === 'object'
+      ? asString((brawler as Record<string, unknown>)['name'])
+      : null;
+
+  return { brawlerName, starPlayerName };
+}
+
 async function readPlayerBattles(
   playerId: string,
+  playerTag: string,
   db: DatabaseClient,
   period: HistoryPeriod,
   now: Date,
@@ -461,6 +504,7 @@ async function readPlayerBattles(
       if (syncRunId !== null && !completedRunIds.has(syncRunId)) return null;
       if (!withinPeriod(battleTime, period, now)) return null;
       const trophyChange = asNumber(item?.['trophy_change']);
+      const extras = readBattleExtras(item?.['raw'], playerTag);
       return {
         id: asString(item?.['id']) ?? '',
         syncRunId,
@@ -470,6 +514,8 @@ async function readPlayerBattles(
         battleType: asString(item?.['battle_type']),
         result: asString(item?.['result']),
         trophyChange: trophyChange !== null && Number.isFinite(trophyChange) ? trophyChange : null,
+        brawlerName: extras.brawlerName,
+        starPlayerName: extras.starPlayerName,
       } satisfies PlayerBattleRecord;
     })
     .filter((battle): battle is PlayerBattleRecord => battle !== null && battle.id !== '');
@@ -844,7 +890,7 @@ export async function loadPlayerBattles(
   const player = await readGuildScopedPlayer(normalized.tag, guildId, db, guildClubIds);
   if (player === null) return { kind: 'not-found', tag: normalized.tag };
 
-  const battles = await readPlayerBattles(storedPlayerId(player), db, input.period, now);
+  const battles = await readPlayerBattles(storedPlayerId(player), player.tag, db, input.period, now);
   const summary = summarizePlayerBattles(battles);
   return {
     kind: 'ok',

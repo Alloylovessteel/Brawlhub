@@ -431,6 +431,40 @@ describe('player service', () => {
     expect(short.value.battles.map((battle) => battle.id)).toEqual(['b1']);
   });
 
+  it('extracts the player brawler and star player from stored raw battle data', async () => {
+    const data = tables();
+    const battles = data.player_battles ?? [];
+    data.player_battles = battles.map((row) =>
+      row['id'] === 'b1'
+        ? {
+            ...row,
+            raw: {
+              battleTime: '20261117T120000.000Z',
+              battle: {
+                starPlayer: { tag: '#OTHER', name: 'Rival' },
+                teams: [
+                  [
+                    { tag: '#2C0Y', name: 'Alpha', brawler: { id: 1, name: 'Shelly' } },
+                    { tag: '#TEAM', name: 'Mate', brawler: { id: 2, name: 'Colt' } },
+                  ],
+                ],
+              },
+            },
+          }
+        : row,
+    );
+    const result = await loadPlayerBattles(
+      { tag: '2C0Y', period: '30d', now: NOW, guildId: 'guild-1' },
+      { db: createFakeDb(data) as never },
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.battles[0]?.brawlerName).toBe('Shelly');
+    expect(result.value.battles[0]?.starPlayerName).toBe('Rival');
+    expect(result.value.battles[1]?.brawlerName).toBeNull();
+    expect(result.value.battles[1]?.starPlayerName).toBeNull();
+  });
+
   it('rejects stored history reads for players outside the invoking guild', async () => {
     const battleDb = createFakeDb(tables());
     await expect(

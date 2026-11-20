@@ -32,9 +32,20 @@ export function formatUptime(ms: number): string {
   return `${days}d ${hours}h ${minutes}m ${seconds}s`;
 }
 
+function friendlyPermission(text: string): string {
+  return text
+    .replace('clubs:write', 'club management')
+    .replace('members:verify', 'member verification staff')
+    .replace('competitions:manage', 'competition management')
+    .replace('staff:manage', 'staff management')
+    .replace('sync:run', 'sync staff')
+    .replace('audit:read', 'audit access');
+}
+
 function categoryValue(category: HelpCategory): string {
   const lines = category.entries.map((entry) => {
-    const permission = entry.permission === undefined ? '' : ` — requires ${entry.permission}`;
+    const permission =
+      entry.permission === undefined ? '' : ` — requires ${friendlyPermission(entry.permission)}`;
     return `\`${entry.usage}\` — ${entry.description}${permission}`;
   });
   return lines.join('\n').slice(0, MAX_FIELD_LENGTH);

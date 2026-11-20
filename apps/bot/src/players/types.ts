@@ -133,6 +133,8 @@ export interface PlayerBattleRecord {
   readonly battleType: string | null;
   readonly result: string | null;
   readonly trophyChange: number | null;
+  readonly brawlerName: string | null;
+  readonly starPlayerName: string | null;
 }
 
 export interface PlayerBattleHistoryView {

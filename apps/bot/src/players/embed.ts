@@ -500,6 +500,8 @@ export function buildPlayerBattlesPageEmbed(
           [
             battle.mode === null ? null : `Mode: ${escapeMarkdown(battle.mode)}`,
             battle.map === null ? null : `Map: ${escapeMarkdown(battle.map)}`,
+            battle.brawlerName ? `Brawler: ${escapeMarkdown(battle.brawlerName)}` : null,
+            battle.starPlayerName ? `Star player: ${escapeMarkdown(battle.starPlayerName)}` : null,
             `Result: ${battleResultLabel(battle.result)}`,
             battle.trophyChange === null
               ? null

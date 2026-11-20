@@ -9,8 +9,11 @@ import {
   getVerificationChallenge,
   startVerification,
 } from '../verification/index.js';
+import { checkBotRateLimit } from '../discord/rate-limit.js';
 
 const COMMAND_NAME = 'member-verify';
+const CHECK_RATE_LIMIT = 1;
+const CHECK_RATE_WINDOW_MS = 30_000;
 
 function formatTag(tag: string): string {
   return `#${tag}`;
@@ -99,6 +102,18 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 }
 
 async function handleCheck(interaction: ChatInputCommandInteraction): Promise<void> {
+  const rateLimit = checkBotRateLimit(
+    `member-verify-check:${interaction.user.id}`,
+    CHECK_RATE_LIMIT,
+    CHECK_RATE_WINDOW_MS,
+  );
+  if (!rateLimit.allowed) {
+    await interaction.editReply({
+      content: `Please wait ${rateLimit.retryAfterSeconds} second(s) before checking verification again.`,
+    });
+    return;
+  }
+
   const result = await checkVerification({ discordUserId: interaction.user.id });
   if (!result.ok) {
     await interaction.editReply({ content: result.message });

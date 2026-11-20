@@ -1,7 +1,7 @@
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import type { SyncNotifier, SyncNotifierWithChannel } from '@brawlhub/sync';
-import { REST, Routes } from 'discord.js';
+import { EmbedBuilder, REST, Routes } from 'discord.js';
 import { getBotConfig } from './config.js';
 
 const logger = createLogger('bot/notifier');
@@ -22,17 +22,19 @@ function clean(value: string | undefined, maxLength: number): string {
   return sanitized.slice(0, maxLength);
 }
 
-function formatContent(input: Parameters<SyncNotifier['send']>[0]): string {
+function formatEmbed(input: Parameters<SyncNotifier['send']>[0]): EmbedBuilder {
   const player = `${clean(input.playerName, 60)} (${clean(input.playerTag, 24)})`;
-  const eventId = clean(input.eventId, 8);
+  const embed = new EmbedBuilder().setColor(0x5865_f2).setTitle('Club membership update');
 
   switch (input.eventType) {
     case 'join':
-      return `[sync] ${player} joined ${clean(input.clubName, 60)} (event ${eventId})`;
+      return embed.setDescription(`${player} joined **${clean(input.clubName, 60)}**.`);
     case 'leave':
-      return `[sync] ${player} left ${clean(input.clubName, 60)} (event ${eventId})`;
+      return embed.setDescription(`${player} left **${clean(input.clubName, 60)}**.`);
     case 'transfer':
-      return `[sync] ${player} transferred from ${clean(input.fromClubName, 60)} to ${clean(input.toClubName, 60)} (event ${eventId})`;
+      return embed.setDescription(
+        `${player} transferred from **${clean(input.fromClubName, 60)}** to **${clean(input.toClubName, 60)}**.`,
+      );
   }
 }
 
@@ -107,9 +109,9 @@ export async function createDiscordNotifier(
     channelId,
     async send(input) {
       try {
-        const content = formatContent(input);
+        const embed = formatEmbed(input);
         const message = (await rest.post(Routes.channelMessages(channelId), {
-          body: { content },
+          body: { embeds: [embed.toJSON()] },
         })) as { id?: string } | undefined;
         return message?.id;
       } catch (error: unknown) {
