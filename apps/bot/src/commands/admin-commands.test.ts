@@ -556,6 +556,8 @@ describe('/settings', () => {
       'clear-overview-channel',
       'set-verified-role',
       'clear-verified-role',
+      'set-report-channel',
+      'clear-report-channel',
     ]);
   });
 
@@ -611,6 +613,37 @@ describe('/settings', () => {
 
     expect(mocks.service.updateGuildSettings).toHaveBeenCalledWith(
       expect.objectContaining({ field: 'announcementChannelId', value: null }),
+    );
+  });
+
+  it('sets a per-report channel for the selected report type', async () => {
+    const start = chat('set-report-channel', {
+      report_type: 'weekly',
+      channel: { id: CHANNEL_ID },
+    });
+    await handleSettings(start);
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
+
+    await handleSettingsComponent(button(confirmId));
+
+    expect(mocks.service.updateGuildSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: GUILD_ID,
+        field: 'reportWeeklyChannelId',
+        value: CHANNEL_ID,
+      }),
+    );
+  });
+
+  it('clears a per-report channel back to the overview fallback', async () => {
+    const start = chat('clear-report-channel', { report_type: 'daily' });
+    await handleSettings(start);
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
+
+    await handleSettingsComponent(button(confirmId));
+
+    expect(mocks.service.updateGuildSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ field: 'reportDailyChannelId', value: null }),
     );
   });
 

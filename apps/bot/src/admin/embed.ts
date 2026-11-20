@@ -1,5 +1,6 @@
 import type { SyncResult } from '@brawlhub/sync';
 import { EmbedBuilder } from 'discord.js';
+import { OVERVIEW_FIELD_LABELS } from '../clubs/overview/fields';
 import type { Page } from '../discord/pagination';
 import type {
   AuditLogEntry,
@@ -151,6 +152,40 @@ export function buildSettingsViewEmbed(
       {
         name: 'Verified role',
         value: settings.verifiedRoleId === null ? 'Not configured' : `<@&${settings.verifiedRoleId}>`,
+        inline: INLINE,
+      },
+      {
+        name: 'Overview sections',
+        value: text(
+          settings.overviewFields
+            .map((field) => OVERVIEW_FIELD_LABELS[field])
+            .filter((label): label is string => label !== undefined)
+            .join(', '),
+          'All defaults',
+        ),
+      },
+      {
+        name: 'Daily report channel',
+        value:
+          settings.reportDailyChannelId === null
+            ? 'Overview channel'
+            : `<#${settings.reportDailyChannelId}>`,
+        inline: INLINE,
+      },
+      {
+        name: 'Weekly report channel',
+        value:
+          settings.reportWeeklyChannelId === null
+            ? 'Overview channel'
+            : `<#${settings.reportWeeklyChannelId}>`,
+        inline: INLINE,
+      },
+      {
+        name: 'Monthly report channel',
+        value:
+          settings.reportMonthlyChannelId === null
+            ? 'Overview channel'
+            : `<#${settings.reportMonthlyChannelId}>`,
         inline: INLINE,
       },
       {

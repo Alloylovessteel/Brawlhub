@@ -116,7 +116,10 @@ async function replyWithOverview(
 
   // Keep the single auto-posted overview in sync without posting another message.
   try {
-    await refreshOverviewNow(context.guildId, context.guildLabel);
+    await refreshOverviewNow(context.guildId, {
+      label: context.guildLabel,
+      iconUrl: interaction.guild?.iconURL?.() ?? null,
+    });
   } catch (error) {
     logger.warn('Could not refresh the auto-posted overview after view tag change', {
       guildId: context.guildId,

@@ -69,6 +69,8 @@ describe('command registry', () => {
       'club-history',
       'club-compare',
       'view',
+      'club-overview',
+      'clublogs',
       'events',
       'me',
       'player-history',
@@ -123,8 +125,13 @@ describe('command registry', () => {
         'function',
       );
     }
-    for (const name of ['settings', 'remove-club', 'view']) {
+    for (const name of ['settings', 'remove-club', 'view', 'clublogs']) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
+    }
+    for (const name of ['club-overview', 'clublogs']) {
+      expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
+        'function',
+      );
     }
     expect(commands.find((command) => command.data.name === 'club')?.handleComponent).toBeTypeOf(
       'function',

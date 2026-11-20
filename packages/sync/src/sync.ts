@@ -34,6 +34,8 @@ export const SYNC_INTERVAL_MINUTES = 15;
 
 const STALE_RUN_MS = 30 * 60 * 1000;
 const SYNC_LOCK_TTL_SECONDS = 30 * 60;
+/** Official Brawl Stars club member capacity; a club is "full" at this count. */
+const CLUB_CAPACITY = 30;
 const DEFAULT_API_TIMEOUT_MS = 30_000;
 const DEFAULT_NOTIFIER_TIMEOUT_MS = 10_000;
 const MAX_ERROR_LENGTH = 1000;
@@ -280,6 +282,8 @@ interface Counters {
   playersUpserted: number;
   snapshotsWritten: number;
   membershipEvents: number;
+  roleChanges: number;
+  capacityEvents: number;
   notificationsSent: number;
   battlesCollected: number;
 }
@@ -297,6 +301,25 @@ interface MembershipTransitionInput extends EventInput {
   role: string | undefined;
   validFrom: string;
   closeMembershipId: string | undefined;
+}
+
+interface RoleChangeInput {
+  clubId: string;
+  playerId: string;
+  membershipId: string;
+  fromRole: string | null;
+  toRole: string | null;
+  detectedAt: string;
+  runId: string;
+}
+
+interface CapacityEventInput {
+  clubId: string;
+  fromCount: number;
+  toCount: number;
+  isFull: boolean;
+  detectedAt: string;
+  runId: string;
 }
 
 interface SnapshotWrite {
@@ -449,6 +472,8 @@ function emptyCounters(): Counters {
     playersUpserted: 0,
     snapshotsWritten: 0,
     membershipEvents: 0,
+    roleChanges: 0,
+    capacityEvents: 0,
     notificationsSent: 0,
     battlesCollected: 0,
   };
@@ -835,6 +860,27 @@ async function applyMembershipTransition(
   return typeof result.data === 'string' ? result.data : undefined;
 }
 
+/** Roles are case-sensitive API strings; null/undefined/blank all mean "no role". */
+function normalizeRole(role: string | null | undefined): string | null {
+  if (typeof role !== 'string' || role.trim() === '') return null;
+  return role;
+}
+
+/** Records a same-club role change without creating a membership event. */
+async function applyClubRoleChange(db: SupabaseClient, input: RoleChangeInput): Promise<void> {
+  const result = await db.rpc('apply_club_role_change', {
+    p_club_id: input.clubId,
+    p_player_id: input.playerId,
+    p_membership_id: input.membershipId,
+    p_from_role: input.fromRole,
+    p_to_role: input.toRole,
+    p_detected_at: input.detectedAt,
+    p_run_id: input.runId,
+    p_valid_from: input.detectedAt,
+  });
+  requireOk(result.error, 'Apply club role change');
+}
+
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------
@@ -1021,6 +1067,42 @@ async function writeSnapshot(db: SupabaseClient, write: SnapshotWrite): Promise<
   });
   requireOk(result.error, `Write ${write.table}`);
   return true;
+}
+
+/**
+ * Reads the last stored member count for one club from its snapshots. The club
+ * id comes from this sync's registered-club set, so the read is guild-scoped.
+ */
+async function readPreviousMemberCount(
+  db: SupabaseClient,
+  clubId: string,
+): Promise<number | undefined> {
+  const result = await db
+    .from('club_snapshots')
+    .select('member_count')
+    .eq('club_id', clubId)
+    .order('captured_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  requireOk(result.error, `Read latest club snapshot for ${clubId}`);
+  const value = (result.data as { member_count?: unknown } | null)?.member_count;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/** Idempotent capacity open/close record; ordinary count changes are ignored. */
+async function recordCapacityEvent(db: SupabaseClient, input: CapacityEventInput): Promise<void> {
+  const result = await db.from('club_capacity_events').upsert(
+    {
+      club_id: input.clubId,
+      from_count: input.fromCount,
+      to_count: input.toCount,
+      is_full: input.isFull,
+      source_sync_run_id: input.runId,
+      detected_at: input.detectedAt,
+    },
+    { onConflict: 'club_id,is_full,source_sync_run_id', ignoreDuplicates: true },
+  );
+  requireOk(result.error, `Write club capacity event for ${input.clubId}`);
 }
 
 async function sendNotifications(
@@ -1301,11 +1383,26 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     }
     const presentPlayerIds = new Set(states.map((state) => state.playerId));
 
-    // 3. Joins and transfers, computed against the synced guild roster. Each
-    //    event + membership change is committed atomically by Postgres.
+    // 3. Joins, transfers and same-club role changes, computed against the
+    //    synced guild roster. Each event + membership change is committed
+    //    atomically by Postgres.
     for (const state of states) {
       const open = await readOpenMembership(db, state.playerId);
       if (open !== undefined && open.club_id === state.clubId) {
+        const fromRole = normalizeRole(open.role);
+        const toRole = normalizeRole(state.role);
+        if (fromRole !== toRole) {
+          await applyClubRoleChange(db, {
+            clubId: state.clubId,
+            playerId: state.playerId,
+            membershipId: open.id,
+            fromRole,
+            toRole,
+            detectedAt: nowIso,
+            runId,
+          });
+          counters.roleChanges += 1;
+        }
         continue;
       }
       if (open !== undefined && !clubIdSet.has(open.club_id)) {
@@ -1373,8 +1470,26 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         ),
     );
 
-    // 5. Snapshots (skipped when the payload digest is unchanged).
+    // 5. Capacity transitions and snapshots (snapshots are skipped when the
+    //    payload digest is unchanged). Read the previous count before writing
+    //    the new snapshot so the comparison uses stored history.
     for (const club of fetched) {
+      const previousCount = await readPreviousMemberCount(db, club.row.id);
+      if (previousCount !== undefined) {
+        const wasFull = previousCount >= CLUB_CAPACITY;
+        const isFull = club.memberCount >= CLUB_CAPACITY;
+        if (wasFull !== isFull) {
+          await recordCapacityEvent(db, {
+            clubId: club.row.id,
+            fromCount: previousCount,
+            toCount: club.memberCount,
+            isFull,
+            detectedAt: nowIso,
+            runId,
+          });
+          counters.capacityEvents += 1;
+        }
+      }
       const written = await writeSnapshot(db, {
         table: 'club_snapshots',
         entityColumn: 'club_id',
@@ -1424,6 +1539,12 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         notifierTimeoutMs,
       );
     }
+
+    log.info('Role and capacity changes recorded', {
+      syncRunId: runId,
+      roleChanges: counters.roleChanges,
+      capacityEvents: counters.capacityEvents,
+    });
 
     await markCompleted(
       db,

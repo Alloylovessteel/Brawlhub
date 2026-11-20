@@ -4,7 +4,7 @@ import type { StaffActor } from '../staff/types';
 
 interface Call {
   table: string;
-  operation: 'select' | 'insert' | 'upsert';
+  operation: 'select' | 'insert' | 'upsert' | 'update';
   payload: any;
   options: any;
   filters: Record<string, unknown>;
@@ -69,6 +69,12 @@ vi.mock('@brawlhub/database', () => {
       this.operation = 'upsert';
       this.payload = payload;
       this.options = options;
+      return this;
+    }
+
+    update(payload: unknown): this {
+      this.operation = 'update';
+      this.payload = payload;
       return this;
     }
 
@@ -145,6 +151,7 @@ import {
   loadSyncStatus,
   requireGlobalPermission,
   sanitizeAuditDetails,
+  updateGuildOverviewFields,
   updateGuildSettings,
 } from './service';
 
@@ -392,6 +399,71 @@ describe('guild settings service', () => {
 
     const call = fake.calls.find((entry) => entry.operation === 'upsert');
     expect((call?.payload as any).announcement_channel_id).toBeNull();
+  });
+
+  it('returns all default overview fields and null report overrides for a new guild', async () => {
+    setHandler('guild_settings:select', () => ({ data: null }));
+
+    const settings = await loadGuildSettings(GUILD_ID);
+    expect(settings.overviewFields).toContain('clubTrophies');
+    expect(settings.overviewFields).toContain('megaPigEstimate');
+    expect(settings.reportDailyChannelId).toBeNull();
+    expect(settings.reportWeeklyChannelId).toBeNull();
+    expect(settings.reportMonthlyChannelId).toBeNull();
+  });
+
+  it('saves a per-report channel override and audits the changed field', async () => {
+    setHandler('guild_settings:select', () => ({
+      data: {
+        guild_id: GUILD_ID,
+        primary_club_id: null,
+        announcement_channel_id: null,
+        verified_role_id: null,
+        updated_at: '2026-11-18T00:00:00.000Z',
+      },
+    }));
+    setHandler('guild_settings:upsert', () => ({ data: null }));
+    const audit = vi.fn(() => ({ data: null }));
+    setHandler('audit_logs:insert', audit);
+
+    await updateGuildSettings({
+      actor: actor(),
+      guildId: GUILD_ID,
+      field: 'reportWeeklyChannelId',
+      value: '777777777777777777',
+    });
+
+    const call = fake.calls.find((entry) => entry.operation === 'upsert');
+    expect((call?.payload as any).report_weekly_channel_id).toBe('777777777777777777');
+    expect((audit.mock.calls[0] as any[])[0].payload.details.changedFields).toEqual([
+      'reportWeeklyChannelId',
+    ]);
+  });
+
+  it('normalizes and audits an overview field selection', async () => {
+    setHandler('guild_settings:select', () => ({
+      data: {
+        guild_id: GUILD_ID,
+        overview_fields: ['members', 'bogus', 'members'],
+        primary_club_id: null,
+        announcement_channel_id: null,
+        verified_role_id: null,
+        updated_at: null,
+      },
+    }));
+    const update = vi.fn(() => ({ data: [{ guild_id: GUILD_ID }] }));
+    setHandler('guild_settings:update', update);
+    const audit = vi.fn(() => ({ data: null }));
+    setHandler('audit_logs:insert', audit);
+
+    await updateGuildOverviewFields({
+      actor: actor(),
+      guildId: GUILD_ID,
+      fields: ['members', 'bogus', 'members'] as any,
+    });
+
+    expect((update.mock.calls[0] as any[])[0].payload).toEqual({ overview_fields: ['members'] });
+    expect((audit.mock.calls[0] as any[])[0].payload.action).toBe('guild.overview_fields.updated');
   });
 });
 

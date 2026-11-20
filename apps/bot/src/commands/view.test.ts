@@ -241,7 +241,10 @@ describe('/view tag list', () => {
     );
     expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'view-tags' }]);
     expect(mocks.overviewService.refreshOverviewNow).toHaveBeenCalledOnce();
-    expect(mocks.overviewService.refreshOverviewNow).toHaveBeenCalledWith(GUILD_ID, 'Test Guild');
+    expect(mocks.overviewService.refreshOverviewNow).toHaveBeenCalledWith(GUILD_ID, {
+      label: 'Test Guild',
+      iconUrl: null,
+    });
   });
 
   it('still replies when the overview refresh fails', async () => {

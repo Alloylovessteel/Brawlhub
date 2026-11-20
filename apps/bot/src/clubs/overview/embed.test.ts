@@ -118,4 +118,84 @@ describe('club overview embed', () => {
     expect(parseClubOverviewCustomId('clubs:page:2')).toBeNull();
     expect(parseClubOverviewCustomId('clubs:overview:')).toBeNull();
   });
+
+  it('shows only enabled sections', () => {
+    const embed = buildClubOverviewEmbed({
+      summaries: [summary(1, 1000)],
+      guildLabel: null,
+      now: NOW,
+      config: CONFIG,
+      fields: ['clubTrophies'],
+    });
+    const data = embed.toJSON();
+
+    expect(data.fields?.[0]?.value).toContain('1,000');
+    expect(data.fields?.[0]?.value).not.toContain('Leader 1');
+    expect(data.fields?.[0]?.value).not.toContain('active 24h');
+  });
+
+  it('preserves stored order when orderByTrophies is disabled', () => {
+    const summaries = [summary(1, 1000), summary(2, 3000)];
+    const embed = buildClubOverviewEmbed({
+      summaries,
+      guildLabel: null,
+      now: NOW,
+      config: CONFIG,
+      fields: ['clubTrophies', 'members'],
+    });
+    const data = embed.toJSON();
+
+    expect(data.fields?.[0]?.name).toBe('Club 1 • #TAG1');
+    expect(sortOverviewSummaries(summaries, ['clubTrophies', 'members'])[0]?.club.name).toBe('Club 1');
+
+    const select = buildClubOverviewSelect(summaries, GUILD_ID, ['clubTrophies', 'members']);
+    const menu = select?.components[0] as { options: { label: string }[] };
+    expect(menu.options[0]?.label).toContain('Club 1');
+  });
+
+  it('shows the server icon only when the field is enabled', () => {
+    const base = {
+      summaries: [summary(1, 1000)],
+      guildLabel: null,
+      now: NOW,
+      config: CONFIG,
+      guildIconUrl: 'https://example.com/icon.png',
+    };
+
+    const withIcon = buildClubOverviewEmbed({
+      ...base,
+      fields: ['serverIcon', 'clubTrophies'],
+    }).toJSON();
+    expect(withIcon.thumbnail?.url).toBe('https://example.com/icon.png');
+
+    const withoutIcon = buildClubOverviewEmbed({
+      ...base,
+      fields: ['clubTrophies'],
+    }).toJSON();
+    expect(withoutIcon.thumbnail).toBeUndefined();
+  });
+
+  it('labels the stored Mega Pig value as an estimate', () => {
+    const withMega = summary(1, 1000);
+    const megaSummary = {
+      ...withMega,
+      megaPigEstimate: {
+        matches: 4,
+        wins: 3,
+        trophyChange: 0,
+        sampleSize: 4,
+        windowStart: NOW.toISOString(),
+        windowEnd: NOW.toISOString(),
+      },
+    };
+    const embed = buildClubOverviewEmbed({
+      summaries: [megaSummary],
+      guildLabel: null,
+      now: NOW,
+      config: CONFIG,
+      fields: ['megaPigEstimate'],
+    }).toJSON();
+
+    expect(embed.fields?.[0]?.value).toContain('3/4 (est.)');
+  });
 });

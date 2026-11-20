@@ -11,6 +11,8 @@ import { registerDiscordAuthorizationEvents } from './discord/events.js';
 import { getGatewayIntents } from './discord/intents.js';
 import { markDiscordDisconnected, markDiscordReady } from './status/runtime.js';
 import { startClubOverviewSchedule } from './clubs/overview/service.js';
+import { startClubLogsSchedule } from './clubs/logs/poster.js';
+import { startReportsSchedule } from './reports/schedule.js';
 
 const logger = createLogger('bot');
 
@@ -42,6 +44,8 @@ const INITIAL_SYNC_DELAY_MS = 5_000;
 let initialSyncTimer: ReturnType<typeof setTimeout> | undefined;
 let syncTimer: ReturnType<typeof setInterval> | undefined;
 let stopOverviewSchedule: (() => void) | undefined;
+let stopClubLogsSchedule: (() => void) | undefined;
+let stopReportsSchedule: (() => void) | undefined;
 
 /** Run scheduled sync for all guilds, skipping if a previous batch is running. */
 async function executeSync(): Promise<void> {
@@ -177,17 +181,21 @@ client.once('clientReady', async () => {
   stopOverviewSchedule = startClubOverviewSchedule(async (guildId) => {
     try {
       const guild = await client.guilds.fetch(guildId);
-      return guild.name;
+      return { label: guild.name, iconUrl: guild.iconURL() ?? null };
     } catch {
-      return null;
+      return { label: null, iconUrl: null };
     }
   });
+  stopClubLogsSchedule = startClubLogsSchedule();
+  stopReportsSchedule = startReportsSchedule();
 });
 
 process.on('SIGINT', () => {
   logger.info('SIGINT received, shutting down');
   stopSyncSchedule();
   stopOverviewSchedule?.();
+  stopClubLogsSchedule?.();
+  stopReportsSchedule?.();
   client.destroy();
   process.exit(0);
 });
@@ -196,6 +204,8 @@ process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down');
   stopSyncSchedule();
   stopOverviewSchedule?.();
+  stopClubLogsSchedule?.();
+  stopReportsSchedule?.();
   client.destroy();
   process.exit(0);
 });

@@ -205,6 +205,45 @@ export const settingsCommandData = new SlashCommandBuilder()
   )
   .addSubcommand((subcommand) =>
     subcommand.setName('clear-verified-role').setDescription('Clear the guild verified-member role'),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('set-report-channel')
+      .setDescription('Set a channel for one of the scheduled club reports')
+      .addStringOption((option) =>
+        option
+          .setName('report_type')
+          .setDescription('Which scheduled report to configure')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Daily', value: 'daily' },
+            { name: 'Weekly', value: 'weekly' },
+            { name: 'Monthly', value: 'monthly' },
+          ),
+      )
+      .addChannelOption((option) =>
+        option
+          .setName('channel')
+          .setDescription('Text channel that receives this report')
+          .addChannelTypes(ChannelType.GuildText)
+          .setRequired(true),
+      ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('clear-report-channel')
+      .setDescription('Send one scheduled report back to the overview channel')
+      .addStringOption((option) =>
+        option
+          .setName('report_type')
+          .setDescription('Which scheduled report to reset')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Daily', value: 'daily' },
+            { name: 'Weekly', value: 'weekly' },
+            { name: 'Monthly', value: 'monthly' },
+          ),
+      ),
   );
 
 const FIELD_LABELS: Readonly<Record<GuildSettingsField, string>> = {
@@ -212,7 +251,24 @@ const FIELD_LABELS: Readonly<Record<GuildSettingsField, string>> = {
   announcementChannelId: 'Announcement channel',
   verifiedRoleId: 'Verified role',
   overviewChannelId: 'Overview channel',
+  reportDailyChannelId: 'Daily report channel',
+  reportWeeklyChannelId: 'Weekly report channel',
+  reportMonthlyChannelId: 'Monthly report channel',
 };
+
+const REPORT_TYPE_FIELDS: Readonly<Record<string, GuildSettingsField>> = {
+  daily: 'reportDailyChannelId',
+  weekly: 'reportWeeklyChannelId',
+  monthly: 'reportMonthlyChannelId',
+};
+
+function reportField(reportType: string): GuildSettingsField {
+  const field = REPORT_TYPE_FIELDS[reportType];
+  if (field === undefined) {
+    throw new AdminServiceError('invalid_channel', 'Choose daily, weekly, or monthly.');
+  }
+  return field;
+}
 
 function requireGuildId(interaction: { guildId: string | null }): string {
   if (interaction.guildId === null) {
@@ -228,12 +284,23 @@ function currentValue(
   if (field === 'primaryClubId') return settings.primaryClubId;
   if (field === 'announcementChannelId') return settings.announcementChannelId;
   if (field === 'overviewChannelId') return settings.overviewChannelId;
+  if (field === 'reportDailyChannelId') return settings.reportDailyChannelId;
+  if (field === 'reportWeeklyChannelId') return settings.reportWeeklyChannelId;
+  if (field === 'reportMonthlyChannelId') return settings.reportMonthlyChannelId;
   return settings.verifiedRoleId;
 }
 
 function displayValue(field: GuildSettingsField, value: string | null): string {
-  if (value === null) return 'Not configured';
-  if (field === 'announcementChannelId' || field === 'overviewChannelId') return `<#${value}>`;
+  if (value === null) {
+    return field.startsWith('report') ? 'Overview channel (fallback)' : 'Not configured';
+  }
+  if (
+    field === 'announcementChannelId' ||
+    field === 'overviewChannelId' ||
+    field.startsWith('report')
+  ) {
+    return `<#${value}>`;
+  }
   if (field === 'verifiedRoleId') return `<@&${value}>`;
   return `\`${value}\``;
 }
@@ -551,6 +618,22 @@ export async function handleSettings(interaction: ChatInputCommandInteraction): 
       await startChange(interaction, 'verifiedRoleId', null);
       return;
     }
+    if (subcommand === 'set-report-channel') {
+      await startChange(
+        interaction,
+        reportField(interaction.options.getString('report_type', true)),
+        interaction.options.getChannel('channel', true).id,
+      );
+      return;
+    }
+    if (subcommand === 'clear-report-channel') {
+      await startChange(
+        interaction,
+        reportField(interaction.options.getString('report_type', true)),
+        null,
+      );
+      return;
+    }
 
     await interaction.reply({ content: 'Choose a settings subcommand.', flags: MessageFlags.Ephemeral });
   } catch (error) {
@@ -628,7 +711,10 @@ async function handleSettingsConfirmation(interaction: CommandComponentInteracti
   let overviewNotice: string | undefined;
   if (pending.field === 'overviewChannelId' && updated.overviewChannelId !== null) {
     try {
-      const outcome = await refreshOverviewNow(updated.guildId, interaction.guild?.name ?? null);
+      const outcome = await refreshOverviewNow(updated.guildId, {
+        label: interaction.guild?.name ?? null,
+        iconUrl: interaction.guild?.iconURL() ?? null,
+      });
       overviewNotice = outcome.posted
         ? `Club overview posted to <#${updated.overviewChannelId}>.`
         : 'Club overview could not be posted right now; it will retry on the next refresh.';

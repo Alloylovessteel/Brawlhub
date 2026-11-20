@@ -10,6 +10,7 @@ import {
 import { type SyncResult } from '@brawlhub/sync';
 import { PermissionFlagsBits } from 'discord.js';
 import { asNumber, asString, record, requireOk } from '../clubs/service';
+import { normalizeOverviewFields } from '../clubs/overview/fields';
 import { safeErrorMessage } from '../discord/errors';
 import { StaffServiceError, resolveStaffActor } from '../staff/service';
 import { ensureBotProfileForDiscordUser, resolveProfileId } from '../verification/service.js';
@@ -17,6 +18,7 @@ import type {
   AdminActor,
   AuditLogEntry,
   AuditLogView,
+  GuildOverviewFieldsUpdate,
   GuildRoleMappingView,
   GuildSettingsField,
   GuildSettingsUpdate,
@@ -281,6 +283,10 @@ interface GuildSettingsRow {
   verified_role_id: string | null;
   overview_channel_id: string | null;
   overview_message_id: string | null;
+  overview_fields: string[] | null;
+  report_daily_channel_id: string | null;
+  report_weekly_channel_id: string | null;
+  report_monthly_channel_id: string | null;
   updated_at: string | null;
 }
 
@@ -291,7 +297,7 @@ async function readGuildSettingsRow(
   const result = await db
     .from('guild_settings')
     .select(
-      'guild_id, primary_club_id, announcement_channel_id, verified_role_id, overview_channel_id, overview_message_id, updated_at',
+      'guild_id, primary_club_id, announcement_channel_id, verified_role_id, overview_channel_id, overview_message_id, overview_fields, report_daily_channel_id, report_weekly_channel_id, report_monthly_channel_id, updated_at',
     )
     .eq('guild_id', guildId)
     .maybeSingle();
@@ -335,6 +341,10 @@ export async function loadGuildSettings(
     verifiedRoleId: asString(row?.['verified_role_id']),
     overviewChannelId: asString(row?.['overview_channel_id']),
     overviewMessageId: asString(row?.['overview_message_id']),
+    overviewFields: normalizeOverviewFields(row?.['overview_fields']),
+    reportDailyChannelId: asString(row?.['report_daily_channel_id']),
+    reportWeeklyChannelId: asString(row?.['report_weekly_channel_id']),
+    reportMonthlyChannelId: asString(row?.['report_monthly_channel_id']),
     updatedAt: asString(row?.['updated_at']),
   };
 }
@@ -396,6 +406,10 @@ export async function updateGuildSettings(
     verified_role_id: asString(existing?.['verified_role_id']),
     overview_channel_id: asString(existing?.['overview_channel_id']),
     overview_message_id: asString(existing?.['overview_message_id']),
+    overview_fields: normalizeOverviewFields(existing?.['overview_fields']),
+    report_daily_channel_id: asString(existing?.['report_daily_channel_id']),
+    report_weekly_channel_id: asString(existing?.['report_weekly_channel_id']),
+    report_monthly_channel_id: asString(existing?.['report_monthly_channel_id']),
     updated_at: asString(existing?.['updated_at']),
   };
   if (input.field === 'primaryClubId') next.primary_club_id = value;
@@ -406,6 +420,9 @@ export async function updateGuildSettings(
     // A new channel means any previous message is stale; let the poster create a fresh one.
     if (value !== existing?.['overview_channel_id']) next.overview_message_id = null;
   }
+  if (input.field === 'reportDailyChannelId') next.report_daily_channel_id = value;
+  if (input.field === 'reportWeeklyChannelId') next.report_weekly_channel_id = value;
+  if (input.field === 'reportMonthlyChannelId') next.report_monthly_channel_id = value;
 
   const saved = await db.from('guild_settings').upsert(
     {
@@ -415,6 +432,10 @@ export async function updateGuildSettings(
       verified_role_id: next.verified_role_id,
       overview_channel_id: next.overview_channel_id,
       overview_message_id: next.overview_message_id,
+      overview_fields: next.overview_fields,
+      report_daily_channel_id: next.report_daily_channel_id,
+      report_weekly_channel_id: next.report_weekly_channel_id,
+      report_monthly_channel_id: next.report_monthly_channel_id,
     },
     { onConflict: 'guild_id' },
   );
@@ -432,6 +453,15 @@ export async function updateGuildSettings(
   }
   if ((existing?.['overview_channel_id'] ?? null) !== next.overview_channel_id) {
     changedFields.push('overviewChannelId');
+  }
+  if ((existing?.['report_daily_channel_id'] ?? null) !== next.report_daily_channel_id) {
+    changedFields.push('reportDailyChannelId');
+  }
+  if ((existing?.['report_weekly_channel_id'] ?? null) !== next.report_weekly_channel_id) {
+    changedFields.push('reportWeeklyChannelId');
+  }
+  if ((existing?.['report_monthly_channel_id'] ?? null) !== next.report_monthly_channel_id) {
+    changedFields.push('reportMonthlyChannelId');
   }
 
   await recordAdminAudit(
@@ -474,6 +504,46 @@ export async function setGuildOverviewMessageId(
     .from('guild_settings')
     .insert({ guild_id: parsedGuildId.data, overview_message_id: messageId });
   requireOk(inserted.error, 'Create overview message state');
+}
+
+/** Persist the guild's overview field selection and audit the change. */
+export async function updateGuildOverviewFields(
+  input: GuildOverviewFieldsUpdate,
+  options: AdminServiceOptions = {},
+): Promise<GuildSettingsView> {
+  const parsedGuildId = discordIdSchema.safeParse(input.guildId);
+  if (!parsedGuildId.success) {
+    throw new AdminServiceError('invalid_guild', 'A valid configured Discord guild is required.');
+  }
+  const fields = normalizeOverviewFields([...input.fields]);
+  const db = dbFor(options);
+
+  const updated = await db
+    .from('guild_settings')
+    .update({ overview_fields: [...fields] })
+    .eq('guild_id', parsedGuildId.data)
+    .select('guild_id');
+  requireOk(updated.error, 'Save overview fields');
+  if (updated.data === null || updated.data.length === 0) {
+    const inserted = await db
+      .from('guild_settings')
+      .insert({ guild_id: parsedGuildId.data, overview_fields: [...fields] });
+    requireOk(inserted.error, 'Create overview field state');
+  }
+
+  await recordAdminAudit(
+    {
+      actor: input.actor,
+      action: 'guild.overview_fields.updated',
+      targetType: 'guild',
+      targetId: parsedGuildId.data,
+      guildId: parsedGuildId.data,
+      details: { fields },
+    },
+    { db },
+  );
+
+  return loadGuildSettings(parsedGuildId.data, { db });
 }
 
 export async function listGuildRoleMappings(

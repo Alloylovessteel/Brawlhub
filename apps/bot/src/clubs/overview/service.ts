@@ -5,6 +5,7 @@ import { loadGuildSettings, setGuildOverviewMessageId } from '../../admin/servic
 import { getBotConfig } from '../../config';
 import { loadViewTagSummaries } from '../view-tags';
 import { buildClubOverviewEmbed, buildClubOverviewSelect } from './embed';
+import { normalizeOverviewFields } from './fields';
 
 const logger = createLogger('bot');
 const REDACTED = '[REDACTED]';
@@ -14,6 +15,7 @@ export interface OverviewTarget {
   readonly guildId: string;
   readonly channelId: string;
   readonly messageId: string | null;
+  readonly fields: readonly string[];
 }
 
 /** Read every guild that has opted in to the auto-updating overview. */
@@ -21,7 +23,7 @@ export async function readOverviewTargets(): Promise<OverviewTarget[]> {
   const db = createTrustedClient();
   const result = await db
     .from('guild_settings')
-    .select('guild_id, overview_channel_id, overview_message_id')
+    .select('guild_id, overview_channel_id, overview_message_id, overview_fields')
     .not('overview_channel_id', 'is', null);
   if (result.error !== null) {
     throw new Error(`Read overview guilds failed: ${result.error.message}`);
@@ -33,7 +35,8 @@ export async function readOverviewTargets(): Promise<OverviewTarget[]> {
     const channelId = typeof raw['overview_channel_id'] === 'string' ? raw['overview_channel_id'] : null;
     if (guildId === null || channelId === null) continue;
     const messageId = typeof raw['overview_message_id'] === 'string' ? raw['overview_message_id'] : null;
-    targets.push({ guildId, channelId, messageId });
+    const fields = normalizeOverviewFields(raw['overview_fields']);
+    targets.push({ guildId, channelId, messageId, fields });
   }
   return targets;
 }
@@ -57,6 +60,8 @@ export interface PostOverviewInput {
   readonly channelId: string;
   readonly messageId: string | null;
   readonly guildLabel: string | null;
+  readonly guildIconUrl?: string | null;
+  readonly fields: readonly string[];
   readonly token: string | undefined;
 }
 
@@ -69,8 +74,10 @@ export async function postOverviewForGuild(input: PostOverviewInput): Promise<st
     guildLabel: input.guildLabel,
     now: new Date(),
     config,
+    fields: input.fields,
+    guildIconUrl: input.guildIconUrl,
   });
-  const select = buildClubOverviewSelect(summaries, input.guildId);
+  const select = buildClubOverviewSelect(summaries, input.guildId, input.fields);
   const body = {
     embeds: [embed.toJSON()],
     components: select === null ? [] : [select],
@@ -114,10 +121,23 @@ export async function postOverviewForGuild(input: PostOverviewInput): Promise<st
   }
 }
 
+/** Discord guild presentation details used by the auto-posted overview. */
+export interface GuildOverviewContext {
+  readonly label: string | null;
+  readonly iconUrl: string | null;
+}
+
+/** Accept a legacy label-only caller or the fuller context used by the schedule. */
+export type GuildOverviewInput = string | GuildOverviewContext;
+
+function normalizeContext(input: GuildOverviewInput): GuildOverviewContext {
+  return typeof input === 'string' ? { label: input, iconUrl: null } : input;
+}
+
 /** Post (or edit) the overview immediately; used when a channel is first configured. */
 export async function refreshOverviewNow(
   guildId: string,
-  guildLabel: string | null,
+  context: GuildOverviewInput,
 ): Promise<{ readonly posted: boolean; readonly messageId: string | null }> {
   const token = getBotConfig().token;
   if (token === undefined) return { posted: false, messageId: null };
@@ -125,13 +145,16 @@ export async function refreshOverviewNow(
   const settings = await loadGuildSettings(guildId);
   if (settings.overviewChannelId === null) return { posted: false, messageId: null };
 
+  const resolved = normalizeContext(context);
   const rest = new REST({ version: '10' }).setToken(token);
   const messageId = await postOverviewForGuild({
     rest,
     guildId,
     channelId: settings.overviewChannelId,
     messageId: settings.overviewMessageId,
-    guildLabel,
+    guildLabel: resolved.label,
+    guildIconUrl: resolved.iconUrl,
+    fields: settings.overviewFields,
     token,
   });
   if (messageId !== null && messageId !== settings.overviewMessageId) {
@@ -140,10 +163,12 @@ export async function refreshOverviewNow(
   return { posted: messageId !== null, messageId };
 }
 
-export type GuildLabelResolver = (guildId: string) => Promise<string | null>;
+export type GuildOverviewContextResolver = (guildId: string) => Promise<GuildOverviewContext>;
 
 /** Refresh the overview in every opted-in guild. Safe to call on a timer. */
-export async function runClubOverviewPost(resolveGuildLabel: GuildLabelResolver): Promise<void> {
+export async function runClubOverviewPost(
+  resolveContext: GuildOverviewContextResolver,
+): Promise<void> {
   const token = getBotConfig().token;
   if (token === undefined) {
     logger.warn('Club overview skipped: DISCORD_TOKEN is not configured');
@@ -162,13 +187,15 @@ export async function runClubOverviewPost(resolveGuildLabel: GuildLabelResolver)
   const rest = new REST({ version: '10' }).setToken(token);
   for (const target of targets) {
     try {
-      const guildLabel = await resolveGuildLabel(target.guildId);
+      const context = await resolveContext(target.guildId);
       const messageId = await postOverviewForGuild({
         rest,
         guildId: target.guildId,
         channelId: target.channelId,
         messageId: target.messageId,
-        guildLabel,
+        guildLabel: context.label,
+        guildIconUrl: context.iconUrl,
+        fields: target.fields,
         token,
       });
       if (messageId !== null && messageId !== target.messageId) {
@@ -196,13 +223,15 @@ function readOverviewIntervalMinutes(): number {
 }
 
 /** Start the in-process overview schedule; returns a stop function for shutdown. */
-export function startClubOverviewSchedule(resolveGuildLabel: GuildLabelResolver): () => void {
+export function startClubOverviewSchedule(
+  resolveContext: GuildOverviewContextResolver,
+): () => void {
   const intervalMs = readOverviewIntervalMinutes() * 60_000;
   const initialTimer = setTimeout(() => {
-    void runClubOverviewPost(resolveGuildLabel);
+    void runClubOverviewPost(resolveContext);
   }, OVERVIEW_INITIAL_DELAY_MS);
   const intervalTimer = setInterval(() => {
-    void runClubOverviewPost(resolveGuildLabel);
+    void runClubOverviewPost(resolveContext);
   }, intervalMs);
 
   logger.info('Club overview schedule enabled', {

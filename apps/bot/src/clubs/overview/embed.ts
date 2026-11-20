@@ -16,6 +16,7 @@ import {
   formatSyncTime,
 } from '../embed';
 import type { ClubSummary } from '../types';
+import { hasOverviewField, normalizeOverviewFields } from './fields';
 
 /** Discord limits an embed to 25 fields and a select menu to 25 options. */
 export const OVERVIEW_MAX_CLUBS = 25;
@@ -32,6 +33,10 @@ export interface ClubOverviewEmbedInput {
     BotConfig,
     'emojis' | 'playerProfileUrlTemplate' | 'clubProfileUrlTemplate'
   >;
+  /** Enabled sections; null/undefined keeps the default set. Guild-controlled. */
+  readonly fields?: readonly string[] | null;
+  /** Discord server icon URL, shown only when the serverIcon field is enabled. */
+  readonly guildIconUrl?: string | null | undefined;
 }
 
 function truncate(value: string, maximum: number): string {
@@ -49,8 +54,17 @@ export function parseClubOverviewCustomId(customId: string): string | null {
   return guildId.length > 0 ? guildId : null;
 }
 
-/** Sort by trophies so the strongest club appears first, mirroring the reference layout. */
-export function sortOverviewSummaries(summaries: readonly ClubSummary[]): ClubSummary[] {
+/**
+ * Order clubs by trophies when that field is enabled; otherwise keep the
+ * stable stored order (view-tag add order or guild club registration order).
+ */
+export function sortOverviewSummaries(
+  summaries: readonly ClubSummary[],
+  fields?: readonly string[] | null,
+): ClubSummary[] {
+  if (fields !== undefined && fields !== null && !hasOverviewField(fields, 'orderByTrophies')) {
+    return [...summaries];
+  }
   return [...summaries].sort(
     (left, right) => (right.totalTrophies ?? -1) - (left.totalTrophies ?? -1),
   );
@@ -58,7 +72,8 @@ export function sortOverviewSummaries(summaries: readonly ClubSummary[]): ClubSu
 
 /** Build the single, compact, auto-updating club stats embed. */
 export function buildClubOverviewEmbed(input: ClubOverviewEmbedInput): EmbedBuilder {
-  const sorted = sortOverviewSummaries(input.summaries);
+  const fields = normalizeOverviewFields(input.fields);
+  const sorted = sortOverviewSummaries(input.summaries, fields);
   const visible = sorted.slice(0, OVERVIEW_MAX_CLUBS);
   const emoji = clubEmojis(input.config);
   const label = input.guildLabel === null ? 'Club Stats' : `Overview from ${input.guildLabel}`;
@@ -68,6 +83,10 @@ export function buildClubOverviewEmbed(input: ClubOverviewEmbedInput): EmbedBuil
     .setTitle(truncate(`${label} | Club Stats`, 256))
     .setDescription('Stored official Brawl Stars data • refreshed automatically.')
     .setTimestamp(input.now);
+
+  if (hasOverviewField(fields, 'serverIcon') && input.guildIconUrl !== null && input.guildIconUrl !== undefined) {
+    embed.setThumbnail(input.guildIconUrl);
+  }
 
   const postedAt = `<t:${Math.floor(input.now.getTime() / 1000)}:t>`;
   const showing = sorted.length > visible.length
@@ -81,45 +100,62 @@ export function buildClubOverviewEmbed(input: ClubOverviewEmbedInput): EmbedBuil
   });
 
   visible.forEach((summary) => {
-    const leader = summary.leader;
-    const trophyRange = summary.trophyRange;
-    const rankedRange = summary.rankedRange;
-    const mega = summary.megaPigEstimate;
-    const active = summary.activeMembers24h;
+    const lines: string[] = [];
 
-    const lines = [
-      leader === null
-        ? `${emoji.crown} —`
-        : `${emoji.crown} ${formatPlayerLink(leader.name, leader.tag, input.config.playerProfileUrlTemplate)}`,
-      `${emoji.trophies}${formatInteger(summary.totalTrophies) ?? '—'}`,
-    ];
-
-    if (trophyRange !== null) {
-      const low = formatCompact(trophyRange.low);
-      const high = formatCompact(trophyRange.high);
-      if (low !== null && high !== null) lines.push(`${emoji.trophyRange}${low}-${high}`);
-    }
-
-    if (rankedRange !== null) {
+    if (hasOverviewField(fields, 'staff')) {
+      const leader = summary.leader;
       lines.push(
-        rankedRange.low === rankedRange.high
-          ? `${emoji.rankFor(rankedRange.low)}${rankedRange.low}`
-          : `${emoji.rankFor(rankedRange.low)}${rankedRange.low}-${emoji.rankFor(rankedRange.high)}${rankedRange.high}`,
+        leader === null
+          ? `${emoji.crown} No stored president`
+          : `${emoji.crown} ${formatPlayerLink(leader.name, leader.tag, input.config.playerProfileUrlTemplate)}`,
       );
     }
 
-    if (mega !== null && mega.sampleSize > 0) {
-      lines.push(`${emoji.megaPig}${emoji.wins}${mega.wins}/${mega.matches} (est.)`);
-    } else if (mega !== null) {
-      lines.push(`${emoji.megaPig}No stored Mega Pig data`);
+    if (hasOverviewField(fields, 'clubTrophies')) {
+      lines.push(`${emoji.trophies}${formatInteger(summary.totalTrophies) ?? '—'}`);
+    }
+
+    if (hasOverviewField(fields, 'trophyRange') && summary.trophyRange !== null) {
+      const low = formatCompact(summary.trophyRange.low);
+      const high = formatCompact(summary.trophyRange.high);
+      if (low !== null && high !== null) lines.push(`${emoji.trophyRange}${low}-${high}`);
+    }
+
+    if (hasOverviewField(fields, 'rankedRange') && summary.rankedRange !== null) {
+      const { low, high } = summary.rankedRange;
+      lines.push(
+        low === high
+          ? `${emoji.rankFor(low)}${low}`
+          : `${emoji.rankFor(low)}${low}-${emoji.rankFor(high)}${high}`,
+      );
+    }
+
+    if (hasOverviewField(fields, 'megaPigEstimate') && summary.megaPigEstimate !== null) {
+      const mega = summary.megaPigEstimate;
+      if (mega.sampleSize > 0) {
+        lines.push(`${emoji.megaPig}${emoji.wins}${mega.wins}/${mega.matches} (est.)`);
+      } else {
+        lines.push(`${emoji.megaPig}No stored Mega Pig data`);
+      }
     }
 
     const required = formatInteger(summary.club.requiredTrophies);
-    if (required !== null) lines.push(`${emoji.required}Req: ${required}`);
+    if (hasOverviewField(fields, 'requiredTrophies') && required !== null) {
+      lines.push(`${emoji.required}Req: ${required}`);
+    }
 
-    const members = formatInteger(summary.memberCount) ?? '—';
-    const memberLine = `${emoji.members}${members}/${CLUB_MEMBER_CAPACITY}`;
-    lines.push(active === null ? memberLine : `${memberLine} • ${emoji.online}${active} active 24h`);
+    if (hasOverviewField(fields, 'members')) {
+      const members = formatInteger(summary.memberCount) ?? '—';
+      const memberLine = `${emoji.members}${members}/${CLUB_MEMBER_CAPACITY}`;
+      const active = summary.activeMembers24h;
+      if (hasOverviewField(fields, 'active24h') && active !== null) {
+        lines.push(`${memberLine} • ${emoji.online}${active} active 24h`);
+      } else {
+        lines.push(memberLine);
+      }
+    } else if (hasOverviewField(fields, 'active24h') && summary.activeMembers24h !== null) {
+      lines.push(`${emoji.online}${summary.activeMembers24h} active 24h`);
+    }
 
     const syncedAt = formatSyncTime(summary.latestSyncAt);
     if (syncedAt !== null) lines.push(`🕒Synced ${syncedAt}`);
@@ -129,7 +165,7 @@ export function buildClubOverviewEmbed(input: ClubOverviewEmbedInput): EmbedBuil
         `${formatClubLink(summary.club.name, summary.club.tag, input.config.clubProfileUrlTemplate)} • ${displayTag(summary.club.tag)}`,
         256,
       ),
-      value: truncate(lines.join('\n'), 1024),
+      value: truncate(lines.length === 0 ? '—' : lines.join('\n'), 1024),
       inline: true,
     });
   });
@@ -255,8 +291,9 @@ export function buildViewTagsEmbed(input: ViewTagsEmbedInput): EmbedBuilder {
 export function buildClubOverviewSelect(
   summaries: readonly ClubSummary[],
   guildId: string,
+  fields?: readonly string[] | null,
 ): APIActionRowComponent<APIStringSelectComponent> | null {
-  const sorted = sortOverviewSummaries(summaries);
+  const sorted = sortOverviewSummaries(summaries, fields);
   if (sorted.length === 0) return null;
 
   const select = new StringSelectMenuBuilder()

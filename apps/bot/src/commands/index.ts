@@ -180,6 +180,17 @@ import {
   handleView,
   handleViewAutocomplete,
 } from './view.js';
+import {
+  clubOverviewCommandData,
+  handleClubOverview,
+  handleClubOverviewComponent,
+} from './club-overview.js';
+import {
+  clubLogsCommandData,
+  handleClubLogs,
+  handleClubLogsAutocomplete,
+  handleClubLogsComponent,
+} from './clublogs.js';
 import { handlePing } from './ping.js';
 import {
   helpCommandData,
@@ -259,6 +270,17 @@ export const commands: readonly CommandDefinition[] = [
     data: viewCommandData,
     handle: handleView,
     autocomplete: handleViewAutocomplete,
+  },
+  {
+    data: clubOverviewCommandData,
+    handle: handleClubOverview,
+    handleComponent: handleClubOverviewComponent,
+  },
+  {
+    data: clubLogsCommandData,
+    handle: handleClubLogs,
+    autocomplete: handleClubLogsAutocomplete,
+    handleComponent: handleClubLogsComponent,
   },
   {
     data: eventsCommandData,

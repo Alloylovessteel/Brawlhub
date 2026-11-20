@@ -1,5 +1,6 @@
 import type { Role } from '@brawlhub/shared';
 import type { ClubRegistrationPreview } from '@brawlhub/sync';
+import type { OverviewFieldKey } from '../clubs/overview/fields';
 import type { StaffActor } from '../staff/types';
 
 /** Administration always resolves a Discord-linked profile with a global role. */
@@ -18,6 +19,12 @@ export interface GuildSettingsView {
   readonly overviewChannelId: string | null;
   /** Internal: Discord message ID of the posted overview (not user-settable). */
   readonly overviewMessageId: string | null;
+  /** Enabled overview sections; empty means all defaults. */
+  readonly overviewFields: readonly OverviewFieldKey[];
+  /** Optional per-report channel overrides; null falls back to the overview channel. */
+  readonly reportDailyChannelId: string | null;
+  readonly reportWeeklyChannelId: string | null;
+  readonly reportMonthlyChannelId: string | null;
   readonly updatedAt: string | null;
 }
 
@@ -32,7 +39,10 @@ export type GuildSettingsField =
   | 'primaryClubId'
   | 'announcementChannelId'
   | 'verifiedRoleId'
-  | 'overviewChannelId';
+  | 'overviewChannelId'
+  | 'reportDailyChannelId'
+  | 'reportWeeklyChannelId'
+  | 'reportMonthlyChannelId';
 
 export interface GuildSettingsUpdate {
   readonly actor: AdminActor;
@@ -40,6 +50,12 @@ export interface GuildSettingsUpdate {
   readonly field: GuildSettingsField;
   /** Null clears the field. */
   readonly value: string | null;
+}
+
+export interface GuildOverviewFieldsUpdate {
+  readonly actor: AdminActor;
+  readonly guildId: string;
+  readonly fields: readonly OverviewFieldKey[];
 }
 
 export interface SyncRunSummary {

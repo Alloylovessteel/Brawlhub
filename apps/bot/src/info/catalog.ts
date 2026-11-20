@@ -62,6 +62,20 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         description: 'Choose which registered clubs appear in this server’s auto-updated overview.',
         permission: 'clubs:write',
       },
+      {
+        name: 'club-overview',
+        usage: '/club-overview menu',
+        description:
+          'Toggle which stored details appear in this server’s auto-posted club overview.',
+        permission: 'clubs:write',
+      },
+      {
+        name: 'clublogs',
+        usage: '/clublogs add|remove|list',
+        description:
+          'Post stored membership, role and capacity changes for a registered club to a channel.',
+        permission: 'clubs:write',
+      },
     ],
   },
   {
@@ -243,8 +257,9 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       },
       {
         name: 'settings',
-        usage: '/settings view',
-        description: 'View or change settings for the configured Discord guild.',
+        usage: '/settings view | /settings set-report-channel',
+        description:
+          'View or change guild settings, including per-report daily/weekly/monthly channels.',
         permission: 'clubs:write',
       },
       {
