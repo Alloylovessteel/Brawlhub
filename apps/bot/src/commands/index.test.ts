@@ -106,6 +106,7 @@ describe('command registry', () => {
       'fn',
       'auto',
       'update',
+      'club-roles',
     ]);
     expect(commands.find((command) => command.data.name === 'competition')?.autocomplete).toBeTypeOf(
       'function',

@@ -15,6 +15,7 @@ import { startClubLogsSchedule } from './clubs/logs/poster.js';
 import { startReportsSchedule } from './reports/schedule.js';
 import { waitForInFlightWork } from './shutdown.js';
 import { startBattleRawRetentionSchedule } from './retention/schedule.js';
+import { refreshAllConfiguredClubRoles } from './club-roles/service.js';
 
 const logger = createLogger('bot');
 
@@ -63,6 +64,24 @@ function startTrackedSync(): void {
   void run.then(clear, clear);
 }
 
+/** Refresh configured club-rank roles after a successful sync batch. */
+async function refreshConfiguredClubRolesSafely(): Promise<void> {
+  try {
+    const result = await refreshAllConfiguredClubRoles(client);
+    if (result.guilds > 0 || result.errors > 0) {
+      logger.info('Club role refresh after sync', {
+        guilds: result.guilds,
+        planned: result.planned,
+        processed: result.processed,
+        cleanedMembers: result.cleanedMembers,
+        errors: result.errors,
+      });
+    }
+  } catch (error: unknown) {
+    logger.warn('Club role refresh after sync failed', { error: safeError(error, token) });
+  }
+}
+
 /** Run scheduled sync for all guilds, skipping if a previous batch is running. */
 async function executeSync(): Promise<void> {
   try {
@@ -99,6 +118,10 @@ async function executeSync(): Promise<void> {
       }
 
       logger.info('Scheduled sync finished', meta);
+    }
+
+    if (outcome.results.some((result) => result.status === 'completed')) {
+      await refreshConfiguredClubRolesSafely();
     }
   } catch (error: unknown) {
     logger.error('Scheduled sync failed', { error: safeError(error, token) });

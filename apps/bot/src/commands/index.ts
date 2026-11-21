@@ -216,6 +216,7 @@ import {
   handleUpdate,
   handleUpdateComponent,
 } from './update.js';
+import { clubRolesCommandData, handleClubRoles } from './club-roles.js';
 
 const logger = createLogger('bot');
 
@@ -470,6 +471,10 @@ export const commands: readonly CommandDefinition[] = [
     data: updateCommandData,
     handle: handleUpdate,
     handleComponent: handleUpdateComponent,
+  },
+  {
+    data: clubRolesCommandData,
+    handle: handleClubRoles,
   },
 ];
 

@@ -301,6 +301,13 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
           'Refresh ranked roles for verified main accounts in this server from stored official data.',
         permission: 'clubs:write',
       },
+      {
+        name: 'club-roles',
+        usage: '/club-roles setup | /club-roles set rank:President role:@Role | /club-roles refresh',
+        description:
+          'Assign President, Vice President and Senior Discord roles from verified main accounts and stored official club ranks.',
+        permission: 'clubs:write to configure or refresh',
+      },
     ],
   },
   {
