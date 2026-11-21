@@ -14,7 +14,7 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 | Current command | Retired top-level command(s) now found here |
 | --- | --- |
 | `/clubs` | `/club`, `/clubs`, `/club-members`, `/club-leaderboard`, `/club-log`, `/club-history`, `/club-compare`, `/view`, `/club-overview`, `/clublogs`, `/register-club`, `/remove-club` |
-| `/me` | `/me` (unchanged) |
+| `/me` | `/me` → `/me profile`; new `/me image` posts a public player card |
 | `/brawlers` | `/brawlers`, `/brawler` |
 | `/player` | `/player-history`, `/player-battles`, `/player-clubs`, `/player-compare` |
 | `/leaderboard` | `/leaderboard` (unchanged) |
@@ -55,6 +55,8 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 
 | Before | Use instead |
 | --- | --- |
+| `/me [tag:…]` | `/me profile [tag:…]` |
+| — | `/me image [tag:…]` posts a public player profile card |
 | `/player-history tag:…` | `/player history tag:…` |
 | `/player-battles tag:…` | `/player battles tag:…` |
 | `/player-clubs tag:…` | `/player clubs tag:…` |

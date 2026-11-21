@@ -47,6 +47,7 @@ function chatInteraction(
     guildId,
     user: { id: USER_ID, username: 'alpha' },
     options: {
+      getSubcommand: vi.fn(() => 'profile'),
       getString: vi.fn((name: string) => options[name] ?? null),
       getFocused: vi.fn(() => ({ name: 'tag', value: '' })),
     },

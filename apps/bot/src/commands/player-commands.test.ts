@@ -45,7 +45,7 @@ vi.mock('../metadata/assets', () => ({
 }));
 vi.mock('../verification/index', () => mocks.verification);
 
-import { handleMe, handleMeAutocomplete } from './player';
+import { handleMe, handleMeAutocomplete, meCommandData } from './player';
 import {
   handlePlayerHistory,
   handlePlayerHistoryAutocomplete,
@@ -67,7 +67,10 @@ function chatInteraction(options: Record<string, string | null> = {}) {
   const interaction = {
     guildId: 'guild-1',
     user: { id: 'discord-1' },
-    options: { getString: vi.fn((name: string) => options[name] ?? null) },
+    options: {
+      getSubcommand: vi.fn(() => options['__subcommand'] ?? 'profile'),
+      getString: vi.fn((name: string) => options[name] ?? null),
+    },
     replied: false,
     deferred: false,
     deferReply: vi.fn(async () => {
@@ -248,6 +251,16 @@ beforeEach(() => {
 });
 
 describe('/me command', () => {
+  it('registers profile and image subcommands instead of a top-level tag option', () => {
+    const json = meCommandData.toJSON() as any;
+
+    expect(json.options?.map((option: any) => option.name)).toEqual(['profile', 'image']);
+    for (const subcommand of json.options ?? []) {
+      expect(subcommand.options?.map((option: any) => option.name)).toEqual(['tag']);
+      expect(subcommand.options?.[0]?.autocomplete).toBe(true);
+    }
+  });
+
   it('uses the caller\'s verified player when no tag is supplied', async () => {
     mocks.verification.findVerifiedPlayerForDiscordUser.mockResolvedValue({
       tag: '2C0Y',

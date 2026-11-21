@@ -203,7 +203,7 @@ export async function buildMeResponse(
 async function replyExpired(interaction: CommandComponentInteraction): Promise<void> {
   if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
   await interaction.editReply({
-    content: 'This `/me` view has expired. Run `/me` again.',
+    content: 'This `/me profile` view has expired. Run `/me profile` again.',
     embeds: [],
     components: [],
     allowedMentions: { parse: [] },

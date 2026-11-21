@@ -1,17 +1,21 @@
-import { SlashCommandBuilder, type AutocompleteInteraction, type ChatInputCommandInteraction } from 'discord.js';
-import { findVerifiedPlayerForDiscordUser } from '../verification/index.js';
+import {
+  SlashCommandBuilder,
+  type AutocompleteInteraction,
+  type ChatInputCommandInteraction,
+  type SlashCommandSubcommandBuilder,
+} from 'discord.js';
 import {
   buildMeResponse,
   createMeSession,
   deleteMeSession,
   type MeSessionInput,
 } from './me-components.js';
+import { handleMeImage } from './me-image.js';
+import { meTagErrorMessage, resolveMeTag } from './me-utils.js';
 import { replyPlayerLookupFailure, respondWithPlayerChoices } from './player-utils';
 
-export const meCommandData = new SlashCommandBuilder()
-  .setName('me')
-  .setDescription('Show an interactive Brawl Stars player overview')
-  .addStringOption((option) =>
+function addTagOption(subcommand: SlashCommandSubcommandBuilder): SlashCommandSubcommandBuilder {
+  subcommand.addStringOption((option) =>
     option
       .setName('tag')
       .setDescription('Player tag, for example #PLAYERTAG. Leave blank to use your verified player.')
@@ -19,30 +23,57 @@ export const meCommandData = new SlashCommandBuilder()
       .setRequired(false)
       .setMaxLength(11),
   );
+  return subcommand;
+}
 
+export const meCommandData = new SlashCommandBuilder()
+  .setName('me')
+  .setDescription('Show your Brawl Stars player profile or post a player card')
+  .addSubcommand((subcommand) =>
+    addTagOption(
+      subcommand
+        .setName('profile')
+        .setDescription('Show an interactive Brawl Stars player overview'),
+    ),
+  )
+  .addSubcommand((subcommand) =>
+    addTagOption(
+      subcommand
+        .setName('image')
+        .setDescription('Post a Brawl Stars player profile card in this channel'),
+    ),
+  );
+
+/** Dispatch `/me profile` and `/me image` without registering a 19th anchor. */
 export async function handleMe(interaction: ChatInputCommandInteraction): Promise<void> {
+  const subcommand = interaction.options.getSubcommand(false);
+
+  if (subcommand === 'image') {
+    await handleMeImage(interaction);
+    return;
+  }
+  if (subcommand !== null && subcommand !== 'profile') {
+    await interaction.reply({
+      content: 'Unknown `/me` subcommand.',
+      flags: 64,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  await handleMeProfile(interaction);
+}
+
+async function handleMeProfile(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply();
 
-  let tag = interaction.options.getString('tag')?.trim() ?? '';
-  if (tag === '') {
-    try {
-      const verified = await findVerifiedPlayerForDiscordUser(interaction.user.id);
-      if (verified === null) {
-        await interaction.editReply({
-          content:
-            'You do not have a verified Brawl Stars player yet. Use `/members account verify start tag:YOURTAG` to link one, or pass `tag:` explicitly.',
-          allowedMentions: { parse: [] },
-        });
-        return;
-      }
-      tag = verified.tag;
-    } catch {
-      await interaction.editReply({
-        content: 'Could not read your verified player right now. Please try again or pass `tag:` explicitly.',
-        allowedMentions: { parse: [] },
-      });
-      return;
-    }
+  const resolved = await resolveMeTag(interaction, 'profile');
+  if (resolved.kind !== 'ok') {
+    await interaction.editReply({
+      content: meTagErrorMessage(resolved, 'profile'),
+      allowedMentions: { parse: [] },
+    });
+    return;
   }
 
   const guildId = interaction.guildId;
@@ -50,7 +81,7 @@ export async function handleMe(interaction: ChatInputCommandInteraction): Promis
   const session: MeSessionInput = {
     guildId: guildId ?? '',
     userId: interaction.user.id,
-    tag,
+    tag: resolved.tag,
     section: 'summary',
     page: 1,
   };
