@@ -3,6 +3,7 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import { createLogger } from '@brawlhub/logging';
 import {
   cancelVerification,
   checkVerification,
@@ -15,6 +16,7 @@ import { notifyVerificationCompleted } from '../operator-notifier.js';
 const COMMAND_NAME = 'member-verify';
 const CHECK_RATE_LIMIT = 1;
 const CHECK_RATE_WINDOW_MS = 30_000;
+const logger = createLogger('bot/verification');
 
 function formatTag(tag: string): string {
   return `#${tag}`;
@@ -95,7 +97,37 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
       interaction.user.globalName ?? interaction.user.username ?? null,
   });
 
+  logger.info('Verification start handled', {
+    guildId: interaction.guildId,
+    discordUserId: interaction.user.id,
+    requestedTag: tag,
+    outcome: result.ok ? 'ok' : result.code,
+    playerTag: result.ok
+      ? result.challenge.playerTag
+      : result.code === 'active-challenge'
+        ? result.challenge.playerTag
+        : undefined,
+    reused: result.ok ? result.reused === true : false,
+    targetIconId: result.ok
+      ? result.challenge.targetIconId
+      : result.code === 'active-challenge'
+        ? result.challenge.targetIconId
+        : undefined,
+  });
+
   if (!result.ok) {
+    if (result.code === 'active-challenge') {
+      const activeIcon = {
+        id: result.challenge.targetIconId,
+        name: result.challenge.targetIconName,
+        url: result.challenge.targetIconUrl,
+      };
+      await interaction.editReply({
+        content: result.message,
+        embeds: [targetIconEmbed(activeIcon)],
+      });
+      return;
+    }
     await interaction.editReply({ content: result.message });
     return;
   }
@@ -106,16 +138,17 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     name: challenge.targetIconName,
     url: challenge.targetIconUrl,
   };
+  const heading = result.reused === true ? 'Existing verification challenge resumed' : 'Verification started';
   const lines = [
-    `**Verification started for ${challenge.playerName} (${formatTag(challenge.playerTag)})**`,
+    `**${heading} for ${challenge.playerName} (${formatTag(challenge.playerTag)})**`,
     '',
     `1. Open Brawl Stars and change your **player icon** to **${icon.name}** (shown below).`,
-    '2. Wait a moment for the official API to update, then run `/members account verify check`.',
+    '2. Wait for the official API to update, then run `/members account verify check`. If it is not detected yet, keep this exact icon and check again.',
     `3. This challenge expires ${formatExpiry(challenge.expiresAt)}.`,
     '',
     `Starting icon detected by the official API: \`${challenge.startingIconId}\``,
     `Required icon: **${icon.name}** (ID \`${icon.id}\`) — default brawler icon (randomly selected)`,
-    'BrawlHub only verifies ownership when the official Brawl Stars API shows this exact required icon. Changing to any other icon will not verify, and BrawlHub will not infer ownership from names, tags, or Discord profile details.',
+    'Re-running `/members account verify start` for the same player keeps this exact required icon. BrawlHub only verifies ownership when the official Brawl Stars API shows this exact required icon. Changing to any other icon will not verify, and BrawlHub will not infer ownership from names, tags, or Discord profile details.',
   ];
   await interaction.editReply({ content: lines.join('\n'), embeds: [targetIconEmbed(icon)] });
 }
@@ -134,6 +167,15 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
   }
 
   const result = await checkVerification({ discordUserId: interaction.user.id });
+  logger.info('Verification check handled', {
+    guildId: interaction.guildId,
+    discordUserId: interaction.user.id,
+    outcome: result.ok ? result.status : result.code,
+    playerTag: result.ok ? result.playerTag : undefined,
+    currentIconId: result.ok ? result.currentIconId : undefined,
+    targetIconId: result.ok ? result.targetIconId : undefined,
+  });
+
   if (!result.ok) {
     await interaction.editReply({ content: result.message });
     return;
@@ -150,7 +192,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
       '',
       `Current icon ID from the official API: \`${result.currentIconId}\``,
       `Required icon: **${icon.name}** (ID \`${icon.id}\`)`,
-      `Set your in-game player icon to **${icon.name}** (shown below), wait briefly, then run \`/members account verify check\` again.`,
+      `Keep your in-game player icon set to **${icon.name}** (shown below). The official API can take a few minutes to show a new icon, so run \`/members account verify check\` again shortly.`,
       'Changing to any other icon will not verify ownership.',
       `Challenge expires ${formatExpiry(result.expiresAt)}.`,
     ];
@@ -173,6 +215,11 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
 
 async function handleCancel(interaction: ChatInputCommandInteraction): Promise<void> {
   const result = cancelVerification({ discordUserId: interaction.user.id });
+  logger.info('Verification cancel handled', {
+    guildId: interaction.guildId,
+    discordUserId: interaction.user.id,
+    hadChallenge: result.ok ? result.hadChallenge : false,
+  });
   if (!result.ok) {
     await interaction.editReply({ content: 'Could not cancel verification right now. Please try again later.' });
     return;

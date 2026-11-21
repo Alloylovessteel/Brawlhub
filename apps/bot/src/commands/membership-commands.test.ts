@@ -42,6 +42,12 @@ const mocks = vi.hoisted(() => ({
     cancelVerification: vi.fn(),
     getVerificationChallenge: vi.fn(),
   },
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
   adminService: {
     requireGlobalPermission: vi.fn(),
     AdminServiceError: class AdminServiceError extends Error {
@@ -56,6 +62,14 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
+vi.mock('@brawlhub/logging', () => ({
+  createLogger: () => ({
+    debug: mocks.logger.debug,
+    info: mocks.logger.info,
+    warn: mocks.logger.warn,
+    error: mocks.logger.error,
+  }),
+}));
 vi.mock('../membership/service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../membership/service')>();
   return { ...actual, ...mocks.memberService };
@@ -325,6 +339,36 @@ describe('/members account verify command', () => {
     expect(reply.embeds?.[0]?.toJSON?.().image?.url ?? JSON.stringify(reply.embeds)).toContain('28000016');
   });
 
+  it('shows the existing challenge when an active verification already exists', async () => {
+    mocks.verificationService.startVerification.mockResolvedValue({
+      ok: false,
+      code: 'active-challenge',
+      message: 'You already have an active verification challenge for #2C0Y with required icon **Spike**.',
+      challenge: {
+        discordUserId: ACTOR_DISCORD_ID,
+        profileId: 'profile-1',
+        playerTag: '2C0Y',
+        playerDbId: 'player-db-1',
+        playerName: 'Alpha',
+        startingIconId: 28000000,
+        targetIconId: 28000016,
+        targetIconName: 'Spike',
+        targetIconUrl: 'https://cdn.brawlify.com/profile-icons/regular/28000016.png',
+        createdAt: 1_732_000_000_000,
+        expiresAt: 1_732_001_800_000,
+      },
+    });
+    const interaction = chatInteraction({ tag: '#OTHER' }, 'start');
+
+    await handleMemberVerify(interaction);
+
+    const reply = payload(interaction, 'editReply');
+    expect(reply.content).toContain('already have an active verification challenge');
+    expect(reply.content).toContain('#2C0Y');
+    expect(reply.content).toContain('Spike');
+    expect(reply.embeds?.[0]?.toJSON?.().image?.url ?? JSON.stringify(reply.embeds)).toContain('28000016');
+  });
+
   it('reports when the required default brawler icon is not set yet', async () => {
     mocks.verificationService.checkVerification.mockResolvedValue({
       ok: true,
@@ -348,6 +392,7 @@ describe('/members account verify command', () => {
     expect(reply.content).toContain('28000003');
     expect(reply.content).toContain('28000016');
     expect(reply.content).toContain('any other icon will not verify');
+    expect(reply.content).toContain('few minutes');
     expect(reply.embeds?.[0]?.toJSON?.().image?.url ?? JSON.stringify(reply.embeds)).toContain('28000016');
   });
 

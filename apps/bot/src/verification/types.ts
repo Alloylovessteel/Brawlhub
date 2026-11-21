@@ -16,6 +16,14 @@ export type StartVerificationResult =
   | {
       readonly ok: true;
       readonly challenge: VerificationChallenge;
+      /** True when an existing challenge for the same player was resumed. */
+      readonly reused?: boolean;
+    }
+  | {
+      readonly ok: false;
+      readonly code: 'active-challenge';
+      readonly message: string;
+      readonly challenge: VerificationChallenge;
     }
   | { readonly ok: false; readonly code: 'invalid-tag'; readonly message: string }
   | { readonly ok: false; readonly code: 'player-not-found'; readonly message: string }

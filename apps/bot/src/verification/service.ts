@@ -11,7 +11,9 @@ import type {
   VerificationChallenge,
 } from './types.js';
 
-const CHALLENGE_TTL_MS = 10 * 60 * 1000;
+// The official API can lag an in-game icon change. Keep the required icon
+// stable long enough for players to wait for propagation and retry `check`.
+const CHALLENGE_TTL_MS = 30 * 60 * 1000;
 const challenges = new Map<string, VerificationChallenge>();
 
 function nowMs(): number {
@@ -725,6 +727,24 @@ export async function startVerification(
   }
   const normalizedTag = parsed.data;
 
+  // Re-running `start` must never rotate the required icon out from under a
+  // player who already changed their in-game icon and is waiting on the API.
+  const active = getChallenge(input.discordUserId);
+  if (active !== null) {
+    if (active.playerTag === normalizedTag) {
+      return { ok: true, challenge: active, reused: true };
+    }
+    return {
+      ok: false,
+      code: 'active-challenge',
+      message:
+        `You already have an active verification challenge for ${formatTag(active.playerTag)} ` +
+        `with required icon **${active.targetIconName}**. Run \`/members account verify check\` ` +
+        `to finish it, or \`/members account verify cancel\` before verifying a different player tag.`,
+      challenge: active,
+    };
+  }
+
   let profileId: string;
   try {
     profileId = await ensureBotProfileForDiscordUser(input.discordUserId, input.discordUsername);
@@ -799,7 +819,7 @@ export async function startVerification(
   };
   challenges.set(input.discordUserId, challenge);
 
-  return { ok: true, challenge };
+  return { ok: true, challenge, reused: false };
 }
 
 async function findActiveVerificationForPlayer(playerDbId: string): Promise<{ profileId: string } | null> {
