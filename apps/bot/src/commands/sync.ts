@@ -9,7 +9,8 @@ import {
 } from '../admin/service';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import { checkBotRateLimit } from '../discord/rate-limit';
-import { runSync } from '@brawlhub/sync';
+import { notifySyncResult } from '../operator-notifier.js';
+import { runSync, type SyncResult } from '@brawlhub/sync';
 import { runManagedSync } from '../sync/guard';
 import { handleSyncStatus } from './sync-status.js';
 
@@ -40,6 +41,14 @@ export async function handleSyncCommand(interaction: ChatInputCommandInteraction
 function websiteLine(): string | undefined {
   const appUrl = getBotConfig().appUrl;
   return appUrl === undefined ? undefined : `BrawlHub website: ${appUrl}`;
+}
+
+async function postOperatorNotice(result: SyncResult): Promise<void> {
+  try {
+    await notifySyncResult(result);
+  } catch {
+    // Operator notices are best-effort and must never fail the sync command.
+  }
 }
 
 export async function handleSync(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -106,6 +115,7 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
       return;
     }
     await recordSyncRunAudit(actor, result, { guildId: interaction.guildId });
+    await postOperatorNotice(result);
     const run = result.syncRunId === '' ? null : await loadSyncRun(result.syncRunId);
     await interaction.editReply({
       ...(site === undefined ? {} : { content: site }),

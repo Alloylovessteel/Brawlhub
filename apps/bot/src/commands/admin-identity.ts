@@ -13,6 +13,7 @@ import {
 } from '../discord/confirmation-components.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
+import { notifyVerificationCompleted } from '../operator-notifier.js';
 import {
   linkPlayerManually,
   listGuildVerifiedLinks,
@@ -22,6 +23,28 @@ import {
 } from '../verification/index.js';
 
 const EMBED_COLOR = 0x5865_f2;
+
+async function postVerificationOperatorNotice(
+  interaction: ChatInputCommandInteraction,
+  input: {
+    readonly playerName: string | null;
+    readonly playerTag: string;
+    readonly discordUserId: string;
+  },
+): Promise<void> {
+  if (interaction.guildId === null) return;
+  try {
+    await notifyVerificationCompleted({
+      guildId: interaction.guildId,
+      playerName: input.playerName,
+      playerTag: input.playerTag,
+      discordUserId: input.discordUserId,
+      method: 'staff-linked',
+    });
+  } catch {
+    // Operator notices are best-effort.
+  }
+}
 
 export const tagCommandData = new SlashCommandBuilder()
   .setName('tag')
@@ -179,6 +202,11 @@ export async function handleTag(interaction: ChatInputCommandInteraction): Promi
     await interaction.editReply({
       content: `<@${user.id}> is now fully verified for #${result.account.tag} (staff-linked${result.account.isMain ? ', main account' : ''}).`,
       allowedMentions: { parse: [] },
+    });
+    await postVerificationOperatorNotice(interaction, {
+      playerName: result.account.name,
+      playerTag: result.account.tag,
+      discordUserId: user.id,
     });
   } catch (error) {
     await replyAdminError(interaction, error);

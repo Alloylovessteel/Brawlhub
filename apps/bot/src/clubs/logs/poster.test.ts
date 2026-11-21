@@ -14,7 +14,12 @@ const mocks = vi.hoisted(() => ({
     loadUndeliveredClubLogEvents: vi.fn(),
     markClubLogEventsDelivered: vi.fn(),
   },
-  buildClubLogEventEmbed: vi.fn(),
+  pageView: {
+    CLUB_LOG_PERIOD_LABELS: { today: 'Today', week: 'This Week', season: 'This Season' },
+    isClubLogPeriod: vi.fn((value: string) => ['today', 'week', 'season'].includes(value)),
+    loadClubLogView: vi.fn(),
+  },
+  image: { buildClubLogPageImage: vi.fn() },
 }));
 
 vi.mock('discord.js', async (importOriginal) => {
@@ -35,10 +40,12 @@ vi.mock('discord.js', async (importOriginal) => {
 vi.mock('../../config', () => ({ getBotConfig: mocks.getBotConfig }));
 vi.mock('@brawlhub/logging', () => ({ createLogger: () => mocks.logger }));
 vi.mock('./service', () => mocks.service);
-vi.mock('./embed', () => ({ buildClubLogEventEmbed: mocks.buildClubLogEventEmbed }));
+vi.mock('./page-view', () => mocks.pageView);
+vi.mock('./image', () => mocks.image);
 
 import { runClubLogsPost, startClubLogsSchedule } from './poster';
 import type { ClubLogGroup } from './types';
+import type { ClubLogView } from '../types';
 
 function group(): ClubLogGroup {
   return {
@@ -64,6 +71,26 @@ function group(): ClubLogGroup {
   };
 }
 
+function view(): ClubLogView {
+  return {
+    club: {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      tag: 'ALPHA',
+      name: 'Alpha',
+      description: null,
+      trophies: null,
+      requiredTrophies: null,
+      memberCount: null,
+      lastSyncedAt: null,
+    },
+    period: 'today',
+    rows: [],
+    unavailable: 0,
+    latestSnapshotAt: '2026-11-20T12:00:00.000Z',
+    latestSyncAt: '2026-11-20T12:01:00.000Z',
+  };
+}
+
 beforeEach(() => {
   mocks.post.mockReset();
   mocks.post.mockResolvedValue({ id: 'message-1' });
@@ -78,12 +105,15 @@ beforeEach(() => {
   mocks.service.loadUndeliveredClubLogEvents.mockResolvedValue([group()]);
   mocks.service.markClubLogEventsDelivered.mockReset();
   mocks.service.markClubLogEventsDelivered.mockResolvedValue(undefined);
-  mocks.buildClubLogEventEmbed.mockReset();
-  mocks.buildClubLogEventEmbed.mockReturnValue({ toJSON: () => ({ title: '#ALPHA club log' }) });
+  mocks.pageView.loadClubLogView.mockReset();
+  mocks.pageView.loadClubLogView.mockResolvedValue({ kind: 'ok', value: view() });
+  mocks.image.buildClubLogPageImage.mockReset();
+  mocks.image.buildClubLogPageImage.mockResolvedValue(Buffer.from('fake-png'));
 });
 
 afterEach(() => {
   delete process.env.CLUB_LOGS_INTERVAL_MINUTES;
+  delete process.env.CLUB_LOGS_PERIOD;
   vi.restoreAllMocks();
 });
 
@@ -97,19 +127,54 @@ describe('runClubLogsPost', () => {
     expect(mocks.post).not.toHaveBeenCalled();
   });
 
-  it('posts one embed per log and records deliveries on success', async () => {
+  it('posts one public PNG per log and records deliveries only after success', async () => {
     await runClubLogsPost();
 
-    expect(mocks.post).toHaveBeenCalledWith(`channels/${CHANNEL_ID}/messages`, {
-      body: {
-        embeds: [{ title: '#ALPHA club log' }],
-        allowed_mentions: { parse: [] },
-      },
+    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
+      guildId: GUILD_ID,
+      tag: 'ALPHA',
+      period: 'today',
     });
+    expect(mocks.image.buildClubLogPageImage).toHaveBeenCalledWith(view(), group().events);
+    expect(mocks.post).toHaveBeenCalledOnce();
+    const [route, request] = mocks.post.mock.calls[0] as [string, Record<string, unknown>];
+    expect(route).toBe(`channels/${CHANNEL_ID}/messages`);
+    const body = request['body'] as Record<string, unknown>;
+    expect(body['content']).toBe('Alpha • Club Logs / Trophy Progression / Today');
+    expect(body['allowed_mentions']).toEqual({ parse: [] });
+    const attachments = body['attachments'] as Array<Record<string, unknown>>;
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]?.['id']).toBe('0');
+    const filename = attachments[0]?.['filename'] as string;
+    expect(filename).toMatch(/^club-log-alpha-\d+\.png$/);
+    const files = request['files'] as Array<Record<string, unknown>>;
+    expect(files).toEqual([
+      {
+        key: 'files[0]',
+        name: filename,
+        data: Buffer.from('fake-png'),
+        contentType: 'image/png',
+      },
+    ]);
     expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledWith(GUILD_ID, [
       { logId: LOG_ID, kind: 'role', eventId: 'r1' },
     ]);
     expect(mocks.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('honours a valid configured period', async () => {
+    process.env.CLUB_LOGS_PERIOD = 'week';
+
+    await runClubLogsPost();
+
+    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
+      guildId: GUILD_ID,
+      tag: 'ALPHA',
+      period: 'week',
+    });
+    const request = mocks.post.mock.calls[0]?.[1] as Record<string, unknown>;
+    const body = request['body'] as Record<string, unknown>;
+    expect(body['content']).toContain('This Week');
   });
 
   it('leaves events undelivered and redacts the token when posting fails', async () => {
@@ -122,6 +187,15 @@ describe('runClubLogsPost', () => {
     const warning = mocks.logger.warn.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(JSON.stringify(warning)).not.toContain(TOKEN);
     expect(warning['guildId']).toBe(GUILD_ID);
+  });
+
+  it('leaves events undelivered when rendering fails', async () => {
+    mocks.image.buildClubLogPageImage.mockRejectedValue(new Error('render failed'));
+
+    await runClubLogsPost();
+
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(mocks.service.markClubLogEventsDelivered).not.toHaveBeenCalled();
   });
 });
 

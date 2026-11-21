@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   ChannelType,
   MessageFlags,
   SlashCommandBuilder,
@@ -9,7 +10,18 @@ import { replyAdminError } from '../admin/errors';
 import { AdminServiceError, requireGlobalPermission } from '../admin/service';
 import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
 import { buildClubLogsConfigEmbed } from '../clubs/logs/embed';
-import { addClubLog, loadClubLogs, removeClubLog } from '../clubs/logs/service';
+import { buildClubLogPageImage } from '../clubs/logs/image';
+import {
+  CLUB_LOG_PERIOD_LABELS,
+  isClubLogPeriod,
+  loadClubLogView,
+} from '../clubs/logs/page-view';
+import {
+  addClubLog,
+  loadClubLogs,
+  loadRecentClubLogEvents,
+  removeClubLog,
+} from '../clubs/logs/service';
 import { isIgnorableInteractionError } from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
@@ -17,6 +29,21 @@ import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 const COMMAND_NAME = 'clublogs';
 const FORBIDDEN_MESSAGE = 'You do not have permission to manage club logs in this server.';
 const NO_GUILD_MESSAGE = 'Club logs can only be managed from within a Discord server.';
+const PERIOD_CHOICES = [
+  { name: 'Daily (Today)', value: 'today' },
+  { name: 'Weekly (This Week)', value: 'week' },
+  { name: 'Season', value: 'season' },
+] as const;
+
+function safeText(value: string, maximum: number): string {
+  const sanitized = value
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/<[@#&](?:!?\d+|everyone|here)>/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const text = sanitized === '' ? 'Club' : sanitized;
+  return text.length <= maximum ? text : `${text.slice(0, maximum - 1)}…`;
+}
 
 const commandBuilder = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
@@ -58,6 +85,26 @@ commandBuilder.addSubcommand((subcommand) =>
 commandBuilder.addSubcommand((subcommand) =>
   subcommand.setName('list').setDescription('Show this server’s club log configuration'),
 );
+commandBuilder.addSubcommand((subcommand) => {
+  subcommand
+    .setName('preview')
+    .setDescription('Post a configured club log page image in this channel')
+    .addStringOption((option) =>
+      option
+        .setName('club')
+        .setDescription('Configured club log to preview')
+        .setAutocomplete(true)
+        .setRequired(true),
+    )
+    .addStringOption((option) => {
+      option.setName('period').setDescription('Trophy progression period').setRequired(false);
+      for (const choice of PERIOD_CHOICES) {
+        option.addChoices(choice);
+      }
+      return option;
+    });
+  return subcommand;
+});
 
 export const clubLogsCommandData: SlashCommandBuilder = commandBuilder;
 
@@ -141,8 +188,52 @@ export async function handleClubLogs(interaction: ChatInputCommandInteraction): 
       return;
     }
 
+    if (subcommand === 'preview') {
+      const clubId = interaction.options.getString('club', true);
+      const logs = await loadClubLogs(guildId);
+      const log = logs.find((candidate) => candidate.clubId === clubId);
+      if (log === undefined) {
+        await interaction.editReply({
+          content: 'That club log is not configured in this server.',
+          embeds: [],
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+
+      const rawPeriod = interaction.options.getString('period', false);
+      const period = rawPeriod !== null && isClubLogPeriod(rawPeriod) ? rawPeriod : 'today';
+      const page = await loadClubLogView({ guildId, tag: log.clubTag, period });
+      if (page.kind !== 'ok') {
+        await interaction.editReply({
+          content: 'Stored data for that club is not available in this server.',
+          embeds: [],
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+
+      const groups = await loadRecentClubLogEvents(guildId, log.id);
+      const image = await buildClubLogPageImage(page.value, groups[0]?.events ?? []);
+      const filename = `club-log-preview-${log.clubTag.toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'club'}.png`;
+      await interaction.followUp({
+        content: `${safeText(log.clubName, 60)} • Club Logs / Trophy Progression / ${CLUB_LOG_PERIOD_LABELS[period]}`,
+        files: [new AttachmentBuilder(image, { name: filename })],
+        allowedMentions: { parse: [] },
+      });
+      await interaction.editReply({
+        content: 'Full club-log page preview posted publicly in this channel.',
+        embeds: [],
+        components: [],
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
     await interaction.editReply({
-      content: 'Choose `/clubs logs add`, `/clubs logs remove`, or `/clubs logs list`.',
+      content: 'Choose `/clubs logs add`, `/clubs logs remove`, `/clubs logs list`, or `/clubs logs preview`.',
       allowedMentions: { parse: [] },
     });
   } catch (error) {

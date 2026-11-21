@@ -11,15 +11,14 @@ import {
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import { buildClubLogPageEmbed } from '../clubs/embed';
-import { loadLeaderboardView } from '../clubs/service';
-import type { ClubLogPeriod, ClubLogRow, ClubLogView, LeaderboardEntry } from '../clubs/types';
+import { isClubLogPeriod, loadClubLogView } from '../clubs/logs/page-view';
+import type { ClubLogPeriod } from '../clubs/types';
 import { replyWithSafeError } from '../discord/errors';
 import {
   buildPaginationRowWithState,
   isPaginationButtonWithState,
   paginate,
   parsePaginationCustomIdWithState,
-  type Page,
 } from '../discord/pagination';
 import {
   DEFAULT_PAGINATION_STATE,
@@ -74,10 +73,6 @@ export const clubLogCommandData = new SlashCommandBuilder()
     return option;
   });
 
-function isClubLogPeriod(value: string): value is ClubLogPeriod {
-  return PERIOD_CHOICES.some((choice) => choice.value === value);
-}
-
 function encodeState(period: ClubLogPeriod, tag: string | undefined): string {
   return `${period}|${paginationStateForTag(tag)}`;
 }
@@ -91,44 +86,6 @@ function decodeState(state: string): ClubLogState | null {
   return { period, tag: tagFromPaginationState(tagState) };
 }
 
-function rankByChange(entries: readonly LeaderboardEntry[], period: ClubLogPeriod): ClubLogRow[] {
-  const eligible = entries
-    .map((entry) => {
-      const change = entry.progression?.[period] ?? null;
-      return change === null ? null : { member: entry, change };
-    })
-    .filter((row): row is { member: LeaderboardEntry; change: number } => row !== null)
-    .sort((a, b) => b.change - a.change || a.member.name.localeCompare(b.member.name));
-
-  let currentRank = 0;
-  let previousChange: number | null = null;
-  return eligible.map((entry, index) => {
-    if (previousChange === null || entry.change !== previousChange) {
-      currentRank = index + 1;
-      previousChange = entry.change;
-    }
-    const { progression: _progression, rank: _rank, ...member } = entry.member;
-    return { rank: currentRank, member, change: entry.change };
-  });
-}
-
-function toView(
-  leaderboard: Awaited<ReturnType<typeof loadLeaderboardView>> & { kind: 'ok' },
-  period: ClubLogPeriod,
-): ClubLogView {
-  const value = leaderboard.value;
-  const rows = rankByChange(value.entries, period);
-  const unavailable = value.entries.filter((entry) => (entry.progression?.[period] ?? null) === null).length;
-  return {
-    club: value.club,
-    period,
-    rows,
-    unavailable,
-    latestSnapshotAt: value.latestSnapshot?.capturedAt ?? null,
-    latestSyncAt: value.latestSyncAt,
-  };
-}
-
 async function loadPage(
   tag: string | undefined,
   guildId: string | null,
@@ -139,14 +96,10 @@ async function loadPage(
   | { readonly kind: 'lookup-failure'; readonly failure: Parameters<typeof replyClubLookupFailure>[1] }
 > {
   const config = getBotConfig();
-  const result = await loadLeaderboardView({
-    tag,
-    guildId,
-    seasonStartIso: config.seasonStartIso,
-  });
+  const result = await loadClubLogView({ tag, guildId, period });
   if (result.kind !== 'ok') return { kind: 'lookup-failure', failure: result };
 
-  const view = toView(result, period);
+  const view = result.value;
   const page = paginate(view.rows, pageNumber, PAGE_SIZE);
   const row = buildPaginationRowWithState(
     COMMAND_NAME,

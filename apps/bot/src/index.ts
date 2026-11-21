@@ -5,7 +5,8 @@ import { createLogger } from '@brawlhub/logging';
 import { Client, type Interaction } from 'discord.js';
 import { handleInteraction, registerCommands } from './commands/index.js';
 import { createDiscordNotifier } from './notifier.js';
-import { recoverInterruptedSyncs } from '@brawlhub/sync';
+import { notifySyncResult } from './operator-notifier.js';
+import { recoverInterruptedSyncs, type SyncResult } from '@brawlhub/sync';
 import { runManagedSync } from './sync/guard.js';
 import { registerDiscordAuthorizationEvents } from './discord/events.js';
 import { getGatewayIntents } from './discord/intents.js';
@@ -82,6 +83,15 @@ async function refreshConfiguredClubRolesSafely(): Promise<void> {
   }
 }
 
+/** Post operator summaries without letting notification failures affect sync. */
+async function postOperatorSyncResult(result: SyncResult): Promise<void> {
+  try {
+    await notifySyncResult(result);
+  } catch (error: unknown) {
+    logger.warn('Operator sync notice failed', { error: safeError(error, token) });
+  }
+}
+
 /** Run scheduled sync for all guilds, skipping if a previous batch is running. */
 async function executeSync(): Promise<void> {
   try {
@@ -106,6 +116,7 @@ async function executeSync(): Promise<void> {
 
       if (result.status === 'failed') {
         logger.warn('Scheduled sync failed', meta);
+        await postOperatorSyncResult(result);
         continue;
       }
       if (result.status === 'skipped') {
@@ -118,6 +129,7 @@ async function executeSync(): Promise<void> {
       }
 
       logger.info('Scheduled sync finished', meta);
+      await postOperatorSyncResult(result);
     }
 
     if (outcome.results.some((result) => result.status === 'completed')) {

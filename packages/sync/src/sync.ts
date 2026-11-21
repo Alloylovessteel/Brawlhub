@@ -186,6 +186,12 @@ export interface SyncNotifier {
   }): Promise<string | undefined>;
 }
 
+export interface SyncMemberFailure {
+  tag: string;
+  name: string;
+  reason: string;
+}
+
 export interface SyncResult {
   syncRunId: string;
   status: 'completed' | 'skipped' | 'failed';
@@ -196,6 +202,11 @@ export interface SyncResult {
   notificationsSent: number;
   error: string | undefined;
   affectedClubIds: string[];
+  /** Optional operator-notification context; no database schema change. */
+  guildId?: string;
+  membersExpected?: number;
+  membersSucceeded?: number;
+  memberFailures?: readonly SyncMemberFailure[];
 }
 
 /** Input passed to a notifier; also used to derive notification claim metadata. */
@@ -481,13 +492,18 @@ function emptyCounters(): Counters {
   };
 }
 
-function skippedResult(syncRunId: string, error: string): SyncResult {
+function guildContext(guildId: string | undefined): { readonly guildId?: string } {
+  return guildId === undefined || guildId === '' ? {} : { guildId };
+}
+
+function skippedResult(syncRunId: string, error: string, guildId?: string): SyncResult {
   return {
     syncRunId,
     status: 'skipped',
     ...emptyCounters(),
     error,
     affectedClubIds: [],
+    ...(guildId === undefined || guildId === '' ? {} : { guildId }),
   };
 }
 
@@ -937,11 +953,14 @@ async function fetchPlayerProfile(
   apiClient: BrawlStarsClient,
   tag: string,
   timeoutMs: number,
+  onFailure?: (reason: string) => void,
 ): Promise<Player | undefined> {
   try {
     return await withTimeout(apiClient.getPlayer(tag), timeoutMs, `getPlayer(${tag})`);
   } catch (error) {
-    log.warn('Player profile fetch failed', { tag, reason: sanitizeError(error) });
+    const reason = sanitizeError(error);
+    log.warn('Player profile fetch failed', { tag, reason });
+    onFailure?.(reason);
     return undefined;
   }
 }
@@ -1275,6 +1294,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       ...emptyCounters(),
       error: message,
       affectedClubIds: [],
+      ...guildContext(options.guildId?.trim()),
     };
   }
 
@@ -1314,6 +1334,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       ...emptyCounters(),
       error: message,
       affectedClubIds: [],
+      ...guildContext(requestedGuildId),
     };
   }
 
@@ -1323,6 +1344,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       requestedGuildId !== undefined && requestedGuildId.length > 0
         ? 'No clubs registered for this server'
         : 'No clubs registered',
+      requestedGuildId,
     );
   }
 
@@ -1334,6 +1356,11 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
   let runId: string | undefined;
   let affectedColumns = true;
   const counters = emptyCounters();
+  let memberCounts: {
+    membersExpected: number;
+    membersSucceeded: number;
+    memberFailures: readonly SyncMemberFailure[];
+  } = { membersExpected: 0, membersSucceeded: 0, memberFailures: [] };
   const lockToken = randomUUID();
   let lockHeld = false;
 
@@ -1349,15 +1376,16 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         ...emptyCounters(),
         error: message,
         affectedClubIds: clubIds,
+        ...guildContext(requestedGuildId),
       };
     }
     if (!lockHeld) {
-      return skippedResult('', 'Another sync process holds the database lock');
+      return skippedResult('', 'Another sync process holds the database lock', requestedGuildId);
     }
 
     const acquired = await acquireRun(db, scope, periodStartIso, nowIso, nowMs, clubIds, clubTags);
     if (acquired.kind === 'skip') {
-      return acquired.result;
+      return { ...acquired.result, ...guildContext(requestedGuildId) };
     }
     runId = acquired.runId;
     affectedColumns = acquired.affectedColumns;
@@ -1372,17 +1400,26 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
 
     const roster = buildGlobalRoster(fetched);
 
-    // 2. Players.
+    // 2. Players. A failed optional profile fetch is recorded for operator
+    // notifications; roster identity still comes from the official club API.
     const collectPlayerProfiles = readBooleanEnv('SYNC_COLLECT_PLAYER_PROFILES', true);
     const states: RosterState[] = [];
+    const memberFailures: SyncMemberFailure[] = [];
     for (const entry of roster.values()) {
       const fullProfile = collectPlayerProfiles
-        ? await fetchPlayerProfile(apiClient, entry.tag, apiTimeoutMs)
+        ? await fetchPlayerProfile(apiClient, entry.tag, apiTimeoutMs, (reason) => {
+            memberFailures.push({ tag: entry.tag, name: entry.name, reason });
+          })
         : undefined;
       const playerId = await upsertPlayer(db, apiClient, entry, nowIso, apiTimeoutMs, fullProfile);
       states.push({ ...entry, playerId });
       counters.playersUpserted += 1;
     }
+    memberCounts = {
+      membersExpected: roster.size,
+      membersSucceeded: Math.max(0, roster.size - memberFailures.length),
+      memberFailures,
+    };
     const presentPlayerIds = new Set(states.map((state) => state.playerId));
 
     // 3. Joins, transfers and same-club role changes, computed against the
@@ -1564,6 +1601,8 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       ...counters,
       error: undefined,
       affectedClubIds: clubIds,
+      ...guildContext(requestedGuildId),
+      ...memberCounts,
     };
   } catch (error) {
     const message = sanitizeError(error);
@@ -1584,6 +1623,8 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       ...counters,
       error: message,
       affectedClubIds: clubIds,
+      ...guildContext(requestedGuildId),
+      ...memberCounts,
     };
   } finally {
     if (lockHeld) {

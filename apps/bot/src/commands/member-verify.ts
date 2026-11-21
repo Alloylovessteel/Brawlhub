@@ -10,6 +10,7 @@ import {
   startVerification,
 } from '../verification/index.js';
 import { checkBotRateLimit } from '../discord/rate-limit.js';
+import { notifyVerificationCompleted } from '../operator-notifier.js';
 
 const COMMAND_NAME = 'member-verify';
 const CHECK_RATE_LIMIT = 1;
@@ -22,6 +23,24 @@ function formatTag(tag: string): string {
 function formatExpiry(expiresAt: number): string {
   const unix = Math.max(0, Math.floor(expiresAt / 1000));
   return `<t:${unix}:R>`;
+}
+
+async function postVerificationOperatorNotice(
+  interaction: ChatInputCommandInteraction,
+  result: { playerName: string; playerTag: string },
+): Promise<void> {
+  if (interaction.guildId === null) return;
+  try {
+    await notifyVerificationCompleted({
+      guildId: interaction.guildId,
+      playerName: result.playerName,
+      playerTag: result.playerTag,
+      discordUserId: interaction.user.id,
+      method: 'icon-verified',
+    });
+  } catch {
+    // Operator notices are best-effort.
+  }
 }
 
 function targetIconEmbed(icon: {
@@ -149,6 +168,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
       `**Verified:** ${result.playerName} (${formatTag(result.playerTag)}) is now linked to your BrawlHub account.\n` +
       `Required icon **${icon.name}** (ID \`${icon.id}\`) was confirmed via the official Brawl Stars API (starting icon \`${result.startingIconId}\`, current \`${result.currentIconId}\`).`,
   });
+  await postVerificationOperatorNotice(interaction, result);
 }
 
 async function handleCancel(interaction: ChatInputCommandInteraction): Promise<void> {

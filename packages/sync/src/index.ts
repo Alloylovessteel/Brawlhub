@@ -19,4 +19,5 @@ export type {
   SyncNotifier,
   SyncNotifierWithChannel,
   SyncResult,
+  SyncMemberFailure,
 } from './sync';

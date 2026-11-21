@@ -446,8 +446,9 @@ async function loadEventsForLog(
   guildId: string,
   log: ClubLogRow,
   db: DatabaseClient,
+  onlyUndelivered = true,
 ): Promise<ClubLogEvent[]> {
-  const delivered = await readDeliveredKeys(guildId, log.id, db);
+  const delivered = onlyUndelivered ? await readDeliveredKeys(guildId, log.id, db) : new Set<string>();
 
   const [membership, roles, capacity] = await Promise.all([
     db
@@ -519,6 +520,26 @@ export async function loadUndeliveredClubLogEvents(
     groups.push({ log, events });
   }
   return groups;
+}
+
+/**
+ * Recent stored change events for one configured log, regardless of whether
+ * they were already delivered by the scheduled poster. Used by previews.
+ */
+export async function loadRecentClubLogEvents(
+  guildId: string,
+  logId: string,
+  options: ClubLogServiceOptions = {},
+): Promise<ClubLogGroup[]> {
+  const parsedGuildId = requireGuildId(guildId);
+  const db = dbFor(options);
+  const logs = await loadClubLogRows(parsedGuildId, { db });
+  const log = logs.find((candidate) => candidate.id === logId);
+  if (log === undefined) return [];
+  const events = await loadEventsForLog(parsedGuildId, log, db, false);
+  if (events.length === 0) return [];
+  const { createdAt: _createdAt, ...config } = log;
+  return [{ log: config, events }];
 }
 
 /** Record delivered event IDs so a retry never re-posts the same change. */
