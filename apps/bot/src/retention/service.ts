@@ -27,7 +27,9 @@ export async function trimOldBattleRaw(now: Date = new Date()): Promise<BattleRa
     .from('player_battles')
     .update({ raw: {} })
     .lt('battle_time', cutoff)
-    .neq('raw', {})
+    // postgrest-js stringifies filter values into the query string; a plain
+    // object would become "[object Object]" and fail as jsonb input.
+    .neq('raw', '{}')
     .select('id');
   if (error) {
     throw new Error(`Battle raw retention failed: ${error.message}`);
