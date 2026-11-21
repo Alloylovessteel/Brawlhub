@@ -1,4 +1,7 @@
 import { createLogger } from '@brawlhub/logging';
+import { REST } from 'discord.js';
+import { getBotConfig } from '../config.js';
+import { postInactivityReports } from './inactivity.js';
 import { currentReportPeriod, REPORT_TYPES, type ReportType } from './period';
 import { runScheduledReports } from './service';
 
@@ -30,13 +33,35 @@ function runSafely(reason: string, types: readonly ReportType[]): void {
   });
 }
 
+/** Auto-post the inactivity digest only at the UTC boundary; never on startup. */
+function runInactivitySafely(now: Date): void {
+  const token = getBotConfig().token;
+  if (token === undefined) return;
+  const rest = new REST({ version: '10' }).setToken(token);
+  void postInactivityReports(now, rest, token).then(
+    (posted: number) => {
+      if (posted > 0) logger.info('Inactivity reports posted', { posted });
+    },
+    (error: unknown) => {
+      logger.warn('Inactivity report tick failed', { error: safeScheduleError(error) });
+    },
+  );
+}
+
 /** Start the in-process UTC report schedule; returns a stop function for shutdown. */
 export function startReportsSchedule(): () => void {
   const lastRun = new Map<ReportType, string>();
+  let lastInactivityKey: string | null = null;
 
   const tick = (): void => {
     const now = new Date();
     if (now.getUTCHours() !== 0 || now.getUTCMinutes() >= BOUNDARY_WINDOW_MINUTES) return;
+
+    const inactivityKey = now.toISOString().slice(0, 10);
+    if (lastInactivityKey !== inactivityKey) {
+      lastInactivityKey = inactivityKey;
+      runInactivitySafely(now);
+    }
 
     const due: ReportType[] = ['daily'];
     if (now.getUTCDay() === 1) due.push('weekly');

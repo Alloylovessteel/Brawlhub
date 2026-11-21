@@ -275,6 +275,13 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         permission: 'clubs:write',
       },
       {
+        name: 'inactivity',
+        usage: '/inactivity view | /inactivity set days:4 channel:#club-reports | /inactivity disable',
+        description:
+          'Configure the scheduled club inactivity digest with a customizable number of days.',
+        permission: 'clubs:write',
+      },
+      {
         name: 'audit',
         usage: '/audit',
         description: 'View a read-only, paginated audit log.',

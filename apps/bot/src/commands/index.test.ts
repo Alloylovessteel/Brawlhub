@@ -97,6 +97,7 @@ describe('command registry', () => {
       'sync',
       'sync-status',
       'settings',
+      'inactivity',
       'audit',
       'remove-club',
       'help',
