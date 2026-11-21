@@ -253,6 +253,7 @@ async function buildRosterPayload(
   if (result.kind !== 'ok') return { kind: 'lookup-failure', failure: result };
 
   const page = paginate(visibleBrawlers(result.value, session.sort, session.filter), pageNumber, PAGE_SIZE);
+  const portraitUrl = await resolveBrawlerPortraitUrl(page.items[0]?.name ?? null);
   const updated = refreshSession(nonce, { ...session, page: page.page });
   const pagination = buildPaginationRowWithState(
     COMMAND_NAME,
@@ -268,7 +269,16 @@ async function buildRosterPayload(
   return {
     kind: 'ok',
     payload: {
-      embeds: [buildPlayerBrawlersPageEmbed(result.value, page, session.sort, session.filter, getBotConfig())],
+      embeds: [
+        buildPlayerBrawlersPageEmbed(
+          result.value,
+          page,
+          session.sort,
+          session.filter,
+          getBotConfig(),
+          portraitUrl,
+        ),
+      ],
       components,
     },
   };

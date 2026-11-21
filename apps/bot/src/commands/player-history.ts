@@ -10,6 +10,7 @@ import {
 } from 'discord.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
+import { resolvePlayerIconUrl } from '../metadata/assets.js';
 import { buildPlayerHistoryPageEmbed } from '../players/embed';
 import { loadPlayerHistory } from '../players/service';
 import type { HistoryPeriod } from '../clubs/types';
@@ -98,6 +99,7 @@ async function loadPage(
   });
   if (result.kind !== 'ok') return { kind: 'lookup-failure', failure: result };
 
+  const iconUrl = await resolvePlayerIconUrl(result.value.player.iconId);
   const page = paginate(result.value.points, pageNumber, PAGE_SIZE);
   const row = buildPaginationRowWithState(
     COMMAND_NAME,
@@ -109,7 +111,7 @@ async function loadPage(
   return {
     kind: 'ok',
     payload: {
-      embeds: [buildPlayerHistoryPageEmbed(result.value, page, getBotConfig())],
+      embeds: [buildPlayerHistoryPageEmbed(result.value, page, getBotConfig(), iconUrl)],
       components: row === null ? [] : [row],
     },
   };

@@ -15,7 +15,7 @@ import {
   paginate,
   parsePaginationCustomIdWithState,
 } from '../discord/pagination';
-import { resolvePlayerIconUrl } from '../metadata/assets.js';
+import { resolveBrawlerPortraitUrl, resolvePlayerIconUrl } from '../metadata/assets.js';
 import {
   buildMeBrawlersEmbed,
   buildMeMoreEmbed,
@@ -158,13 +158,14 @@ export async function buildMeResponse(
     const result = await loadPlayerBrawlers({ tag: session.tag, guildId });
     if (result.kind !== 'ok') return { kind: 'lookup-failure', failure: result };
     const page = paginate(result.value.brawlers, session.page, PAGE_SIZE);
+    const portraitUrl = await resolveBrawlerPortraitUrl(page.items[0]?.name ?? null);
     const pagination = buildPaginationRowWithState('me', page.page, page.pageCount, nonce);
     const components = [sectionRow(nonce, 'brawlers')];
     if (pagination !== null) components.push(pagination);
     return {
       kind: 'ok',
       payload: {
-        embeds: [buildMeBrawlersEmbed(result.value, page, config)],
+        embeds: [buildMeBrawlersEmbed(result.value, page, config, portraitUrl)],
         components,
       },
     };
@@ -183,10 +184,17 @@ export async function buildMeResponse(
     return { kind: 'lookup-failure', failure: { kind: 'not-found', tag: session.tag } };
   }
 
+  const iconUrl = await resolvePlayerIconUrl(history.value.player.iconId);
   return {
     kind: 'ok',
     payload: {
-      embeds: [buildMeMoreEmbed({ history: history.value, battles: battles.value, clubs: clubs.value }, config)],
+      embeds: [
+        buildMeMoreEmbed(
+          { history: history.value, battles: battles.value, clubs: clubs.value },
+          config,
+          iconUrl,
+        ),
+      ],
       components: [sectionRow(nonce, 'more')],
     },
   };

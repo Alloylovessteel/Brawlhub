@@ -172,6 +172,7 @@ describe('/brawlers handler', () => {
       guildId: GUILD_ID,
     });
     expect(editPayload(interaction).embeds).toHaveLength(1);
+    expect(mocks.resolveBrawlerPortraitUrl).toHaveBeenCalledWith('Shelly');
     expect(firstCustomId(editPayload(interaction))).toMatch(/^brawlers:sort:/);
   });
 

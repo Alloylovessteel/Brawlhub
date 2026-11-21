@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
     searchPlayers: vi.fn(),
   },
   resolvePlayerIconUrl: vi.fn(async (): Promise<string | null> => null),
+  resolveBrawlerPortraitUrl: vi.fn(async (): Promise<string | null> => null),
   verification: {
     findVerifiedPlayerForDiscordUser: vi.fn(),
   },
@@ -38,7 +39,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
 vi.mock('../players/service', () => mocks.service);
-vi.mock('../metadata/assets', () => ({ resolvePlayerIconUrl: mocks.resolvePlayerIconUrl }));
+vi.mock('../metadata/assets', () => ({
+  resolvePlayerIconUrl: mocks.resolvePlayerIconUrl,
+  resolveBrawlerPortraitUrl: mocks.resolveBrawlerPortraitUrl,
+}));
 vi.mock('../verification/index', () => mocks.verification);
 
 import { handleMe, handleMeAutocomplete } from './player';
@@ -160,6 +164,7 @@ function battlesResult(count: number, period = '30d') {
     battleType: 'ranked',
     result: index % 3 === 0 ? 'victory' : 'defeat',
     trophyChange: index % 3 === 0 ? 8 : -4,
+    brawlerName: 'Shelly',
   }));
   return {
     kind: 'ok' as const,
@@ -238,6 +243,7 @@ function payload(interaction: ChatInputCommandInteraction | ButtonInteraction, m
 beforeEach(() => {
   for (const fn of Object.values(mocks.service)) fn.mockReset();
   mocks.resolvePlayerIconUrl.mockReset().mockResolvedValue(null);
+  mocks.resolveBrawlerPortraitUrl.mockReset().mockResolvedValue(null);
   mocks.verification.findVerifiedPlayerForDiscordUser.mockReset().mockResolvedValue(null);
 });
 
@@ -395,6 +401,19 @@ describe('/player-battles command', () => {
 
     await handlePlayerBattlesComponent(buttonInteraction('player-battles:page:2:bad'));
     expect(mocks.service.loadPlayerBattles).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses a resolved brawler portrait for the battle view', async () => {
+    mocks.service.loadPlayerBattles.mockResolvedValue(battlesResult(3));
+    mocks.resolveBrawlerPortraitUrl.mockResolvedValue('https://cdn.example.test/brawlers/shelly.png');
+    const interaction = chatInteraction({ tag: '#2c0y' });
+
+    await handlePlayerBattles(interaction);
+
+    expect(mocks.resolveBrawlerPortraitUrl).toHaveBeenCalledWith('Shelly');
+    expect(payload(interaction, 'editReply').embeds[0].toJSON().thumbnail?.url).toBe(
+      'https://cdn.example.test/brawlers/shelly.png',
+    );
   });
 
   it('renders a safe empty battle view', async () => {

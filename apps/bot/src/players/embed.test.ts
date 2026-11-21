@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { paginate } from '../discord/pagination';
 import {
+  buildMeMoreEmbed,
+  buildPlayerBattlesPageEmbed,
+  buildPlayerBrawlersPageEmbed,
   buildPlayerClubsPageEmbed,
   buildPlayerCompareEmbed,
   buildPlayerHistoryPageEmbed,
@@ -137,6 +140,125 @@ describe('player embeds', () => {
     ).toJSON();
 
     expect(embed.thumbnail?.url).toBe('https://cdn.example.test/player/28000003.png');
+  });
+
+  it('uses a resolved icon on history and club-history embeds', () => {
+    const historyView = {
+      player: identity(),
+      points: [],
+      period: '30d',
+      currentTrophies: null,
+      highestRecordedTrophies: null,
+      firstSnapshotAt: null,
+      latestSnapshotAt: null,
+      change: null,
+      progression: null,
+      memberships: [],
+      events: [],
+    } as never;
+    const clubsView = {
+      player: identity(),
+      currentClub: null,
+      memberships: [],
+      events: [],
+    } as never;
+    const iconUrl = 'https://cdn.example.test/player/icon.png';
+
+    const history = buildPlayerHistoryPageEmbed(
+      historyView,
+      paginate([], 1, 10),
+      config,
+      iconUrl,
+    ).toJSON();
+    const clubs = buildPlayerClubsPageEmbed(
+      clubsView,
+      paginate([], 1, 10),
+      config,
+      iconUrl,
+    ).toJSON();
+
+    expect(history.thumbnail?.url).toBe(iconUrl);
+    expect(clubs.thumbnail?.url).toBe(iconUrl);
+  });
+
+  it('prefers the first brawler portrait on battle and roster embeds', () => {
+    const battleItems = [{
+      id: 'b1',
+      syncRunId: null,
+      battleTime: '2026-11-18T10:00:00.000Z',
+      mode: 'gemGrab',
+      map: 'Double Trouble',
+      battleType: 'ranked',
+      result: 'victory',
+      trophyChange: 8,
+      brawlerName: 'Shelly',
+      starPlayerName: null,
+    }];
+    const brawlerItems = [{
+      id: 1,
+      name: 'Shelly',
+      trophies: 900,
+      highestTrophies: 1000,
+      power: 11,
+      rank: 1,
+      prestigeLevel: null,
+      currentWinStreak: null,
+      maxWinStreak: null,
+      gadgets: [],
+      starPowers: [],
+      gears: [],
+      hyperCharges: [],
+    }];
+    const battlesView = {
+      player: identity(),
+      period: '30d',
+      battles: battleItems,
+      wins: 1,
+      losses: 0,
+      draws: 0,
+      topModes: [],
+    } as never;
+    const brawlersView = {
+      player: identity(),
+      brawlers: brawlerItems,
+      catalog: [],
+      source: 'live',
+      apiIssue: null,
+      fetchedAt: null,
+    } as never;
+    const portraitUrl = 'https://cdn.example.test/brawlers/shelly.png';
+
+    const battles = buildPlayerBattlesPageEmbed(
+      battlesView,
+      paginate(battleItems, 1, 10) as never,
+      config,
+      'https://cdn.example.test/player/icon.png',
+      portraitUrl,
+    ).toJSON();
+    const roster = buildPlayerBrawlersPageEmbed(
+      brawlersView,
+      paginate(brawlerItems, 1, 10) as never,
+      'trophies',
+      'all',
+      config,
+      portraitUrl,
+    ).toJSON();
+
+    expect(battles.thumbnail?.url).toBe(portraitUrl);
+    expect(roster.thumbnail?.url).toBe(portraitUrl);
+  });
+
+  it('uses a resolved icon on the interactive More embed', () => {
+    const view = {
+      history: { player: identity(), period: '30d' },
+      battles: { player: identity(), period: '30d', battles: [], topModes: [] },
+      clubs: { player: identity(), currentClub: null, memberships: [], events: [] },
+    } as never;
+    const iconUrl = 'https://cdn.example.test/player/icon.png';
+
+    const embed = buildMeMoreEmbed(view, config, iconUrl).toJSON();
+
+    expect(embed.thumbnail?.url).toBe(iconUrl);
   });
 
   it('omits missing profile fields instead of showing placeholders', () => {

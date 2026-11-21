@@ -31,6 +31,11 @@ import type {
 
 const EMBED_COLOR = 0x5865_f2;
 
+/** Static asset URLs are optional presentation only; never fabricate one. */
+function applyThumbnail(embed: EmbedBuilder, url: string | null | undefined): void {
+  if (url !== null && url !== undefined && url !== '') embed.setThumbnail(url);
+}
+
 type PlayerEmbedConfig = Pick<
   BotConfig,
   | 'emojis'
@@ -403,6 +408,7 @@ export function buildPlayerBrawlersPageEmbed(
   sort: BrawlerSort,
   filter: BrawlerFilter,
   config: PlayerEmbedConfig,
+  portraitUrl: string | null = null,
 ): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
@@ -439,6 +445,7 @@ export function buildPlayerBrawlersPageEmbed(
     });
   }
 
+  applyThumbnail(embed, portraitUrl);
   return fitEmbedToDiscordLimits(embed);
 }
 
@@ -505,6 +512,7 @@ export function buildPlayerHistoryPageEmbed(
   view: PlayerHistoryView,
   page: Page<PlayerHistoryView['points'][number]>,
   config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
 ): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
@@ -600,6 +608,7 @@ export function buildPlayerHistoryPageEmbed(
     });
   }
 
+  applyThumbnail(embed, iconUrl);
   return fitEmbedToDiscordLimits(embed);
 }
 
@@ -622,6 +631,8 @@ export function buildPlayerBattlesPageEmbed(
   view: PlayerBattleHistoryView,
   page: Page<PlayerBattleRecord>,
   config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
+  battlePortraitUrl: string | null = null,
 ): EmbedBuilder {
   const emojis = profileEmojis(config);
   const embed = new EmbedBuilder()
@@ -685,6 +696,7 @@ export function buildPlayerBattlesPageEmbed(
     });
   }
 
+  applyThumbnail(embed, battlePortraitUrl ?? iconUrl);
   return fitEmbedToDiscordLimits(embed);
 }
 
@@ -693,6 +705,7 @@ export function buildPlayerClubsPageEmbed(
   view: PlayerClubsView,
   page: Page<PlayerMembershipRecord>,
   config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
 ): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
@@ -763,6 +776,7 @@ export function buildPlayerClubsPageEmbed(
     });
   }
 
+  applyThumbnail(embed, iconUrl);
   return fitEmbedToDiscordLimits(embed);
 }
 
@@ -961,8 +975,9 @@ export function buildMeBrawlersEmbed(
   view: PlayerBrawlersView,
   page: Page<PlayerBrawlerDetail>,
   config: PlayerEmbedConfig,
+  portraitUrl: string | null = null,
 ): EmbedBuilder {
-  const embed = buildPlayerBrawlersPageEmbed(view, page, 'trophies', 'all', config);
+  const embed = buildPlayerBrawlersPageEmbed(view, page, 'trophies', 'all', config, portraitUrl);
   embed
     .setTitle(truncate(`${playerName(view, config)} — Brawler Overview`, 256))
     .setFooter({
@@ -978,6 +993,7 @@ export function buildMeBrawlersEmbed(
 export function buildMeMoreEmbed(
   view: PlayerHighlightsView,
   config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
 ): EmbedBuilder {
   const history = view.history;
   const battles = view.battles;
@@ -1065,5 +1081,6 @@ export function buildMeMoreEmbed(
       2048,
     ),
   });
+  applyThumbnail(embed, iconUrl);
   return fitEmbedToDiscordLimits(embed);
 }

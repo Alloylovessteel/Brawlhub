@@ -17,12 +17,16 @@ const mocks = vi.hoisted(() => ({
     findVerifiedPlayerForDiscordUser: vi.fn(),
   },
   resolvePlayerIconUrl: vi.fn(async () => null),
+  resolveBrawlerPortraitUrl: vi.fn(async () => null),
 }));
 
 vi.mock('../config', () => ({ getBotConfig: () => ({}) }));
 vi.mock('../players/service', () => mocks.service);
 vi.mock('../verification/index', () => mocks.verification);
-vi.mock('../metadata/assets.js', () => ({ resolvePlayerIconUrl: mocks.resolvePlayerIconUrl }));
+vi.mock('../metadata/assets.js', () => ({
+  resolvePlayerIconUrl: mocks.resolvePlayerIconUrl,
+  resolveBrawlerPortraitUrl: mocks.resolveBrawlerPortraitUrl,
+}));
 vi.mock('../players/embed', async () => {
   const { EmbedBuilder } = await import('discord.js');
   return {
@@ -111,11 +115,12 @@ const okBrawlers = (count = 12) => ({
   },
 });
 
-const okStored = () => ({ kind: 'ok', value: {} });
+const okStored = () => ({ kind: 'ok', value: { player: { iconId: 28000003 } } });
 
 beforeEach(() => {
   for (const fn of Object.values(mocks.service)) fn.mockReset();
   mocks.resolvePlayerIconUrl.mockReset().mockResolvedValue(null);
+  mocks.resolveBrawlerPortraitUrl.mockReset().mockResolvedValue(null);
   mocks.verification.findVerifiedPlayerForDiscordUser.mockReset().mockResolvedValue(null);
   mocks.service.loadPlayerProfile.mockResolvedValue(okProfile());
   mocks.service.loadPlayerBrawlers.mockResolvedValue(okBrawlers());
@@ -140,6 +145,7 @@ describe('interactive /me', () => {
       tag: '#2c0y',
       guildId: GUILD_ID,
     });
+    expect(mocks.resolveBrawlerPortraitUrl).toHaveBeenCalledWith('Brawler 0');
     const secondNonce = nonceFrom(editPayload(brawlersClick));
     expect(secondNonce).not.toBe(firstNonce);
 
@@ -209,6 +215,7 @@ describe('interactive /me', () => {
       tag: '#2c0y',
       guildId: GUILD_ID,
     });
+    expect(mocks.resolvePlayerIconUrl).toHaveBeenCalledWith(28000003);
   });
 
   it('keeps brawler pagination guild-bound and single-use', async () => {
