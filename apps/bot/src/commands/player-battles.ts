@@ -10,6 +10,7 @@ import {
 } from 'discord.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
+import { resolveBrawlerPortraitUrl, resolvePlayerIconUrl } from '../metadata/assets.js';
 import { buildPlayerBattlesPageEmbed } from '../players/embed';
 import { loadPlayerBattles } from '../players/service';
 import type { HistoryPeriod } from '../clubs/types';
@@ -94,6 +95,10 @@ async function loadPage(
   if (result.kind !== 'ok') return { kind: 'lookup-failure', failure: result };
 
   const page = paginate(result.value.battles, pageNumber, PAGE_SIZE);
+  const [iconUrl, battlePortraitUrl] = await Promise.all([
+    resolvePlayerIconUrl(result.value.player.iconId),
+    resolveBrawlerPortraitUrl(page.items[0]?.brawlerName ?? null),
+  ]);
   const row = buildPaginationRowWithState(
     COMMAND_NAME,
     page.page,
@@ -104,7 +109,9 @@ async function loadPage(
   return {
     kind: 'ok',
     payload: {
-      embeds: [buildPlayerBattlesPageEmbed(result.value, page, getBotConfig())],
+      embeds: [
+        buildPlayerBattlesPageEmbed(result.value, page, getBotConfig(), iconUrl, battlePortraitUrl),
+      ],
       components: row === null ? [] : [row],
     },
   };

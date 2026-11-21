@@ -161,7 +161,7 @@ beforeEach(() => {
   mocks.service.filterRegisteredClubs.mockReset();
 });
 
-describe('/club-members command', () => {
+describe('/clubs members command', () => {
   it('uses the only registered club and pages the roster ten members at a time', async () => {
     mocks.service.loadMemberView.mockResolvedValue(memberResult(12));
     const interaction = chatInteraction();
@@ -291,7 +291,7 @@ describe('/club-members command', () => {
   });
 });
 
-describe('/club-leaderboard command', () => {
+describe('/clubs leaderboard command', () => {
   it('pages ranked stored entries and preserves the selected tag', async () => {
     mocks.service.loadLeaderboardView.mockResolvedValue(leaderboardResult(11));
     const interaction = chatInteraction({ tag: '#2c0y' });

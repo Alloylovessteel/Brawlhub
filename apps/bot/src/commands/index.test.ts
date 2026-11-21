@@ -49,102 +49,27 @@ function chatInteraction(commandName: string): Interaction {
 }
 
 describe('command registry', () => {
-  it('registers club autocomplete and clubs pagination handlers', () => {
-    expect(commands.find((command) => command.data.name === 'club')?.autocomplete).toBeTypeOf(
-      'function',
-    );
-    expect(commands.find((command) => command.data.name === 'clubs')?.handleComponent).toBeTypeOf(
-      'function',
-    );
-  });
-
-  it('registers all advanced club commands with their handlers', () => {
+  it('registers the 18 Option 3 anchors in order', () => {
     expect(commands.map((command) => command.data.name)).toEqual([
-      'ping',
-      'club',
       'clubs',
-      'club-members',
-      'club-leaderboard',
-      'club-log',
-      'club-history',
-      'club-compare',
-      'view',
-      'club-overview',
-      'clublogs',
-      'events',
       'me',
-      'player-history',
-      'player-battles',
-      'player-clubs',
-      'player-compare',
+      'brawlers',
+      'player',
       'leaderboard',
+      'events',
       'competition',
       'members',
-      'member-verify',
-      'accounts',
-      'verify-info',
-      'verify-settings',
-      'tag',
-      'register-list',
-      'find',
-      'unverify-one',
-      'unverify-all',
-      'delete-me',
-      'member-history',
-      'member-search',
       'staff',
-      'register-club',
       'sync',
-      'sync-status',
       'settings',
+      'inactivity',
       'audit',
-      'remove-club',
       'help',
-      'about',
-      'status',
       'fn',
       'auto',
       'update',
+      'club-roles',
     ]);
-    expect(commands.find((command) => command.data.name === 'competition')?.autocomplete).toBeTypeOf(
-      'function',
-    );
-    expect(commands.find((command) => command.data.name === 'competition')?.handleComponent).toBeTypeOf(
-      'function',
-    );
-    for (const name of [
-      'club-members',
-      'club-leaderboard',
-      'club-log',
-      'club-history',
-      'club-compare',
-      'members',
-      'member-history',
-      'member-search',
-    ]) {
-      expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
-    }
-    for (const name of ['club-members', 'club-leaderboard', 'club-log', 'club-history', 'events', 'members', 'member-history', 'member-search', 'staff', 'register-club', 'settings', 'audit', 'help']) {
-      expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
-        'function',
-      );
-    }
-    for (const name of ['remove-club', 'view', 'clublogs']) {
-      expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
-    }
-    for (const name of ['club-overview', 'clublogs']) {
-      expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
-        'function',
-      );
-    }
-    for (const name of ['fn', 'auto', 'update']) {
-      expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
-        'function',
-      );
-    }
-    expect(commands.find((command) => command.data.name === 'club')?.handleComponent).toBeTypeOf(
-      'function',
-    );
   });
 
   it('keeps schema-dependent moderation commands unregistered', () => {
@@ -155,27 +80,31 @@ describe('command registry', () => {
     expect(blacklist?.handleComponent).toBeTypeOf('function');
   });
 
-  it('registers club archival as a confirmed, non-destructive command', () => {
-    expect(commands.map((command) => command.data.name)).toContain('remove-club');
-    expect(pendingCommands.map((command) => command.data.name)).not.toContain('remove-club');
-    const removeClub = commands.find((command) => command.data.name === 'remove-club');
-    expect(removeClub).toBeDefined();
-    expect(removeClub?.autocomplete).toBeTypeOf('function');
-    expect(removeClub?.handleComponent).toBeTypeOf('function');
-  });
-
-  it('registers all player commands with their handlers', () => {
-    for (const name of ['me', 'player-history', 'player-clubs', 'player-compare']) {
-      expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
-    }
-    for (const name of ['player-history', 'player-clubs']) {
+  it('uses composite handlers for the folded anchors', () => {
+    for (const name of ['clubs', 'player', 'brawlers', 'members', 'help']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );
     }
-    expect(
-      commands.find((command) => command.data.name === 'leaderboard')?.handleComponent,
-    ).toBeTypeOf('function');
+    for (const name of ['clubs', 'player', 'brawlers', 'members']) {
+      expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf(
+        'function',
+      );
+    }
+  });
+
+  it('keeps handlers for the standalone commands', () => {
+    expect(commands.find((command) => command.data.name === 'competition')?.autocomplete).toBeTypeOf(
+      'function',
+    );
+    expect(commands.find((command) => command.data.name === 'competition')?.handleComponent).toBeTypeOf(
+      'function',
+    );
+    for (const name of ['me', 'events', 'leaderboard', 'staff', 'settings', 'audit', 'fn', 'auto', 'update']) {
+      expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
+        'function',
+      );
+    }
   });
 });
 
@@ -205,6 +134,14 @@ describe('dispatchInteraction', () => {
       [command('help', { handleComponent })],
     );
     expect(handleComponent).toHaveBeenCalledOnce();
+  });
+
+  it('routes retired component prefixes to their Option 3 anchor', async () => {
+    const handleComponent = vi.fn(async () => undefined);
+    const interaction = buttonInteraction('club-members:page:2:TAG');
+    await dispatchInteraction(interaction, [command('clubs', { handleComponent })]);
+    expect(handleComponent).toHaveBeenCalledWith(interaction);
+    expect((interaction as { customId: string }).customId).toBe('club-members:page:2:TAG');
   });
 
   it('never exposes raw errors to Discord', async () => {

@@ -210,7 +210,7 @@ describe('archiveGuildClub', () => {
       payload: {
         archived_at: ARCHIVED_AT,
         archived_by: PROFILE_ID,
-        archive_reason: 'Archived with /remove-club',
+        archive_reason: 'Archived with /clubs remove',
       },
       filters: { id: CLUB_ID, guild_id: GUILD_ID, archived_at: null },
     });
@@ -220,7 +220,7 @@ describe('archiveGuildClub', () => {
         guild_id: GUILD_ID,
         archived_at: ARCHIVED_AT,
         archived_by: PROFILE_ID,
-        archive_reason: 'Archived with /remove-club',
+        archive_reason: 'Archived with /clubs remove',
       },
       activeClub(OTHER_CLUB_ID),
     ]);

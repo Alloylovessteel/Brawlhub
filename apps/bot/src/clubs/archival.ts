@@ -46,7 +46,7 @@ export async function archiveGuildClub(
     .update({
       archived_at: archivedAt,
       archived_by: input.actor.profileId,
-      archive_reason: 'Archived with /remove-club',
+      archive_reason: 'Archived with /clubs remove',
     })
     .eq('id', clubId)
     .eq('guild_id', guildId)

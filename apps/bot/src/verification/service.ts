@@ -828,8 +828,8 @@ export async function checkVerification(
       ok: false,
       code: expired ? 'expired' : 'no-challenge',
       message: expired
-        ? 'Your verification challenge expired. Run `/member-verify start` again to begin a new one.'
-        : 'No active verification challenge was found. Run `/member-verify start tag:<player-tag>` first.',
+        ? 'Your verification challenge expired. Run `/members account verify start` again to begin a new one.'
+        : 'No active verification challenge was found. Run `/members account verify start tag:<player-tag>` first.',
     };
   }
 

@@ -1,6 +1,6 @@
-# Phase 3 foundations: authentication, permissions and data access
+# History and data-access foundations: authentication, permissions and data access
 
-This document records the Phase 3 foundation decisions that the implemented dashboard and bot history features follow. It is based on a review of the Next.js app, Supabase migrations, sync engine and Discord bot.
+This document records the data-access decisions that the dashboard and bot history features follow. It is based on a review of the Next.js app, Supabase migrations, sync engine and Discord bot.
 
 ## Existing architecture confirmed
 
@@ -10,7 +10,7 @@ This document records the Phase 3 foundation decisions that the implemented dash
 - `packages/shared/src/permissions.ts` already defines `Role`, `Permission`, `ROLE_PERMISSIONS` and `hasPermission()`.
 - The initial migration already contains `profiles`, `discord_users`, `user_roles`, `guild_settings`, `staff_members` and `audit_logs`, plus SQL helpers `is_global_staff()` and `has_club_access()`.
 - RLS is already enabled on the domain tables, but only SELECT policies exist and several history tables have no policies.
-- The Phase 2 sync engine writes all real club, player, membership and snapshot data. Phase 3 will read that data only.
+- The sync engine writes all real club, player, membership and snapshot data. The history layer reads that data only.
 
 ## Authentication design
 
@@ -72,7 +72,7 @@ A server-only data layer will expose reusable functions for:
 - notifications
 - roles, audit logs and guild settings for admins
 
-All list queries support pagination and validated filters. Timestamp fields are preserved exactly as stored. Columns that Phase 2 does not populate, such as some player statistics, are rendered as unavailable rather than as zero.
+All list queries support pagination and validated filters. Timestamp fields are preserved exactly as stored. Columns that the sync engine does not populate, such as some player statistics, are rendered as unavailable rather than as zero.
 
 Historical charts plot only real snapshot rows. The first/last available snapshot timestamps are displayed so users can see when collection began. Missing ranges produce an empty state rather than interpolated values.
 

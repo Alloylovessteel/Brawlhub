@@ -17,6 +17,7 @@ import {
   parsePaginationCustomIdWithState,
 } from '../discord/pagination';
 import { replyWithSafeError } from '../discord/errors';
+import { resolvePlayerIconUrl } from '../metadata/assets.js';
 import { buildPlayerClubsPageEmbed } from '../players/embed';
 import { loadPlayerClubs } from '../players/service';
 import {
@@ -59,6 +60,7 @@ async function loadPage(
   if (result.kind !== 'ok') return { kind: 'lookup-failure', failure: result };
 
   const page = paginate(result.value.memberships, pageNumber, PAGE_SIZE);
+  const iconUrl = await resolvePlayerIconUrl(result.value.player.iconId);
   const row = buildPaginationRowWithState(
     COMMAND_NAME,
     page.page,
@@ -69,7 +71,7 @@ async function loadPage(
   return {
     kind: 'ok',
     payload: {
-      embeds: [buildPlayerClubsPageEmbed(result.value, page, getBotConfig())],
+      embeds: [buildPlayerClubsPageEmbed(result.value, page, getBotConfig(), iconUrl)],
       components: row === null ? [] : [row],
     },
   };

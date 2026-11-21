@@ -11,6 +11,7 @@ import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import { checkBotRateLimit } from '../discord/rate-limit';
 import { runSync } from '@brawlhub/sync';
 import { runManagedSync } from '../sync/guard';
+import { handleSyncStatus } from './sync-status.js';
 
 const COMMAND_NAME = 'sync';
 const RATE_LIMIT = 3;
@@ -18,7 +19,23 @@ const RATE_WINDOW_MS = 60_000;
 
 export const syncCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
-  .setDescription("Run this server's BrawlHub club synchronisation");
+  .setDescription("Run or inspect this server's BrawlHub club synchronisation")
+  .addSubcommand((subcommand) =>
+    subcommand.setName('run').setDescription("Run this server's BrawlHub club synchronisation"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('status')
+      .setDescription('Show the latest stored synchronisation status for this server'),
+  );
+
+export async function handleSyncCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (interaction.options.getSubcommand(false) === 'status') {
+    await handleSyncStatus(interaction);
+    return;
+  }
+  await handleSync(interaction);
+}
 
 function websiteLine(): string | undefined {
   const appUrl = getBotConfig().appUrl;
@@ -70,7 +87,7 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
     if (outcome.kind === 'overlap') {
       await interaction.editReply({
         content: [
-          'A sync is already running in this bot process. Use `/sync-status` to inspect it.',
+          'A sync is already running in this bot process. Use `/sync status` to inspect it.',
           site,
         ]
           .filter((line): line is string => line !== undefined)

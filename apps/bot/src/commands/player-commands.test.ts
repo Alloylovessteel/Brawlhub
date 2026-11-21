@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
     searchPlayers: vi.fn(),
   },
   resolvePlayerIconUrl: vi.fn(async (): Promise<string | null> => null),
+  resolveBrawlerPortraitUrl: vi.fn(async (): Promise<string | null> => null),
   verification: {
     findVerifiedPlayerForDiscordUser: vi.fn(),
   },
@@ -38,7 +39,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
 vi.mock('../players/service', () => mocks.service);
-vi.mock('../metadata/assets', () => ({ resolvePlayerIconUrl: mocks.resolvePlayerIconUrl }));
+vi.mock('../metadata/assets', () => ({
+  resolvePlayerIconUrl: mocks.resolvePlayerIconUrl,
+  resolveBrawlerPortraitUrl: mocks.resolveBrawlerPortraitUrl,
+}));
 vi.mock('../verification/index', () => mocks.verification);
 
 import { handleMe, handleMeAutocomplete } from './player';
@@ -160,6 +164,7 @@ function battlesResult(count: number, period = '30d') {
     battleType: 'ranked',
     result: index % 3 === 0 ? 'victory' : 'defeat',
     trophyChange: index % 3 === 0 ? 8 : -4,
+    brawlerName: 'Shelly',
   }));
   return {
     kind: 'ok' as const,
@@ -238,6 +243,7 @@ function payload(interaction: ChatInputCommandInteraction | ButtonInteraction, m
 beforeEach(() => {
   for (const fn of Object.values(mocks.service)) fn.mockReset();
   mocks.resolvePlayerIconUrl.mockReset().mockResolvedValue(null);
+  mocks.resolveBrawlerPortraitUrl.mockReset().mockResolvedValue(null);
   mocks.verification.findVerifiedPlayerForDiscordUser.mockReset().mockResolvedValue(null);
 });
 
@@ -263,7 +269,7 @@ describe('/me command', () => {
     await handleMe(interaction);
 
     expect(mocks.service.loadPlayerProfile).not.toHaveBeenCalled();
-    expect(payload(interaction, 'editReply').content).toContain('/member-verify start');
+    expect(payload(interaction, 'editReply').content).toContain('/members account verify start');
   });
 
   it('loads and renders a player profile with a Brawlify link', async () => {
@@ -327,7 +333,7 @@ describe('/me command', () => {
   });
 });
 
-describe('/player-history command', () => {
+describe('/player history command', () => {
   it('defaults to 30 days and keeps period/tag in pagination state', async () => {
     mocks.service.loadPlayerHistory.mockResolvedValue(historyResult(12));
     const interaction = chatInteraction({ tag: '#2c0y' });
@@ -364,7 +370,7 @@ describe('/player-history command', () => {
   });
 });
 
-describe('/player-battles command', () => {
+describe('/player battles command', () => {
   it('defaults to 30 days and keeps period/tag in pagination state', async () => {
     mocks.service.loadPlayerBattles.mockResolvedValue(battlesResult(12));
     const interaction = chatInteraction({ tag: '#2c0y' });
@@ -397,6 +403,19 @@ describe('/player-battles command', () => {
     expect(mocks.service.loadPlayerBattles).toHaveBeenCalledTimes(1);
   });
 
+  it('uses a resolved brawler portrait for the battle view', async () => {
+    mocks.service.loadPlayerBattles.mockResolvedValue(battlesResult(3));
+    mocks.resolveBrawlerPortraitUrl.mockResolvedValue('https://cdn.example.test/brawlers/shelly.png');
+    const interaction = chatInteraction({ tag: '#2c0y' });
+
+    await handlePlayerBattles(interaction);
+
+    expect(mocks.resolveBrawlerPortraitUrl).toHaveBeenCalledWith('Shelly');
+    expect(payload(interaction, 'editReply').embeds[0].toJSON().thumbnail?.url).toBe(
+      'https://cdn.example.test/brawlers/shelly.png',
+    );
+  });
+
   it('renders a safe empty battle view', async () => {
     mocks.service.loadPlayerBattles.mockResolvedValue(battlesResult(0));
     const interaction = chatInteraction({ tag: '#2c0y' });
@@ -416,7 +435,7 @@ describe('/player-battles command', () => {
   });
 });
 
-describe('/player-clubs command', () => {
+describe('/player clubs command', () => {
   it('paginates stored memberships and preserves the tag', async () => {
     mocks.service.loadPlayerClubs.mockResolvedValue(clubsResult(12));
     const button = buttonInteraction('player-clubs:page:2:2C0Y');
@@ -448,7 +467,7 @@ describe('/player-clubs command', () => {
   });
 });
 
-describe('/player-compare command', () => {
+describe('/player compare command', () => {
   it('compares two players and shows the alignment warning when needed', async () => {
     mocks.service.loadPlayerCompare.mockResolvedValue(compareResult(false));
     const interaction = chatInteraction({ first: '2C0Y', second: 'Q8VR' });

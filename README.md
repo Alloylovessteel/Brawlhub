@@ -2,7 +2,7 @@
 
 BrawlHub is a private website and Discord bot for managing **11–20 Brawl Stars clubs from one Discord server**. It reads club and roster data from the official Brawl Stars API, stores it in Supabase, and presents real rosters, membership history, trophy progression and sync health in a Next.js dashboard.
 
-Current status: **Phase 1, Phase 2 (including 2B), Phase 3 and Phase 4 implemented**. The website and bot work with real clubs you register and synchronise from the official Brawl Stars API. Player profiles, trophy history, membership history, collected battle history and ranked roles are guild-scoped; no placeholder clubs, players or historical records are generated.
+Current status: **all planned bot and website foundations are in place**, including official-API sync, guild-scoped history and ranked roles, polished bot embeds/assets, and a consolidated 18-command slash interface. The website and bot work with real clubs you register and synchronise from the official Brawl Stars API. Player profiles, trophy history, membership history, collected battle history and ranked roles are guild-scoped; no placeholder clubs, players or historical records are generated.
 
 ## Architecture
 
@@ -23,7 +23,7 @@ This is an npm workspaces monorepo:
 
 Browser reads use the Supabase anonymous key and RLS. Service-role access is restricted to trusted server code: auth provisioning, admin mutations, sync and migrations. No Discord bot token, Discord client secret, Supabase service-role key, Supercell API key or database URL is exposed to the browser.
 
-See [docs/architecture.md](docs/architecture.md), [docs/setup.md](docs/setup.md) and [docs/phase3-foundations.md](docs/phase3-foundations.md) for design details.
+See [docs/architecture.md](docs/architecture.md), [docs/setup.md](docs/setup.md) and [docs/phase3-foundations.md](docs/phase3-foundations.md) for design details. For the Discord command consolidation, see the [slash-command migration map](docs/command-migration.md).
 
 ## Prerequisites
 
@@ -101,7 +101,7 @@ Register each club you want BrawlHub to track (after verifying the tag/name in t
 npm run clubs:register -- '#CLUBTAG1' '#CLUBTAG2'
 ```
 
-You can also register clubs by hand in Discord with `/register-club tag:<club-tag>` (requires `clubs:write` permission); it previews official API data and asks for confirmation before registering anything.
+You can also register clubs by hand in Discord with `/clubs register tag:<club-tag>` (requires `clubs:write` permission); it previews official API data and asks for confirmation before registering anything.
 
 Run a sync:
 
@@ -267,12 +267,12 @@ The bot reports missing configuration and exits safely when `DISCORD_TOKEN` is b
 | `npm run sync:run` | Run one sync from the root `.env`. |
 | `npm run phase2:inspect` | Print real database counts and sync history. |
 | `npm run verify:secrets` | Check built browser assets for private credential values. |
-| `npm run verify:rls` | Check Phase 3 RLS policy metadata. |
+| `npm run verify:rls` | Check scoped history RLS policy metadata. |
 | `npm run verify:security` | Run both security verification scripts. |
 
 ## Cron / scheduled sync
 
-`GET` or `POST` `/api/sync` still runs the same Phase 2 sync engine with the shared secret:
+`GET` or `POST` `/api/sync` still runs the same official-API sync engine with the shared secret:
 
 ```sh
 curl -X POST http://localhost:3000/api/sync \
@@ -294,7 +294,7 @@ The in-process rate limiter is per Node instance. Multi-instance deployments sho
 
 ## Data notes
 
-- `clubs.last_synced_at` is not populated by the Phase 2 sync; the UI prefers the latest real snapshot timestamp.
+- `clubs.last_synced_at` is not populated by the current sync; the UI prefers the latest real snapshot timestamp.
 - Player statistics such as `power_points`, `victories`, `solo_victories` and `team_victories` are often null in the official API data. They are displayed as **Unavailable**, never as zero.
 - `player_snapshots.raw` contains the collected club-member payload, not a full player API response.
 - Discord notifications remain disabled unless `DISCORD_NOTIFICATION_CHANNEL_ID` is set. Viewing the website never sends announcements.

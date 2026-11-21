@@ -1,6 +1,7 @@
 import {
   BrawlStarsApiError,
   createBrawlStarsClient,
+  playerBrawlerSchema,
   type BrawlStarsClient,
   type Player,
 } from '@brawlhub/brawl-stars';
@@ -31,9 +32,16 @@ import {
   summarizePlayerBattles,
   toHistoryPoints,
 } from './calculate';
+import { loadBrawlerCatalog } from './catalog.js';
 import type {
+  BrawlerAccessoryView,
+  BrawlerFilter,
+  BrawlerSort,
+  OfficialBrawlerRef,
   PlayerBattleHistoryView,
   PlayerBattleRecord,
+  PlayerBrawlerDetail,
+  PlayerBrawlersView,
   PlayerClubRef,
   PlayerComparisonSide,
   PlayerComparisonView,
@@ -211,6 +219,148 @@ export function parsePlayerRow(value: unknown): PlayerIdentity | null {
   };
 }
 
+export const BRAWLER_SORTS = ['trophies', 'highest', 'power', 'rank', 'name'] as const;
+export const BRAWLER_FILTERS = ['all', 'maxed', 'ranked', 'unowned'] as const;
+
+export function isBrawlerSort(value: string): value is BrawlerSort {
+  return (BRAWLER_SORTS as readonly string[]).includes(value);
+}
+
+export function isBrawlerFilter(value: string): value is BrawlerFilter {
+  return (BRAWLER_FILTERS as readonly string[]).includes(value);
+}
+
+function normalizeBrawlerName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+function parseBrawlerAccessories(value: unknown): readonly BrawlerAccessoryView[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => record(item))
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => ({
+      id: asNumber(item['id']),
+      name: asString(item['name']),
+      level: asNumber(item['level']),
+    }));
+}
+
+function parseBrawlerDetail(value: unknown): PlayerBrawlerDetail | null {
+  const parsed = playerBrawlerSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const brawler = parsed.data;
+  return {
+    id: brawler.id ?? null,
+    name: brawler.name.trim(),
+    trophies: brawler.trophies,
+    highestTrophies: brawler.highestTrophies ?? null,
+    power: brawler.power ?? null,
+    rank: brawler.rank ?? null,
+    prestigeLevel: brawler.prestigeLevel ?? null,
+    currentWinStreak: brawler.currentWinStreak ?? null,
+    maxWinStreak: brawler.maxWinStreak ?? null,
+    gadgets: parseBrawlerAccessories(brawler.gadgets),
+    starPowers: parseBrawlerAccessories(brawler.starPowers),
+    gears: parseBrawlerAccessories(brawler.gears),
+    hyperCharges: parseBrawlerAccessories(brawler.hyperCharges),
+  };
+}
+
+/** Parse an official player brawler array, dropping malformed and duplicate entries. */
+function parseBrawlerList(value: unknown): readonly PlayerBrawlerDetail[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value
+    .map(parseBrawlerDetail)
+    .filter((brawler): brawler is PlayerBrawlerDetail => brawler !== null)
+    .filter((brawler) => {
+      const key = normalizeBrawlerName(brawler.name);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+/** Parse the full official brawler array stored in `players.profile_extra`. */
+export function parseStoredBrawlers(extra: unknown): readonly PlayerBrawlerDetail[] {
+  return parseBrawlerList(record(extra)?.['brawlers']);
+}
+
+function compareNullableNumber(
+  left: number | null,
+  right: number | null,
+  descending: boolean,
+): number {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return descending ? right - left : left - right;
+}
+
+/** Sort full brawler details with missing values last. */
+export function sortPlayerBrawlers(
+  brawlers: readonly PlayerBrawlerDetail[],
+  sort: BrawlerSort,
+): readonly PlayerBrawlerDetail[] {
+  return [...brawlers].sort((a, b) => {
+    switch (sort) {
+      case 'highest':
+        return compareNullableNumber(a.highestTrophies, b.highestTrophies, true);
+      case 'power':
+        return compareNullableNumber(a.power, b.power, true);
+      case 'rank':
+        return compareNullableNumber(a.rank, b.rank, true);
+      case 'name':
+        return a.name.localeCompare(b.name);
+      case 'trophies':
+      default:
+        return compareNullableNumber(a.trophies, b.trophies, true);
+    }
+  });
+}
+
+function catalogBrawlerDetail(ref: OfficialBrawlerRef): PlayerBrawlerDetail {
+  return {
+    id: ref.id,
+    name: ref.name,
+    trophies: null,
+    highestTrophies: null,
+    power: null,
+    rank: null,
+    prestigeLevel: null,
+    currentWinStreak: null,
+    maxWinStreak: null,
+    gadgets: [],
+    starPowers: [],
+    gears: [],
+    hyperCharges: [],
+  };
+}
+
+/** Filter brawler details. `unowned` uses the official catalog, not invented data. */
+export function filterPlayerBrawlers(
+  brawlers: readonly PlayerBrawlerDetail[],
+  filter: BrawlerFilter,
+  catalog: readonly OfficialBrawlerRef[],
+): readonly PlayerBrawlerDetail[] {
+  switch (filter) {
+    case 'maxed':
+      return brawlers.filter((brawler) => (brawler.power ?? 0) >= 11);
+    case 'ranked':
+      return brawlers.filter((brawler) => (brawler.rank ?? 0) > 0);
+    case 'unowned': {
+      const profileNames = new Set(brawlers.map((brawler) => normalizeBrawlerName(brawler.name)));
+      return catalog
+        .filter((ref) => !profileNames.has(normalizeBrawlerName(ref.name)))
+        .map(catalogBrawlerDetail);
+    }
+    case 'all':
+    default:
+      return brawlers;
+  }
+}
+
 function parseClubRef(value: unknown, fallbackTag?: string): PlayerClubRef | null {
   const source = relationRecord(value) ?? record(value);
   if (source === null) return null;
@@ -316,6 +466,16 @@ async function readPlayerByTag(tag: string, db: DatabaseClient): Promise<PlayerI
     .maybeSingle();
   requireOk(error, 'Read player');
   return data === null || data === undefined ? null : parsePlayerRow(data);
+}
+
+async function readPlayerProfileExtra(tag: string, db: DatabaseClient): Promise<unknown> {
+  const { data, error } = await db
+    .from('players')
+    .select('profile_extra')
+    .eq('tag', tag)
+    .maybeSingle();
+  requireOk(error, 'Read stored player details');
+  return record(data)?.['profile_extra'] ?? null;
 }
 
 export interface PlayerSearchOptions {
@@ -811,6 +971,95 @@ export async function loadPlayerProfile(
       profileFetchedAt: live.profile !== null ? now.toISOString() : null,
     },
   };
+}
+
+export interface PlayerBrawlersInput {
+  readonly tag: string;
+  readonly guildId?: string | null;
+  readonly now?: Date;
+}
+
+/**
+ * Load the complete brawler list for one player. The live official player
+ * payload is authoritative; `players.profile_extra.brawlers` is only used when
+ * the live response is unavailable or has no brawler array.
+ */
+export async function loadPlayerBrawlers(
+  input: PlayerBrawlersInput,
+  options: PlayerServiceOptions = {},
+): Promise<ResolvedPlayerResult<PlayerBrawlersView>> {
+  const normalized = normalizePlayerTag(input.tag);
+  if (!normalized.ok || normalized.tag === undefined) return { kind: 'invalid-tag' };
+
+  const db = options.db ?? createTrustedClient();
+  const api = options.api ?? createBrawlStarsClient();
+  const now = input.now ?? new Date();
+  const useCache = options.useCache ?? true;
+
+  const stored = await readPlayerByTag(normalized.tag, db);
+  const storedInScope =
+    stored !== null && (await isPlayerInGuildScope(stored, input.guildId, db));
+  const scopedStored = storedInScope ? stored : null;
+
+  const [live, catalog] = await Promise.all([
+    fetchLivePlayer(normalized.tag, api, now, useCache),
+    loadBrawlerCatalog({ api, now, useCache }),
+  ]);
+  const liveBrawlers = parseBrawlerList(live.profile?.brawlers);
+
+  if (live.profile !== null && liveBrawlers.length > 0) {
+    return {
+      kind: 'ok',
+      value: {
+        player: identityFromLive(live.profile, scopedStored, normalized.tag),
+        brawlers: sortPlayerBrawlers(liveBrawlers, 'trophies'),
+        catalog,
+        source: 'live',
+        apiIssue: null,
+        fetchedAt: now.toISOString(),
+      },
+    };
+  }
+
+  if (scopedStored !== null) {
+    const extra = await readPlayerProfileExtra(normalized.tag, db);
+    const storedBrawlers = parseStoredBrawlers(extra);
+    return {
+      kind: 'ok',
+      value: {
+        player: scopedStored,
+        brawlers: sortPlayerBrawlers(storedBrawlers, 'trophies'),
+        catalog,
+        source: 'stored',
+        apiIssue: live.notFound
+          ? 'not-found'
+          : (live.issue ?? null),
+        fetchedAt: null,
+      },
+    };
+  }
+
+  if (live.profile !== null) {
+    return {
+      kind: 'ok',
+      value: {
+        player: identityFromLive(live.profile, null, normalized.tag),
+        brawlers: [],
+        catalog,
+        source: 'live',
+        apiIssue: null,
+        fetchedAt: now.toISOString(),
+      },
+    };
+  }
+
+  return live.notFound
+    ? { kind: 'not-found', tag: normalized.tag }
+    : {
+        kind: 'api-unavailable',
+        tag: normalized.tag,
+        issue: live.issue ?? 'error',
+      };
 }
 
 /** Load stored trophy history and any available club-membership context. */

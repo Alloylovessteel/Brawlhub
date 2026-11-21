@@ -12,19 +12,29 @@ import {
 } from '../discord/format';
 import type { Page } from '../discord/pagination';
 import type {
+  BrawlerFilter,
+  BrawlerSort,
   ClubMembershipStatus,
   PlayerBattleHistoryView,
   PlayerBattleRecord,
+  PlayerBrawlerDetail,
+  PlayerBrawlersView,
   PlayerClubRef,
   PlayerClubsView,
   PlayerComparisonView,
   PlayerHistoryView,
+  PlayerHighlightsView,
   PlayerMembershipEvent,
   PlayerMembershipRecord,
   PlayerProfileView,
 } from './types';
 
 const EMBED_COLOR = 0x5865_f2;
+
+/** Static asset URLs are optional presentation only; never fabricate one. */
+function applyThumbnail(embed: EmbedBuilder, url: string | null | undefined): void {
+  if (url !== null && url !== undefined && url !== '') embed.setThumbnail(url);
+}
 
 type PlayerEmbedConfig = Pick<
   BotConfig,
@@ -39,6 +49,21 @@ const PERIOD_LABELS: Readonly<Record<HistoryPeriod, string>> = {
   '30d': 'Last 30 days',
   '90d': 'Last 90 days',
   all: 'All available history',
+};
+
+export const BRAWLER_SORT_LABELS: Readonly<Record<BrawlerSort, string>> = {
+  trophies: 'Current trophies',
+  highest: 'Highest trophies',
+  power: 'Power level',
+  rank: 'Rank',
+  name: 'Name',
+};
+
+export const BRAWLER_FILTER_LABELS: Readonly<Record<BrawlerFilter, string>> = {
+  all: 'All profile brawlers',
+  maxed: 'Power level 11+',
+  ranked: 'Has a rank',
+  unowned: 'Not in profile',
 };
 
 function truncate(value: string, maximum: number): string {
@@ -330,11 +355,164 @@ export function buildPlayerProfileEmbed(
   return fitEmbedToDiscordLimits(embed);
 }
 
-/** Build a paginated `/player-history` embed. */
+function hasBrawlerStats(brawler: PlayerBrawlerDetail): boolean {
+  return (
+    brawler.trophies !== null ||
+    brawler.highestTrophies !== null ||
+    brawler.power !== null ||
+    brawler.rank !== null ||
+    brawler.prestigeLevel !== null ||
+    brawler.currentWinStreak !== null ||
+    brawler.maxWinStreak !== null ||
+    brawler.gadgets.length > 0 ||
+    brawler.starPowers.length > 0 ||
+    brawler.gears.length > 0 ||
+    brawler.hyperCharges.length > 0
+  );
+}
+
+function brawlerSummaryLine(brawler: PlayerBrawlerDetail): string {
+  if (!hasBrawlerStats(brawler)) {
+    return 'No stats in this player’s official profile payload.';
+  }
+  const parts = [
+    brawler.trophies === null ? null : `🏆${formatInteger(brawler.trophies)}`,
+    brawler.highestTrophies === null
+      ? null
+      : `Best ${formatInteger(brawler.highestTrophies)}`,
+    brawler.power === null ? null : `P${brawler.power}`,
+    brawler.rank === null ? null : `R${brawler.rank}`,
+    brawler.prestigeLevel !== null && brawler.prestigeLevel > 0
+      ? `Prestige ${brawler.prestigeLevel}`
+      : null,
+    brawler.maxWinStreak !== null && brawler.maxWinStreak > 0
+      ? `Streak ${brawler.maxWinStreak}`
+      : null,
+  ].filter((part): part is string => part !== null && part !== '');
+  return parts.join(' • ') || 'No numeric stats in this player’s official profile payload.';
+}
+
+function accessoryLine(name: string, items: readonly { readonly name: string | null; readonly id: number | null }[]): string | null {
+  if (items.length === 0) return null;
+  const labels = items
+    .slice(0, 8)
+    .map((item) => item.name ?? (item.id === null ? 'Unnamed' : `Unnamed (ID ${item.id})`));
+  const extra = items.length > labels.length ? ` +${items.length - labels.length}` : '';
+  return `• ${name}: ${escapeMarkdown(labels.join(', '))}${extra}`;
+}
+
+/** Build the paginated `/brawlers list` roster embed from full official brawler data. */
+export function buildPlayerBrawlersPageEmbed(
+  view: PlayerBrawlersView,
+  page: Page<PlayerBrawlerDetail>,
+  sort: BrawlerSort,
+  filter: BrawlerFilter,
+  config: PlayerEmbedConfig,
+  portraitUrl: string | null = null,
+): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(truncate(`${playerName(view, config)} — Brawlers`, 256))
+    .setDescription(
+      truncate(
+        `Source: ${view.source === 'live' ? 'live official player data' : 'stored official profile data'}` +
+          (view.apiIssue === null ? '' : ` • API notice: ${view.apiIssue}`) +
+          `\nShowing ${page.total} of ${view.brawlers.length} profile brawler${view.brawlers.length === 1 ? '' : 's'}` +
+          (view.catalog.length > 0 ? ` • Official catalog: ${view.catalog.length}` : ''),
+        2048,
+      ),
+    )
+    .setFooter({
+      text: truncate(
+        `Sort: ${BRAWLER_SORT_LABELS[sort]} • Filter: ${BRAWLER_FILTER_LABELS[filter]} • Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total}`,
+        2048,
+      ),
+    });
+
+  if (page.items.length === 0) {
+    embed.addFields({
+      name: 'Brawlers',
+      value: filter === 'unowned' && view.catalog.length === 0
+        ? 'The official brawler catalog is unavailable right now, so this filter cannot be applied.'
+        : 'No brawlers match this filter.',
+    });
+  } else {
+    page.items.forEach((brawler, index) => {
+      embed.addFields({
+        name: truncate(`${page.start + index}. ${escapeMarkdown(brawler.name)}`, 256),
+        value: truncate(brawlerSummaryLine(brawler), 1024),
+      });
+    });
+  }
+
+  applyThumbnail(embed, portraitUrl);
+  return fitEmbedToDiscordLimits(embed);
+}
+
+/** Build the detailed `/brawlers detail` embed. Official API supplies no class/rarity text. */
+export function buildBrawlerDetailEmbed(
+  view: PlayerBrawlersView,
+  brawler: PlayerBrawlerDetail,
+  config: PlayerEmbedConfig,
+  portraitUrl: string | null = null,
+): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(
+      truncate(
+        `${escapeMarkdown(brawler.name)}${brawler.id === null ? '' : ` (ID ${brawler.id})`}`,
+        256,
+      ),
+    )
+    .setDescription(
+      truncate(
+        `${playerName(view, config)} (#${cleanTag(view.player.tag)}) • ` +
+          `Source: ${view.source === 'live' ? 'live official player data' : 'stored official profile data'}` +
+          (hasBrawlerStats(brawler) ? '' : '\nThis brawler has no stats in the player’s official profile payload.'),
+        2048,
+      ),
+    )
+    .setFooter({
+      text: 'Official Brawl Stars API exposes no brawler class, rarity or description.',
+    });
+  if (portraitUrl !== null) embed.setThumbnail(portraitUrl);
+
+  const numericLines = [
+    brawler.trophies === null ? null : `Trophies: ${formatInteger(brawler.trophies)}`,
+    brawler.highestTrophies === null
+      ? null
+      : `Highest trophies: ${formatInteger(brawler.highestTrophies)}`,
+    brawler.power === null ? null : `Power level: ${brawler.power}`,
+    brawler.rank === null ? null : `Rank: ${brawler.rank}`,
+    brawler.prestigeLevel === null ? null : `Prestige: ${brawler.prestigeLevel}`,
+    brawler.currentWinStreak === null ? null : `Current win streak: ${brawler.currentWinStreak}`,
+    brawler.maxWinStreak === null ? null : `Best win streak: ${brawler.maxWinStreak}`,
+  ].filter((line): line is string => line !== null);
+  embed.addFields({
+    name: 'Official Profile Stats',
+    value: truncate(numericLines.join('\n') || 'No numeric stats in the official profile payload.', 1024),
+  });
+
+  const accessoryLines = [
+    accessoryLine('Gadgets', brawler.gadgets),
+    accessoryLine('Star Powers', brawler.starPowers),
+    accessoryLine('Gears', brawler.gears),
+    accessoryLine('Hypercharges', brawler.hyperCharges),
+  ].filter((line): line is string => line !== null);
+  embed.addFields({
+    name: 'Unlocks',
+    value: truncate(accessoryLines.join('\n') || 'No accessory details in the official profile payload.', 1024),
+  });
+
+  return fitEmbedToDiscordLimits(embed);
+}
+
+/** Build a paginated `/player history` embed. */
 export function buildPlayerHistoryPageEmbed(
   view: PlayerHistoryView,
   page: Page<PlayerHistoryView['points'][number]>,
   config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
 ): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
@@ -430,6 +608,7 @@ export function buildPlayerHistoryPageEmbed(
     });
   }
 
+  applyThumbnail(embed, iconUrl);
   return fitEmbedToDiscordLimits(embed);
 }
 
@@ -447,11 +626,13 @@ function battleResultLabel(result: string | null): string {
   }
 }
 
-/** Build a paginated `/player-battles` embed from stored battle-log rows. */
+/** Build a paginated `/player battles` embed from stored battle-log rows. */
 export function buildPlayerBattlesPageEmbed(
   view: PlayerBattleHistoryView,
   page: Page<PlayerBattleRecord>,
   config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
+  battlePortraitUrl: string | null = null,
 ): EmbedBuilder {
   const emojis = profileEmojis(config);
   const embed = new EmbedBuilder()
@@ -515,14 +696,16 @@ export function buildPlayerBattlesPageEmbed(
     });
   }
 
+  applyThumbnail(embed, battlePortraitUrl ?? iconUrl);
   return fitEmbedToDiscordLimits(embed);
 }
 
-/** Build a paginated `/player-clubs` embed. */
+/** Build a paginated `/player clubs` embed. */
 export function buildPlayerClubsPageEmbed(
   view: PlayerClubsView,
   page: Page<PlayerMembershipRecord>,
   config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
 ): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
@@ -593,6 +776,7 @@ export function buildPlayerClubsPageEmbed(
     });
   }
 
+  applyThumbnail(embed, iconUrl);
   return fitEmbedToDiscordLimits(embed);
 }
 
@@ -622,7 +806,7 @@ function addComparisonMetric(
   embed.addFields({ name, value: truncate(lines.join('\n'), 1024) });
 }
 
-/** Build the `/player-compare` embed. */
+/** Build the `/player compare` embed. */
 export function buildPlayerCompareEmbed(
   view: PlayerComparisonView,
   config: PlayerEmbedConfig,
@@ -701,5 +885,202 @@ export function buildPlayerCompareEmbed(
       2048,
     ),
   });
+  return fitEmbedToDiscordLimits(embed);
+}
+
+/** Compact Summary section for interactive `/me`. */
+export function buildMeSummaryEmbed(
+  view: PlayerProfileView,
+  config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
+): EmbedBuilder {
+  const emoji = profileEmojis(config);
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(truncate(`${playerName(view, config)} • ${displayTag(view.player.tag)}`, 256))
+    .setDescription(
+      truncate(
+        `Source: ${view.source === 'live' ? 'live official API' : 'stored sync data'}` +
+          (view.apiIssue === null ? '' : ` • API notice: ${view.apiIssue}`),
+        2048,
+      ),
+    );
+  if (iconUrl !== null) embed.setThumbnail(iconUrl);
+
+  const trophies = formatInteger(view.player.trophies);
+  if (trophies !== null) {
+    embed.addFields({ name: `${emoji.trophies} Trophies`, value: trophies, inline: true });
+  }
+  const highest = formatInteger(view.player.highestTrophies);
+  if (highest !== null) {
+    embed.addFields({ name: `${emoji.crown} Highest`, value: highest, inline: true });
+  }
+  if (view.player.expLevel !== null) {
+    const expPoints = formatInteger(view.player.expPoints);
+    embed.addFields({
+      name: 'Experience',
+      value: expPoints === null ? `Level ${view.player.expLevel}` : `Level ${view.player.expLevel} • ${expPoints} XP`,
+      inline: true,
+    });
+  }
+
+  const rankedCurrent = formatRankedLine(view.player.rankedRankName, view.player.rankedElo);
+  if (rankedCurrent !== null) {
+    embed.addFields({ name: `${emoji.ranked} Ranked`, value: truncate(rankedCurrent, 1024) });
+  }
+  if (view.currentClub !== null) {
+    embed.addFields({
+      name: `${emoji.club} Club`,
+      value: truncate(
+        `${clubName(view.currentClub, config)} (#${cleanTag(view.currentClub.tag)})` +
+          (view.currentClub.role === null ? '' : ` • ${view.currentClub.role}`),
+        1024,
+      ),
+    });
+  }
+
+  const lastBattle = formatSyncTime(view.player.lastBattleAt);
+  if (lastBattle !== null) {
+    embed.addFields({
+      name: `${emoji.online} Last Battle`,
+      value: truncate(`${lastBattle}\nLive online status is not exposed by the Brawl Stars API`, 1024),
+    });
+  }
+
+  const topBrawlers = view.brawlers.slice(0, 5);
+  if (topBrawlers.length > 0) {
+    embed.addFields({
+      name: 'Top Brawlers',
+      value: truncate(
+        topBrawlers
+          .map((brawler) => `• ${escapeMarkdown(brawler.name)} — 🏆${formatInteger(brawler.trophies) ?? 0}`)
+          .join('\n'),
+        1024,
+      ),
+    });
+  }
+
+  const profileBrawlerCount = view.stats?.brawlerCount ?? view.brawlers.length;
+  embed.setFooter({
+    text: truncate(
+      `Use the buttons to switch sections • ${profileBrawlerCount} brawler${profileBrawlerCount === 1 ? '' : 's'} in profile`,
+      2048,
+    ),
+  });
+  return fitEmbedToDiscordLimits(embed);
+}
+
+/** Brawlers section for interactive `/me`; reuses the full roster presentation. */
+export function buildMeBrawlersEmbed(
+  view: PlayerBrawlersView,
+  page: Page<PlayerBrawlerDetail>,
+  config: PlayerEmbedConfig,
+  portraitUrl: string | null = null,
+): EmbedBuilder {
+  const embed = buildPlayerBrawlersPageEmbed(view, page, 'trophies', 'all', config, portraitUrl);
+  embed
+    .setTitle(truncate(`${playerName(view, config)} — Brawler Overview`, 256))
+    .setFooter({
+      text: truncate(
+        `Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total} • Use /brawlers detail name:BRAWLER for full details`,
+        2048,
+      ),
+    });
+  return fitEmbedToDiscordLimits(embed);
+}
+
+/** More section for interactive `/me`, built only from stored official data. */
+export function buildMeMoreEmbed(
+  view: PlayerHighlightsView,
+  config: PlayerEmbedConfig,
+  iconUrl: string | null = null,
+): EmbedBuilder {
+  const history = view.history;
+  const battles = view.battles;
+  const clubs = view.clubs;
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(truncate(`${playerName(history, config)} — More`, 256))
+    .setDescription(
+      truncate(
+        `Stored history from this server's registered clubs • Period: ${PERIOD_LABELS[battles.period]}`,
+        2048,
+      ),
+    );
+
+  const change = history.change?.trophies;
+  embed.addFields({
+    name: 'Trophy Change',
+    value: change === null || change === undefined
+      ? 'At least two stored snapshots are required.'
+      : formatDelta(change),
+    inline: true,
+  });
+  embed.addFields({
+    name: 'Stored Results',
+    value: `${battles.wins} wins • ${battles.losses} losses • ${battles.draws} draws`,
+    inline: true,
+  });
+  const battleCount = battles.battles.length;
+  embed.addFields({
+    name: 'Stored Battles',
+    value: `${battleCount} in the selected period`,
+    inline: true,
+  });
+
+  if (battles.topModes.length > 0) {
+    embed.addFields({
+      name: 'Most Recorded Modes',
+      value: truncate(
+        battles.topModes.map((entry) => `• ${escapeMarkdown(entry.mode)} — ${entry.count}`).join('\n'),
+        1024,
+      ),
+    });
+  }
+  if (battles.battles.length > 0) {
+    embed.addFields({
+      name: 'Recent Battles',
+      value: truncate(
+        battles.battles
+          .slice(0, 3)
+          .map((battle) => {
+            const parts = [
+              battle.mode === null ? null : escapeMarkdown(battle.mode),
+              battle.brawlerName === null ? null : escapeMarkdown(battle.brawlerName),
+              battleResultLabel(battle.result),
+              formatAbsoluteTime(battle.battleTime) ?? battle.battleTime,
+            ].filter((part): part is string => part !== null);
+            return `• ${parts.join(' • ')}`;
+          })
+          .join('\n'),
+        1024,
+      ),
+    });
+  }
+
+  const current = clubs.currentClub;
+  embed.addFields({
+    name: 'Club Record',
+    value: truncate(
+      [
+        current === null
+          ? 'No currently verified club membership is stored.'
+          : `${clubName(current, config)} (#${cleanTag(current.tag)})` +
+            (current.role === null ? '' : ` • ${current.role}`),
+        `${clubs.memberships.length} stored membership record${clubs.memberships.length === 1 ? '' : 's'} • ${clubs.events.length} recorded transition${clubs.events.length === 1 ? '' : 's'}`,
+      ].join('\n'),
+      1024,
+    ),
+  });
+
+  embed.setFooter({
+    text: truncate(
+      clubs.lastBattleAt === null
+        ? 'No last battle timestamp is stored for this player.'
+        : `Last observed battle: ${formatAbsoluteTime(clubs.lastBattleAt) ?? clubs.lastBattleAt}`,
+      2048,
+    ),
+  });
+  applyThumbnail(embed, iconUrl);
   return fitEmbedToDiscordLimits(embed);
 }

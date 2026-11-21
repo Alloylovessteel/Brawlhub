@@ -85,7 +85,7 @@ export function buildMembersPageEmbed(
   return fitEmbedToDiscordLimits(embed);
 }
 
-/** Build the paginated `/member-search` embed. */
+/** Build the paginated `/members search` embed. */
 export function buildMemberSearchPageEmbed(
   view: MemberSearchView,
   page: Page<MemberSearchView['entries'][number]>,

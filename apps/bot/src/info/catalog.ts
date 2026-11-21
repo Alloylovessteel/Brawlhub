@@ -20,61 +20,12 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     name: 'Club',
     entries: [
       {
-        name: 'club',
-        usage: '/club tag:<club-tag> section:Member Details sort:Current trophies',
-        description:
-          'Show club info, staff, sorted/filtered member details and previous members from stored official data.',
-      },
-      {
         name: 'clubs',
-        usage: '/clubs',
-        description: 'BrawlTools-style overview of registered clubs from stored official data.',
-      },
-      {
-        name: 'club-members',
-        usage: '/club-members tag:<club-tag>',
-        description: 'List tracked members of a registered club.',
-      },
-      {
-        name: 'club-leaderboard',
-        usage: '/club-leaderboard',
-        description: 'Rank registered clubs by trophies.',
-      },
-      {
-        name: 'club-log',
-        usage: '/club-log tag:<club-tag> period:Daily (Today)',
+        usage:
+          '/clubs details | /clubs overview | /clubs members | /clubs leaderboard | /clubs log | /clubs history | /clubs compare | /clubs view add|remove|list | /clubs fields | /clubs logs add|remove|list | /clubs register | /clubs remove',
         description:
-          'Show daily or weekly per-member trophy changes for a registered club from stored sync snapshots.',
-      },
-      {
-        name: 'club-history',
-        usage: '/club-history tag:<club-tag>',
-        description: 'Show stored history for a registered club.',
-      },
-      {
-        name: 'club-compare',
-        usage: '/club-compare first:<club-tag> second:<club-tag>',
-        description: 'Compare two registered clubs using stored data.',
-      },
-      {
-        name: 'view',
-        usage: '/view tag add|remove|list',
-        description: 'Choose which registered clubs appear in this server’s auto-updated overview.',
-        permission: 'clubs:write',
-      },
-      {
-        name: 'club-overview',
-        usage: '/club-overview menu',
-        description:
-          'Toggle which stored details appear in this server’s auto-posted club overview.',
-        permission: 'clubs:write',
-      },
-      {
-        name: 'clublogs',
-        usage: '/clublogs add|remove|list',
-        description:
-          'Post stored membership, role and capacity changes for a registered club to a channel.',
-        permission: 'clubs:write',
+          'Show club details and overviews, list members, logs and history, compare clubs, and configure the server’s club overview and reports.',
+        permission: 'clubs:write for overview, view, fields, logs, register and remove',
       },
     ],
   },
@@ -84,27 +35,21 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       {
         name: 'me',
         usage: '/me [tag:PLAYERTAG]',
-        description: 'Show a player profile and club context. Leave tag blank to use your verified player.',
+        description:
+          'Show an interactive player overview with Summary, Brawlers and More sections. Leave tag blank to use your verified player.',
       },
       {
-        name: 'player-history',
-        usage: '/player-history tag:PLAYERTAG',
-        description: 'Show stored trophy and club history for a player.',
+        name: 'brawlers',
+        usage:
+          '/brawlers list [tag:PLAYERTAG] [sort:trophies] [filter:all] | /brawlers detail name:BRAWLER [tag:PLAYERTAG]',
+        description:
+          'Show a player’s full brawler roster from official data, with sorting, filtering and full details for one brawler.',
       },
       {
-        name: 'player-battles',
-        usage: '/player-battles tag:PLAYERTAG',
-        description: 'Show stored battle-log history and results for a player.',
-      },
-      {
-        name: 'player-clubs',
-        usage: '/player-clubs tag:PLAYERTAG',
-        description: 'Show the club history recorded for a player.',
-      },
-      {
-        name: 'player-compare',
-        usage: '/player-compare first:PLAYERTAG second:OTHERTAG',
-        description: 'Compare two players over a selected history period.',
+        name: 'player',
+        usage:
+          '/player history tag:PLAYERTAG | /player battles tag:PLAYERTAG | /player clubs tag:PLAYERTAG | /player compare first:PLAYERTAG second:OTHERTAG',
+        description: 'Show stored player history, battles, clubs and head-to-head comparisons.',
       },
     ],
   },
@@ -146,48 +91,11 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     entries: [
       {
         name: 'members',
-        usage: '/members tag:<club-tag>',
-        description: 'Show tracked members across registered clubs.',
-      },
-      {
-        name: 'member-verify',
-        usage: '/member-verify start tag:<tag>',
+        usage:
+          '/members roster | /members account list | /members account verify start tag:<tag> | /members verify list | /members search player query:PLAYERTAG',
         description:
-          'Verify player ownership by setting your in-game icon to a random required default brawler icon shown by the bot, then run /member-verify check to confirm via the official API.',
-      },
-      {
-        name: 'accounts',
-        usage: '/accounts list | /accounts set-main tag:<tag>',
-        description: 'List your linked accounts as main/alt and choose your main account.',
-      },
-      {
-        name: 'delete-me',
-        usage: '/delete-me',
-        description: 'Permanently delete your BrawlHub identity data after confirmation.',
-      },
-      {
-        name: 'verify-info',
-        usage: '/verify-info',
-        description: 'Post the player verification guide in the current channel.',
-        permission: 'members:verify',
-      },
-      {
-        name: 'verify-settings',
-        usage: '/verify-settings',
-        description: 'Show this server’s verification settings.',
-        permission: 'members:verify',
-      },
-      {
-        name: 'member-history',
-        usage: '/member-history tag:<club-tag>',
-        description: 'Show membership change history for a registered club.',
-      },
-      {
-        name: 'member-search',
-        usage: '/member-search player query:PLAYERTAG',
-        description:
-          'Search by player tag. Discord identity search is restricted to authorised staff.',
-        permission: 'members:verify for discord searches',
+          'Show tracked members and manage linked accounts, verification, identity data and verified-member searches.',
+        permission: 'members:verify for management actions and discord searches',
       },
       {
         name: 'fn',
@@ -213,58 +121,9 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     name: 'Administration',
     entries: [
       {
-        name: 'register-club',
-        usage: '/register-club tag:<club-tag>',
-        description: 'Preview and register a club after official API validation.',
-        permission: 'clubs:write',
-      },
-      {
-        name: 'remove-club',
-        usage: '/remove-club club:<club-tag>',
-        description:
-          'Archive a registered club without deleting snapshots, memberships, roles or history.',
-        permission: 'clubs:write',
-      },
-      {
-        name: 'tag',
-        usage: '/tag set user:@USER tag:<tag>',
-        description: 'Staff-link a Discord user to a verified Brawl Stars player.',
-        permission: 'members:verify',
-      },
-      {
-        name: 'register-list',
-        usage: '/register-list',
-        description: 'List verified account links for this server’s tracked players.',
-        permission: 'members:verify',
-      },
-      {
-        name: 'find',
-        usage: '/find user @USER | /find tag <tag>',
-        description: 'Find a verified account link in this server.',
-        permission: 'members:verify',
-      },
-      {
-        name: 'unverify-one',
-        usage: '/unverify-one tag <tag>',
-        description: 'Revoke one verified account link after confirmation.',
-        permission: 'members:verify',
-      },
-      {
-        name: 'unverify-all',
-        usage: '/unverify-all user:@USER',
-        description: 'Revoke every verified account link for a user after confirmation.',
-        permission: 'members:verify',
-      },
-      {
         name: 'sync',
-        usage: '/sync',
-        description: 'Run the existing all-clubs synchronisation pipeline.',
-        permission: 'sync:run',
-      },
-      {
-        name: 'sync-status',
-        usage: '/sync-status',
-        description: 'Show the latest stored synchronisation status.',
+        usage: '/sync run | /sync status',
+        description: 'Run the all-clubs synchronisation pipeline or show the latest stored status.',
         permission: 'sync:run',
       },
       {
@@ -272,6 +131,13 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         usage: '/settings view | /settings set-report-channel',
         description:
           'View or change guild settings, including per-report daily/weekly/monthly channels.',
+        permission: 'clubs:write',
+      },
+      {
+        name: 'inactivity',
+        usage: '/inactivity view | /inactivity set days:4 channel:#club-reports | /inactivity disable',
+        description:
+          'Configure the scheduled club inactivity digest with a customizable number of days.',
         permission: 'clubs:write',
       },
       {
@@ -294,6 +160,13 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
           'Refresh ranked roles for verified main accounts in this server from stored official data.',
         permission: 'clubs:write',
       },
+      {
+        name: 'club-roles',
+        usage: '/club-roles setup | /club-roles set rank:President role:@Role | /club-roles refresh',
+        description:
+          'Assign President, Vice President and Senior Discord roles from verified main accounts and stored official club ranks.',
+        permission: 'clubs:write to configure or refresh',
+      },
     ],
   },
   {
@@ -301,23 +174,8 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     entries: [
       {
         name: 'help',
-        usage: '/help',
-        description: 'Show this command directory.',
-      },
-      {
-        name: 'about',
-        usage: '/about',
-        description: 'Explain BrawlHub’s purpose, data sources and limitations.',
-      },
-      {
-        name: 'status',
-        usage: '/status',
-        description: 'Show safe public operational health information.',
-      },
-      {
-        name: 'ping',
-        usage: '/ping',
-        description: 'Check that the Discord bot responds.',
+        usage: '/help directory | /help about | /help status | /help ping',
+        description: 'Show this command directory, project information, status or bot connectivity.',
       },
     ],
   },

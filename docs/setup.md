@@ -1,6 +1,6 @@
 # Setup
 
-> **Phase 1 note:** the foundation is in place — migration runner, initial RLS schema, web skeleton with a health endpoint, bot skeleton with a `ping` command, and the `shared` / `database` / `logging` packages. The dashboard, Brawl Stars client, sync engine, and Discord auth commands land in later phases.
+> **Foundation note:** the foundation is in place — migration runner, initial RLS schema, web skeleton with a health endpoint, bot skeleton with a `ping` command, and the `shared` / `database` / `logging` packages. The dashboard, Brawl Stars client, sync engine, and Discord auth commands build on that foundation.
 
 ## Prerequisites
 
@@ -117,7 +117,7 @@ npm test
 npm run test:watch
 ```
 
-## Phase 2: register clubs and sync
+## Register clubs and sync
 
 Apply migrations first (`npm run db:migrate`), then register your real club tags and run a sync:
 
@@ -138,7 +138,7 @@ The bot runs its first sync about 5 seconds after Discord login and then every `
 
 ### Club stats overview
 
-For each guild with an overview channel configured via `/settings set-overview-channel`, the bot posts one compact "Club Stats" message and **edits that same message** every `OVERVIEW_INTERVAL_MINUTES` (default `30`). The first post happens about 15 seconds after Discord login. Each club is one inline field (up to 25, sorted by trophies), and a multi-select "Choose Clubs" menu opens detailed `/club` views for up to 10 selected clubs at once, ephemerally. All values come from stored official Brawl Stars API sync data; global/regional rank and true online status are explicitly caveated because the API does not expose them. Use `/settings clear-overview-channel` to stop posting. Timers are cleared on shutdown.
+For each guild with an overview channel configured via `/settings set-overview-channel`, the bot posts one compact "Club Stats" message and **edits that same message** every `OVERVIEW_INTERVAL_MINUTES` (default `30`). The first post happens about 15 seconds after Discord login. Each club is one inline field (up to 25, sorted by trophies), and a multi-select "Choose Clubs" menu opens detailed `/clubs details` views for up to 10 selected clubs at once, ephemerally. All values come from stored official Brawl Stars API sync data; global/regional rank and true online status are explicitly caveated because the API does not expose them. Use `/settings clear-overview-channel` to stop posting. Timers are cleared on shutdown.
 
 ### Cron route
 
