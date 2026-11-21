@@ -34,9 +34,9 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     entries: [
       {
         name: 'me',
-        usage: '/me [tag:PLAYERTAG]',
+        usage: '/me profile [tag:PLAYERTAG] | /me image [tag:PLAYERTAG]',
         description:
-          'Show an interactive player overview with Summary, Brawlers and More sections. Leave tag blank to use your verified player.',
+          'Show an interactive player overview, or post a public player profile card in the channel. Leave tag blank to use your verified player.',
       },
       {
         name: 'brawlers',

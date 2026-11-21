@@ -15,7 +15,8 @@
     "@brawlhub/brawlapi": "*",
     "@brawlhub/database": "*",
     "@brawlhub/shared": "*",
-    "@brawlhub/sync": "*"
+    "@brawlhub/sync": "*",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "tsx": "^4.23.15",

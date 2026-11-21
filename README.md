@@ -2,7 +2,7 @@
 
 BrawlHub is a private website and Discord bot for managing **11–20 Brawl Stars clubs from one Discord server**. It reads club and roster data from the official Brawl Stars API, stores it in Supabase, and presents real rosters, membership history, trophy progression and sync health in a Next.js dashboard.
 
-Current status: **all planned bot and website foundations are in place**, including official-API sync, guild-scoped history and ranked roles, polished bot embeds/assets, and a consolidated 18-command slash interface. The website and bot work with real clubs you register and synchronise from the official Brawl Stars API. Player profiles, trophy history, membership history, collected battle history and ranked roles are guild-scoped; no placeholder clubs, players or historical records are generated.
+Current status: **all planned bot and website foundations are in place**, including official-API sync, guild-scoped history and ranked roles, polished bot embeds/assets, public `/me image` player cards, and a consolidated 18-command slash interface. The website and bot work with real clubs you register and synchronise from the official Brawl Stars API. Player profiles, trophy history, membership history, collected battle history and ranked roles are guild-scoped; no placeholder clubs, players or historical records are generated.
 
 ## Architecture
 
