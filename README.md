@@ -2,7 +2,7 @@
 
 BrawlHub is a private website and Discord bot for managing **11–20 Brawl Stars clubs from one Discord server**. It reads club and roster data from the official Brawl Stars API, stores it in Supabase, and presents real rosters, membership history, trophy progression and sync health in a Next.js dashboard.
 
-Current status: **all planned bot and website foundations are in place**, including official-API sync, guild-scoped history and ranked roles, polished bot embeds/assets, public `/me image` player cards, and a consolidated 18-command slash interface. The website and bot work with real clubs you register and synchronise from the official Brawl Stars API. Player profiles, trophy history, membership history, collected battle history and ranked roles are guild-scoped; no placeholder clubs, players or historical records are generated.
+Current status: **all planned bot and website foundations are in place**, including official-API sync, guild-scoped history and ranked roles, polished bot embeds/assets, public `/me image` player cards, full-page club-log PNG posts, guild-scoped operator notices, and a consolidated 18-command slash interface. The website and bot work with real clubs you register and synchronise from the official Brawl Stars API. Player profiles, trophy history, membership history, collected battle history and ranked roles are guild-scoped; no placeholder clubs, players or historical records are generated.
 
 ## Architecture
 
@@ -247,6 +247,14 @@ npm run phase2:inspect
 ```
 
 The bot reports missing configuration and exits safely when `DISCORD_TOKEN` is blank. Sync concurrency is still protected by the existing Postgres-backed `sync_locks` table and idempotency checks.
+
+### Discord automation
+
+- `/clubs logs preview club:<club-uuid> [period:today|week|season]` requires `clubs:write` and a log configured for the current guild. It replies privately, then posts the full-page club-log PNG publicly in the channel.
+- Scheduled club-log posts use those same configured channels and existing delivery dedupe. The PNG combines stored trophy progression with recent stored membership, role and capacity changes; it is marked delivered only after the image posts successfully.
+- `CLUB_LOGS_INTERVAL_MINUTES` controls the poll cadence (default `5`, clamped to `1`–`1440`) and `CLUB_LOGS_PERIOD` selects the trophy period (default `today`).
+- Completed and failed syncs, plus successful icon or staff verification, send mention-safe embeds to the guild’s configured announcement or verification channel. These notices are best-effort and never change the command or sync result.
+- Reports remain scheduled auto-posts; `REPORTS_IMMEDIATE_ON_START` must remain `false`. The legacy `primary_club_id` setting is untouched and ignored at runtime.
 
 ## Scripts
 

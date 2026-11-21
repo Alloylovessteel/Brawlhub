@@ -22,9 +22,9 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       {
         name: 'clubs',
         usage:
-          '/clubs details | /clubs overview | /clubs members | /clubs leaderboard | /clubs log | /clubs history | /clubs compare | /clubs view add|remove|list | /clubs fields | /clubs logs add|remove|list | /clubs register | /clubs remove',
+          '/clubs details | /clubs overview | /clubs members | /clubs leaderboard | /clubs log | /clubs history | /clubs compare | /clubs view add|remove|list | /clubs fields | /clubs logs add|remove|list|preview | /clubs register | /clubs remove',
         description:
-          'Show club details and overviews, list members, logs and history, compare clubs, and configure the server’s club overview and reports.',
+          'Show club details and overviews, list members, logs and history, compare clubs, and configure the server’s club overview, reports and full-page club-log PNG previews.',
         permission: 'clubs:write for overview, view, fields, logs, register and remove',
       },
     ],

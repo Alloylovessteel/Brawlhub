@@ -21,8 +21,19 @@ const mocks = vi.hoisted(() => {
     adminService: { requireGlobalPermission: vi.fn() },
     adminErrors: { replyAdminError: vi.fn() },
     clubs: { getRegisteredClubs: vi.fn(), filterRegisteredClubs: vi.fn() },
-    logsService: { addClubLog: vi.fn(), loadClubLogs: vi.fn(), removeClubLog: vi.fn() },
+    logsService: {
+      addClubLog: vi.fn(),
+      loadClubLogs: vi.fn(),
+      loadRecentClubLogEvents: vi.fn(),
+      removeClubLog: vi.fn(),
+    },
     logsEmbed: { buildClubLogsConfigEmbed: vi.fn() },
+    pageView: {
+      CLUB_LOG_PERIOD_LABELS: { today: 'Today', week: 'This Week', season: 'This Season' },
+      isClubLogPeriod: vi.fn((value: string) => ['today', 'week', 'season'].includes(value)),
+      loadClubLogView: vi.fn(),
+    },
+    image: { buildClubLogPageImage: vi.fn() },
     permissions: { getInteractionMemberRoleIds: vi.fn() },
   };
 });
@@ -35,6 +46,8 @@ vi.mock('../admin/errors', () => mocks.adminErrors);
 vi.mock('../clubs/service', () => mocks.clubs);
 vi.mock('../clubs/logs/service', () => mocks.logsService);
 vi.mock('../clubs/logs/embed', () => mocks.logsEmbed);
+vi.mock('../clubs/logs/page-view', () => mocks.pageView);
+vi.mock('../clubs/logs/image', () => mocks.image);
 vi.mock('../discord/permissions.js', () => mocks.permissions);
 
 import {
@@ -88,7 +101,10 @@ function autocomplete(value = ''): AutocompleteInteraction {
   } as unknown as AutocompleteInteraction;
 }
 
-function payload(interaction: ChatInputCommandInteraction, method: 'editReply' | 'reply'): Record<string, unknown> {
+function payload(
+  interaction: ChatInputCommandInteraction,
+  method: 'editReply' | 'reply' | 'followUp',
+): Record<string, unknown> {
   return (interaction[method] as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<string, unknown>;
 }
 
@@ -111,23 +127,48 @@ beforeEach(() => {
   mocks.logsService.addClubLog.mockResolvedValue([]);
   mocks.logsService.loadClubLogs.mockReset();
   mocks.logsService.loadClubLogs.mockResolvedValue([]);
+  mocks.logsService.loadRecentClubLogEvents.mockReset();
+  mocks.logsService.loadRecentClubLogEvents.mockResolvedValue([]);
   mocks.logsService.removeClubLog.mockReset();
   mocks.logsService.removeClubLog.mockResolvedValue([]);
   mocks.logsEmbed.buildClubLogsConfigEmbed.mockReset();
   mocks.logsEmbed.buildClubLogsConfigEmbed.mockReturnValue({ kind: 'club-logs-config' });
+  mocks.pageView.loadClubLogView.mockReset();
+  mocks.pageView.loadClubLogView.mockResolvedValue({
+    kind: 'ok',
+    value: {
+      club: {
+        id: CLUB_ID,
+        tag: 'ALPHA',
+        name: 'Alpha',
+        description: null,
+        trophies: null,
+        requiredTrophies: null,
+        memberCount: null,
+        lastSyncedAt: null,
+      },
+      period: 'today',
+      rows: [],
+      unavailable: 0,
+      latestSnapshotAt: null,
+      latestSyncAt: null,
+    },
+  });
+  mocks.image.buildClubLogPageImage.mockReset();
+  mocks.image.buildClubLogPageImage.mockResolvedValue(Buffer.from('fake-png'));
   mocks.permissions.getInteractionMemberRoleIds.mockReset();
   mocks.permissions.getInteractionMemberRoleIds.mockReturnValue(null);
 });
 
 describe('/clubs logs command data', () => {
-  it('registers add, remove and list with the expected options', () => {
+  it('registers add, remove, list and preview with the expected options', () => {
     const json = clubLogsCommandData.toJSON() as unknown as {
       name: string;
       options: Array<{ name: string; options?: Array<Record<string, unknown>> }>;
     };
 
     expect(json.name).toBe('clublogs');
-    expect(json.options.map((option) => option.name)).toEqual(['add', 'remove', 'list']);
+    expect(json.options.map((option) => option.name)).toEqual(['add', 'remove', 'list', 'preview']);
     const add = json.options[0]?.options ?? [];
     expect(add[0]).toMatchObject({ name: 'club', autocomplete: true, required: true });
     expect(add[1]).toMatchObject({ name: 'channel', required: true, channel_types: [0] });
@@ -137,6 +178,10 @@ describe('/clubs logs command data', () => {
       required: true,
     });
     expect(json.options[2]?.options ?? []).toHaveLength(0);
+    const preview = json.options[3]?.options ?? [];
+    expect(preview[0]).toMatchObject({ name: 'club', autocomplete: true, required: true });
+    expect(preview[1]).toMatchObject({ name: 'period' });
+    expect((preview[1]?.['choices'] as unknown[] | undefined)?.length).toBe(3);
   });
 });
 
@@ -187,6 +232,83 @@ describe('/clubs logs configuration', () => {
       guildId: GUILD_ID,
       logs: [],
     });
+  });
+});
+
+describe('/clubs logs preview', () => {
+  const configuredLog = {
+    id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    guildId: GUILD_ID,
+    clubId: CLUB_ID,
+    clubTag: 'ALPHA',
+    clubName: 'Alpha',
+    channelId: CHANNEL_ID,
+  };
+
+  it('posts a public PNG follow-up with no components and a private acknowledgement', async () => {
+    mocks.logsService.loadClubLogs.mockResolvedValue([configuredLog]);
+    mocks.logsService.loadRecentClubLogEvents.mockResolvedValue([
+      {
+        log: configuredLog,
+        events: [
+          {
+            kind: 'membership',
+            id: 'm1',
+            clubId: CLUB_ID,
+            playerTag: 'PLAYER',
+            playerName: 'Player',
+            description: '#PLAYER joined',
+            detectedAt: '2026-11-21T08:00:00.000Z',
+          },
+        ],
+      },
+    ]);
+    const interaction = chat('preview', { club: CLUB_ID, period: 'today' });
+
+    await handleClubLogs(interaction);
+
+    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
+      guildId: GUILD_ID,
+      tag: 'ALPHA',
+      period: 'today',
+    });
+    expect(mocks.logsService.loadRecentClubLogEvents).toHaveBeenCalledWith(GUILD_ID, configuredLog.id);
+    expect(mocks.image.buildClubLogPageImage).toHaveBeenCalledWith(
+      expect.objectContaining({ club: expect.objectContaining({ tag: 'ALPHA' }) }),
+      expect.arrayContaining([expect.objectContaining({ id: 'm1' })]),
+    );
+    const followUp = payload(interaction, 'followUp');
+    expect(followUp['content']).toBe('Alpha • Club Logs / Trophy Progression / Today');
+    expect(followUp['allowedMentions']).toEqual({ parse: [] });
+    expect(followUp['components']).toBeUndefined();
+    const files = followUp['files'] as Array<{ name: string }>;
+    expect(files).toHaveLength(1);
+    expect(files[0]?.name).toBe('club-log-preview-alpha.png');
+    const acknowledgement = payload(interaction, 'editReply');
+    expect(acknowledgement['content']).toContain('preview posted publicly');
+    expect(acknowledgement['components']).toEqual([]);
+  });
+
+  it('rejects a club without a log configured in this guild', async () => {
+    const interaction = chat('preview', { club: CLUB_ID });
+
+    await handleClubLogs(interaction);
+
+    expect(mocks.pageView.loadClubLogView).not.toHaveBeenCalled();
+    expect(interaction.followUp).not.toHaveBeenCalled();
+    expect(payload(interaction, 'editReply').content).toContain('not configured');
+  });
+
+  it('does not add components on a stored-data lookup failure', async () => {
+    mocks.logsService.loadClubLogs.mockResolvedValue([configuredLog]);
+    mocks.pageView.loadClubLogView.mockResolvedValue({ kind: 'no-default' });
+    const interaction = chat('preview', { club: CLUB_ID });
+
+    await handleClubLogs(interaction);
+
+    const acknowledgement = payload(interaction, 'editReply');
+    expect(acknowledgement['components']).toEqual([]);
+    expect(interaction.followUp).not.toHaveBeenCalled();
   });
 });
 
