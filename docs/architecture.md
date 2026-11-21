@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the data and security design for BrawlHub. Phase 1 establishes the foundation: root configuration, the `.env` template, the migration runner, the initial schema with RLS, workspace skeletons (web health endpoint, bot ping command), and the `shared`, `database`, and `logging` packages. The dashboard, sync engine, and Discord auth commands come in later phases. See the [phase roadmap](#phase-roadmap).
+This document describes the data and security design for BrawlHub. The foundation covers root configuration, the `.env` template, the migration runner, the initial schema with RLS, workspace skeletons (web health endpoint, bot ping command), and the `shared`, `database`, and `logging` packages. The dashboard, sync engine, and Discord auth commands build on that foundation. See the [delivery capabilities](#delivery-capabilities).
 
 ## Goals
 
@@ -36,9 +36,9 @@ Only `NEXT_PUBLIC_*` variables may reach the browser. The service-role key, dire
 | --- | --- | --- |
 | Public | `clubs`, `players` | Anonymous and authenticated `SELECT` via RLS policy. |
 | Private, user-scoped | `profiles` (own row / global staff), `club_private`, `club_memberships`, `guild_settings`, `staff_members`, `competitions`, `competition_entries`, `blacklists`, `audit_logs` | Authenticated `SELECT` subject to RLS policies using the helpers above. |
-| Service-role only | `sync_runs`, `membership_events`, `club_snapshots`, `player_snapshots`, `notifications`, `user_roles`, `discord_users` | No client policies or grants at all in Phase 1; trusted jobs only. |
+| Service-role only | `sync_runs`, `membership_events`, `club_snapshots`, `player_snapshots`, `notifications`, `user_roles`, `discord_users` | No client policies or grants; trusted jobs only. |
 
-Nothing is public by accident: a table becomes readable only through a deliberate policy and grant. Later phases may add narrowly scoped `SELECT` policies for some service-role-only tables (for example club-scoped membership events), but never for tokens or unrestricted history.
+Nothing is public by accident: a table becomes readable only through a deliberate policy and grant. Future changes may add narrowly scoped `SELECT` policies for some service-role-only tables (for example club-scoped membership events), but never for tokens or unrestricted history.
 
 ## Temporal `club_memberships` (transfers)
 
@@ -64,7 +64,7 @@ One row per sync scope and period, used for auditing and concurrency control:
 
 - Columns: `scope`, `period_start`, `status` (`running` / `completed` / `failed`), `started_at`, `finished_at`, `error`, `records_processed`.
 - **Unique constraint on `(scope, period_start)`** prevents duplicate run records for the same period.
-- **Advisory lock (sync runner design):** each sync acquires a Postgres transaction-scoped advisory lock keyed by `(scope, period_start)` before doing work, then re-checks the unique run row inside the lock. This serializes concurrent workers and makes restarts safe. The lock is applied by the sync runner, not by the Phase 1 schema.
+- **Advisory lock (sync runner design):** each sync acquires a Postgres transaction-scoped advisory lock keyed by `(scope, period_start)` before doing work, then re-checks the unique run row inside the lock. This serializes concurrent workers and makes restarts safe. The lock is applied by the sync runner, not by the initial schema.
 - Reported counts come from rows actually written during the run; no numbers are invented.
 
 ## Idempotency constraints across snapshots, events, and notifications
@@ -101,17 +101,17 @@ All sync-derived writes are upserts with conflict handling so repeated runs conv
 
 1. A user signs in with Discord through Supabase Auth and receives a Supabase session.
 2. The web app reads user-scoped data with the anon key; RLS limits rows to the user's roles/clubs. The health endpoint reports presence checks only.
-3. A trusted sync job (later phase) takes the advisory lock, records a `sync_run`, calls the Brawl Stars API with the Bearer key, writes snapshots, derives temporal memberships and `membership_events`, and emits idempotent notifications.
+3. A trusted sync job takes the advisory lock, records a `sync_run`, calls the Brawl Stars API with the Bearer key, writes snapshots, derives temporal memberships and `membership_events`, and emits idempotent notifications.
 4. The bot uses server-side credentials for its commands; no Discord OAuth tokens are persisted by the app.
 
-## Delivery phases
+## Delivery capabilities
 
-| Phase | Scope | Status |
+| Capability | Scope | Status |
 | --- | --- | --- |
-| 1 | Verified main/alt accounts, Discord identity links, admin authorization and guild-scoped configuration | Implemented |
-| 2 / 2B | Official API sync, registered guild clubs, club commands, overview toggles, club logs and scheduled reports | Implemented |
-| 3 | Player profiles, trophy/membership history, official battle-log history in bot and web, scoped history RLS | Implemented |
-| 4 | Ranked-role commands (`/fn`), `/auto setup`, and full `/update` refresh | Implemented |
-| 5 | Bot embed static assets (player icons, club badges, brawler portraits) | Implemented (bot only) |
+| Verified identity and configuration | Main/alt accounts, Discord identity links, admin authorization and guild-scoped settings | Available |
+| Sync and club operations | Official API sync, registered guild clubs, club commands, overview toggles, club logs and scheduled reports | Available |
+| Player and history views | Player profiles, trophy/membership history, official battle-log history in bot and web, scoped history RLS | Available |
+| Ranked roles and automation | Ranked-role commands (`/fn`), `/auto setup`, and full `/update` refresh | Available |
+| Bot presentation | Static player icons, club badges and brawler portraits | Available (bot only) |
 
-Every phase keeps reads and writes inside the invoking Discord guild. Player and club statistics, rosters and battle logs come only from the official Brawl Stars API or stored official snapshots; BrawlAPI supplies static metadata and assets only.
+Every capability keeps reads and writes inside the invoking Discord guild. Player and club statistics, rosters and battle logs come only from the official Brawl Stars API or stored official snapshots; BrawlAPI supplies static metadata and assets only.

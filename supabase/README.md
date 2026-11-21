@@ -45,11 +45,11 @@ references it.
 - **Club-scoped reads:** `club_private`, `club_memberships`, `guild_settings`,
   `staff_members`, `competitions` and `competition_entries` are readable by
   authenticated users with a global staff role or a matching club-scoped role.
-  `blacklists` and `audit_logs` are global-staff only. The checks are implemented
+  `blacklists` and `audit_logs` are global-staff only. The checks are enforced
   with `SECURITY DEFINER` helpers so clients do not need direct access to `user_roles`.
 - **Service-role only:** `sync_runs`, `membership_events`, `club_snapshots`,
   `player_snapshots`, `notifications`, `user_roles` and `discord_users` have no
-  policies and no grants for `anon`/`authenticated`. Phase 3/5 may add narrowly
+  policies and no grants for `anon`/`authenticated`. Future changes may add narrowly
   scoped SELECT policies for club history, but should keep them role-restricted.
 - **No Discord OAuth tokens are stored anywhere.** `profiles` and `discord_users`
   hold only IDs, usernames and avatar URLs. Tokens stay in the trusted server/session

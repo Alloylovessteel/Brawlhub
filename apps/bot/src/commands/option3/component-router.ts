@@ -33,10 +33,12 @@ import { handleFnComponent } from '../fn.js';
 import { handleAutoComponent } from '../auto.js';
 import { handleUpdateComponent } from '../update.js';
 
-type ComponentHandler = (interaction: CommandComponentInteraction) => Promise<void>;
+export type ComponentHandler = (interaction: CommandComponentInteraction) => Promise<void>;
 
 /** Original custom-ID prefix -> original component handler. Never rewrite IDs. */
-export const COMPONENT_HANDLERS: Readonly<Record<string, ComponentHandler>> = {
+export type ComponentHandlers = Readonly<Record<string, ComponentHandler>>;
+
+export const COMPONENT_HANDLERS: ComponentHandlers = {
   club: handleClubComponent,
   clubs: handleClubsComponent,
   'club-members': handleClubMembersComponent,
@@ -113,17 +115,25 @@ export function hasComponentHandler(prefix: string): boolean {
 }
 
 /**
+ * Build a composite-anchor handler. The injected record keeps this dispatcher
+ * testable without changing the original custom IDs or their handlers.
+ */
+export function createCompositeComponentHandler(
+  handlers: ComponentHandlers = COMPONENT_HANDLERS,
+): ComponentHandler {
+  return async (interaction) => {
+    const [prefix] = interaction.customId.split(':');
+    const handler = prefix === undefined ? undefined : handlers[prefix];
+    if (handler === undefined) {
+      return;
+    }
+    await handler(interaction);
+  };
+}
+
+/**
  * Component handler for composite anchors. It dispatches on the untouched
  * custom-ID prefix so original parsers, nonces and permission checks continue
  * to run unchanged.
  */
-export async function handleCompositeComponent(
-  interaction: CommandComponentInteraction,
-): Promise<void> {
-  const [prefix] = interaction.customId.split(':');
-  const handler = prefix === undefined ? undefined : COMPONENT_HANDLERS[prefix];
-  if (handler === undefined) {
-    return;
-  }
-  await handler(interaction);
-}
+export const handleCompositeComponent = createCompositeComponentHandler();

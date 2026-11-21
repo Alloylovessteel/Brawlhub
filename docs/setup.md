@@ -1,6 +1,6 @@
 # Setup
 
-> **Phase 1 note:** the foundation is in place — migration runner, initial RLS schema, web skeleton with a health endpoint, bot skeleton with a `ping` command, and the `shared` / `database` / `logging` packages. The dashboard, Brawl Stars client, sync engine, and Discord auth commands land in later phases.
+> **Foundation note:** the foundation is in place — migration runner, initial RLS schema, web skeleton with a health endpoint, bot skeleton with a `ping` command, and the `shared` / `database` / `logging` packages. The dashboard, Brawl Stars client, sync engine, and Discord auth commands build on that foundation.
 
 ## Prerequisites
 
@@ -117,7 +117,7 @@ npm test
 npm run test:watch
 ```
 
-## Phase 2: register clubs and sync
+## Register clubs and sync
 
 Apply migrations first (`npm run db:migrate`), then register your real club tags and run a sync:
 
