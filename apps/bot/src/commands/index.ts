@@ -116,25 +116,13 @@ import {
   handleMembersAutocomplete,
   handleMembersComponent,
 } from './members.js';
-import { memberVerifyCommandData, handleMemberVerify } from './member-verify.js';
 import {
-  accountsCommandData,
-  handleAccounts,
-  handleAccountsAutocomplete,
-} from './accounts.js';
+  accountCommandData,
+  handleAccount,
+  handleAccountAutocomplete,
+} from './account.js';
+import { verifyCommandData, handleVerify } from './verify.js';
 import {
-  verifyInfoCommandData,
-  handleVerifyInfo,
-  verifySettingsCommandData,
-  handleVerifySettings,
-} from './verification-info.js';
-import {
-  tagCommandData,
-  handleTag,
-  registerListCommandData,
-  handleRegisterList,
-  findCommandData,
-  handleFind,
   unverifyOneCommandData,
   handleUnverifyOne,
   handleUnverifyOneComponent,
@@ -175,8 +163,7 @@ import {
   handleRegisterClub,
   handleRegisterClubComponent,
 } from './register-club.js';
-import { syncCommandData, handleSync } from './sync.js';
-import { syncStatusCommandData, handleSyncStatus } from './sync-status.js';
+import { syncCommandData, handleSyncCommand } from './sync.js';
 import { settingsCommandData, handleSettings, handleSettingsComponent } from './settings.js';
 import { inactivityCommandData, handleInactivity } from './inactivity.js';
 import { auditCommandData, handleAudit, handleAuditComponent } from './audit.js';
@@ -208,8 +195,7 @@ import {
   handleHelp,
   handleHelpComponent,
 } from './help.js';
-import { aboutCommandData, handleAbout } from './about.js';
-import { statusCommandData, handleStatus } from './status.js';
+import { infoCommandData, handleInfo } from './info.js';
 import {
   fnCommandData,
   handleFn,
@@ -372,33 +358,13 @@ export const commands: readonly CommandDefinition[] = [
     handleComponent: handleMembersComponent,
   },
   {
-    data: memberVerifyCommandData,
-    handle: handleMemberVerify,
+    data: accountCommandData,
+    handle: handleAccount,
+    autocomplete: handleAccountAutocomplete,
   },
   {
-    data: accountsCommandData,
-    handle: handleAccounts,
-    autocomplete: handleAccountsAutocomplete,
-  },
-  {
-    data: verifyInfoCommandData,
-    handle: handleVerifyInfo,
-  },
-  {
-    data: verifySettingsCommandData,
-    handle: handleVerifySettings,
-  },
-  {
-    data: tagCommandData,
-    handle: handleTag,
-  },
-  {
-    data: registerListCommandData,
-    handle: handleRegisterList,
-  },
-  {
-    data: findCommandData,
-    handle: handleFind,
+    data: verifyCommandData,
+    handle: handleVerify,
   },
   {
     data: unverifyOneCommandData,
@@ -439,11 +405,7 @@ export const commands: readonly CommandDefinition[] = [
   },
   {
     data: syncCommandData,
-    handle: handleSync,
-  },
-  {
-    data: syncStatusCommandData,
-    handle: handleSyncStatus,
+    handle: handleSyncCommand,
   },
   {
     data: settingsCommandData,
@@ -471,12 +433,8 @@ export const commands: readonly CommandDefinition[] = [
     handleComponent: handleHelpComponent,
   },
   {
-    data: aboutCommandData,
-    handle: handleAbout,
-  },
-  {
-    data: statusCommandData,
-    handle: handleStatus,
+    data: infoCommandData,
+    handle: handleInfo,
   },
   {
     data: fnCommandData,

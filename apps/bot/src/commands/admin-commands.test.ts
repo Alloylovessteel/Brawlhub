@@ -109,7 +109,7 @@ import {
   settingsCommandData,
 } from './settings';
 import { handleSync, syncCommandData } from './sync';
-import { handleSyncStatus, syncStatusCommandData } from './sync-status';
+import { handleSyncStatus } from './sync-status';
 
 function actor(globalRole: 'owner' | 'admin' | 'staff' | 'member' | null = 'admin') {
   return { profileId: PROFILE_ID, discordUserId: ACTOR_ID, globalRole };
@@ -452,8 +452,10 @@ describe('/register-club', () => {
 });
 
 describe('/sync', () => {
-  it('registers with the expected command name', () => {
-    expect(syncCommandData.toJSON().name).toBe('sync');
+  it('registers run and status subcommands', () => {
+    const json = syncCommandData.toJSON() as any;
+    expect(json.name).toBe('sync');
+    expect(json.options.map((option: any) => option.name)).toEqual(['run', 'status']);
   });
 
   it('rejects unauthorized users', async () => {
@@ -506,9 +508,8 @@ describe('/sync', () => {
   });
 });
 
-describe('/sync-status', () => {
+describe('/sync status', () => {
   it('uses stored sync data and requires permission', async () => {
-    expect(syncStatusCommandData.toJSON().name).toBe('sync-status');
     const interaction = chat(null);
 
     await handleSyncStatus(interaction);

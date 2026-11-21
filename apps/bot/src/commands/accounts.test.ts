@@ -50,7 +50,7 @@ beforeEach(() => {
   mocks.setMainVerification.mockReset().mockResolvedValue({ kind: 'ok', tag: '2UG9UGQJY' });
 });
 
-describe('/accounts', () => {
+describe('/account', () => {
   it('lists accounts with MAIN and Alt labels', async () => {
     const mockInteraction = interaction();
 
@@ -76,7 +76,7 @@ describe('/accounts', () => {
   });
 });
 
-describe('/accounts autocomplete', () => {
+describe('/account autocomplete', () => {
   it('offers only the caller’s linked accounts', async () => {
     const respond = vi.fn(async () => undefined);
     const mockInteraction = {

@@ -26,39 +26,34 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export const viewCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
   .setDescription('Choose which registered clubs appear in this server’s club overview')
-  .addSubcommandGroup((group) =>
-    group
-      .setName('tag')
-      .setDescription('Add or remove a club from the server overview')
-      .addSubcommand((subcommand) =>
-        subcommand
-          .setName('add')
-          .setDescription('Add a registered club to the server overview')
-          .addStringOption((option) =>
-            option
-              .setName('tag')
-              .setDescription('Registered club to show (tag or selection)')
-              .setAutocomplete(true)
-              .setRequired(true)
-              .setMaxLength(36),
-          ),
-      )
-      .addSubcommand((subcommand) =>
-        subcommand
-          .setName('remove')
-          .setDescription('Stop showing a club in the server overview')
-          .addStringOption((option) =>
-            option
-              .setName('tag')
-              .setDescription('Club currently in the overview (tag or selection)')
-              .setAutocomplete(true)
-              .setRequired(true)
-              .setMaxLength(36),
-          ),
-      )
-      .addSubcommand((subcommand) =>
-        subcommand.setName('list').setDescription('List the clubs in this server’s overview'),
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('add')
+      .setDescription('Add a registered club to the server overview')
+      .addStringOption((option) =>
+        option
+          .setName('tag')
+          .setDescription('Registered club to show (tag or selection)')
+          .setAutocomplete(true)
+          .setRequired(true)
+          .setMaxLength(36),
       ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('remove')
+      .setDescription('Stop showing a club in the server overview')
+      .addStringOption((option) =>
+        option
+          .setName('tag')
+          .setDescription('Club currently in the overview (tag or selection)')
+          .setAutocomplete(true)
+          .setRequired(true)
+          .setMaxLength(36),
+      ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName('list').setDescription('List the clubs in this server’s overview'),
   );
 
 interface ViewPermissionContext {
@@ -131,10 +126,6 @@ async function replyWithOverview(
 export async function handleView(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    if (interaction.options.getSubcommandGroup(false) !== 'tag') {
-      await interaction.editReply({ content: 'Unknown `/view` group.', components: [] });
-      return;
-    }
     const context = await requireViewPermission(interaction);
     const subcommand = interaction.options.getSubcommand(false);
 
@@ -196,7 +187,7 @@ export async function handleView(interaction: ChatInputCommandInteraction): Prom
       return;
     }
 
-    await interaction.editReply({ content: 'Unknown `/view tag` action.', components: [] });
+    await interaction.editReply({ content: 'Unknown `/view` action.', components: [] });
   } catch (error) {
     await replyAdminError(interaction, error);
   }

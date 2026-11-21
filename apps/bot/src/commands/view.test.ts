@@ -78,7 +78,6 @@ function forbidden(): InstanceType<typeof mocks.AdminServiceError> {
 }
 
 function chat(
-  group: string | null,
   subcommand: string | null,
   options: Record<string, unknown> = {},
 ): ChatInputCommandInteraction {
@@ -89,7 +88,6 @@ function chat(
     member: null,
     memberPermissions: null,
     options: {
-      getSubcommandGroup: vi.fn(() => group),
       getSubcommand: vi.fn(() => subcommand),
       getString: vi.fn((name: string) => options[name] ?? null),
       getFocused: vi.fn(),
@@ -179,12 +177,11 @@ beforeEach(() => {
 });
 
 describe('/view command data', () => {
-  it('registers the tag group with add, remove and list', () => {
+  it('registers flat add, remove and list subcommands', () => {
     const json = viewCommandData.toJSON() as any;
 
     expect(json.name).toBe('view');
-    expect(json.options[0].name).toBe('tag');
-    expect(json.options[0].options.map((option: any) => option.name)).toEqual([
+    expect(json.options.map((option: any) => option.name)).toEqual([
       'add',
       'remove',
       'list',
@@ -192,10 +189,10 @@ describe('/view command data', () => {
   });
 });
 
-describe('/view tag permission handling', () => {
+describe('/view permission handling', () => {
   it('defers ephemerally and denies users without clubs:write', async () => {
     mocks.service.requireGlobalPermission.mockRejectedValueOnce(forbidden());
-    const interaction = chat('tag', 'list');
+    const interaction = chat('list');
 
     await handleView(interaction);
 
@@ -211,21 +208,25 @@ describe('/view tag permission handling', () => {
     expect(mocks.adminErrors.replyAdminError).toHaveBeenCalledOnce();
   });
 
-  it('rejects an unknown command group before checking permission', async () => {
-    const interaction = chat('other', 'list');
+  it('still checks permission before reporting an unknown action', async () => {
+    const interaction = chat('other', { tag: '2UG9' });
 
     await handleView(interaction);
 
-    expect(mocks.service.requireGlobalPermission).not.toHaveBeenCalled();
-    expect(payload(interaction, 'editReply').content).toContain('Unknown `/view` group');
+    expect(mocks.service.requireGlobalPermission).toHaveBeenCalledWith(
+      ACTOR_ID,
+      'clubs:write',
+      expect.objectContaining({ guildId: GUILD_ID }),
+    );
+    expect(payload(interaction, 'editReply').content).toContain('Unknown `/view` action');
   });
 });
 
-describe('/view tag list', () => {
+describe('/view list', () => {
   it('renders the current overview and refreshes without posting a second message', async () => {
     const summaries = [{ club: CLUB_A }];
     mocks.viewTags.loadViewTagSummaries.mockResolvedValue(summaries);
-    const interaction = chat('tag', 'list');
+    const interaction = chat('list');
 
     await handleView(interaction);
 
@@ -249,7 +250,7 @@ describe('/view tag list', () => {
 
   it('still replies when the overview refresh fails', async () => {
     mocks.overviewService.refreshOverviewNow.mockRejectedValueOnce(new Error('network offline'));
-    const interaction = chat('tag', 'list');
+    const interaction = chat('list');
 
     await expect(handleView(interaction)).resolves.toBeUndefined();
 
@@ -258,9 +259,9 @@ describe('/view tag list', () => {
   });
 });
 
-describe('/view tag add', () => {
+describe('/view add', () => {
   it('resolves a club tag to a registered club and adds it', async () => {
-    const interaction = chat('tag', 'add', { tag: '#2ug9' });
+    const interaction = chat('add', { tag: '#2ug9' });
 
     await handleView(interaction);
 
@@ -281,7 +282,7 @@ describe('/view tag add', () => {
   });
 
   it('resolves a club id as well as a tag', async () => {
-    const interaction = chat('tag', 'add', { tag: OTHER_CLUB_ID });
+    const interaction = chat('add', { tag: OTHER_CLUB_ID });
 
     await handleView(interaction);
 
@@ -292,7 +293,7 @@ describe('/view tag add', () => {
 
   it('reports an already-present club without treating it as a failure', async () => {
     mocks.viewTags.addViewTag.mockResolvedValueOnce({ kind: 'already-present' });
-    const interaction = chat('tag', 'add', { tag: '2UG9' });
+    const interaction = chat('add', { tag: '2UG9' });
 
     await handleView(interaction);
 
@@ -304,7 +305,7 @@ describe('/view tag add', () => {
 
   it('stops when the overview is full', async () => {
     mocks.viewTags.addViewTag.mockResolvedValueOnce({ kind: 'limit-reached', limit: 25 });
-    const interaction = chat('tag', 'add', { tag: '2UG9' });
+    const interaction = chat('add', { tag: '2UG9' });
 
     await handleView(interaction);
 
@@ -315,7 +316,7 @@ describe('/view tag add', () => {
 
   it('does not report success when the club became unavailable during add', async () => {
     mocks.viewTags.addViewTag.mockResolvedValueOnce({ kind: 'not-found' });
-    const interaction = chat('tag', 'add', { tag: '2UG9' });
+    const interaction = chat('add', { tag: '2UG9' });
 
     await handleView(interaction);
 
@@ -325,9 +326,9 @@ describe('/view tag add', () => {
   });
 });
 
-describe('/view tag remove', () => {
+describe('/view remove', () => {
   it('removes the club and reports that it remains registered', async () => {
-    const interaction = chat('tag', 'remove', { tag: '2UG9' });
+    const interaction = chat('remove', { tag: '2UG9' });
 
     await handleView(interaction);
 
@@ -347,7 +348,7 @@ describe('/view tag remove', () => {
 
   it('reports a club that was not in the overview', async () => {
     mocks.viewTags.removeViewTag.mockResolvedValueOnce({ kind: 'not-found' });
-    const interaction = chat('tag', 'remove', { tag: '2UG9' });
+    const interaction = chat('remove', { tag: '2UG9' });
 
     await handleView(interaction);
 
@@ -357,11 +358,11 @@ describe('/view tag remove', () => {
   });
 });
 
-describe('/view tag unregistered clubs', () => {
+describe('/view unregistered clubs', () => {
   it('refuses to add or remove a club that is not registered in the guild', async () => {
     mocks.clubs.getRegisteredClubs.mockResolvedValue([]);
-    const add = chat('tag', 'add', { tag: 'ZZZZ' });
-    const remove = chat('tag', 'remove', { tag: 'ZZZZ' });
+    const add = chat('add', { tag: 'ZZZZ' });
+    const remove = chat('remove', { tag: 'ZZZZ' });
 
     await handleView(add);
     await handleView(remove);
@@ -375,7 +376,7 @@ describe('/view tag unregistered clubs', () => {
   });
 });
 
-describe('/view tag autocomplete', () => {
+describe('/view autocomplete', () => {
   it('offers all registered clubs for add', async () => {
     const interaction = autocomplete('add', 'tag', '');
 

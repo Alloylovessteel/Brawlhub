@@ -276,13 +276,13 @@ export function buildVerificationMessage(guildId: string): {
 } {
   const appUrl = getBotConfig().appUrl;
   const lines = [
-    '**1.** Run `/member-verify start tag:YOURTAG` with your Brawl Stars player tag.',
+    '**1.** Run `/account verify start tag:YOURTAG` with your Brawl Stars player tag.',
     '**2.** The bot shows a randomly chosen default brawler icon and its exact ID.',
-    '**3.** Set that exact icon in Brawl Stars, then run `/member-verify check`.',
+    '**3.** Set that exact icon in Brawl Stars, then run `/account verify check`.',
     '**4.** The official Brawl Stars API confirms the match and links the account to you.',
     '',
     'Challenges expire after 10 minutes. Ownership is never guessed from names, tags or profile pictures.',
-    'Use `/accounts list` and `/accounts set-main tag:TAG` to choose the account used for ranked roles.',
+    'Use `/account list` and `/account set-main tag:TAG` to choose the account used for ranked roles.',
   ];
   if (appUrl !== undefined) lines.push('', `BrawlHub website: ${appUrl}`);
 

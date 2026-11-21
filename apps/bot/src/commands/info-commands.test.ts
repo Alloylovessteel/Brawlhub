@@ -37,9 +37,12 @@ vi.mock('../admin/service', () => ({
 }));
 
 import { commands, pendingCommands } from './index';
-import { handleAbout, aboutCommandData } from './about';
+import { handleAbout } from './about';
+import { accountCommandData } from './account';
 import { handleHelp, handleHelpComponent, helpCommandData } from './help';
-import { handleStatus, statusCommandData } from './status';
+import { infoCommandData } from './info';
+import { handleStatus } from './status';
+import { verifyCommandData } from './verify';
 
 function chat(): ChatInputCommandInteraction {
   const interaction = {
@@ -106,15 +109,31 @@ beforeEach(() => {
 });
 
 describe('command registration', () => {
-  it('registers help, about and status as available commands', () => {
+  it('registers the consolidated account, verify and info commands', () => {
     const names = commands.map((command) => command.data.name);
     expect(names).toContain('help');
-    expect(names).toContain('about');
-    expect(names).toContain('status');
+    expect(names).toContain('account');
+    expect(names).toContain('verify');
+    expect(names).toContain('info');
+    for (const retired of [
+      'about',
+      'status',
+      'accounts',
+      'member-verify',
+      'verify-info',
+      'verify-settings',
+      'sync-status',
+      'tag',
+      'register-list',
+      'find',
+    ]) {
+      expect(names).not.toContain(retired);
+    }
     expect(commands.find((command) => command.data.name === 'help')?.handleComponent).toBeTypeOf('function');
     expect(helpCommandData.toJSON().name).toBe('help');
-    expect(aboutCommandData.toJSON().name).toBe('about');
-    expect(statusCommandData.toJSON().name).toBe('status');
+    expect(accountCommandData.toJSON().name).toBe('account');
+    expect(verifyCommandData.toJSON().name).toBe('verify');
+    expect(infoCommandData.toJSON().name).toBe('info');
   });
 
   it('does not add pending commands to the public help directory', () => {
@@ -206,7 +225,7 @@ describe('/help', () => {
   });
 });
 
-describe('/about', () => {
+describe('/info about', () => {
   it('states the project purpose, data sources and limitations honestly', async () => {
     const interaction = chat();
 
@@ -233,7 +252,7 @@ describe('/about', () => {
   });
 });
 
-describe('/status', () => {
+describe('/info status', () => {
   it('shows real loaded status information without requiring admin permission', async () => {
     const interaction = chat();
 

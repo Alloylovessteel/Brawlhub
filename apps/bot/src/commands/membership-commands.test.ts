@@ -287,7 +287,7 @@ describe('/members command', () => {
   });
 });
 
-describe('/member-verify command', () => {
+describe('/account verify command', () => {
   it('starts icon verification, defers ephemerally, and shows a random required default brawler icon without inferring ownership', async () => {
     mocks.verificationService.startVerification.mockResolvedValue({
       ok: true,
@@ -319,7 +319,7 @@ describe('/member-verify command', () => {
     expect(reply.content).toContain('Verification started for Alpha (#2C0Y)');
     expect(reply.content).toContain('Spike');
     expect(reply.content).toContain('default brawler icon');
-    expect(reply.content).toContain('/member-verify check');
+    expect(reply.content).toContain('/account verify check');
     expect(reply.content).toContain('any other icon will not verify');
     expect(reply.content).toContain('will not infer ownership');
     expect(reply.embeds?.[0]?.toJSON?.().image?.url ?? JSON.stringify(reply.embeds)).toContain('28000016');

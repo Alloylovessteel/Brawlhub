@@ -58,7 +58,7 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       },
       {
         name: 'view',
-        usage: '/view tag add|remove|list',
+        usage: '/view add|remove|list',
         description: 'Choose which registered clubs appear in this server’s auto-updated overview.',
         permission: 'clubs:write',
       },
@@ -162,32 +162,15 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         description: 'Show tracked members across registered clubs.',
       },
       {
-        name: 'member-verify',
-        usage: '/member-verify start tag:<tag>',
+        name: 'account',
+        usage: '/account list | /account set-main tag:<tag> | /account verify start tag:<tag>',
         description:
-          'Verify player ownership by setting your in-game icon to a random required default brawler icon shown by the bot, then run /member-verify check to confirm via the official API.',
-      },
-      {
-        name: 'accounts',
-        usage: '/accounts list | /accounts set-main tag:<tag>',
-        description: 'List your linked accounts as main/alt and choose your main account.',
+          'Verify player ownership with a required default brawler icon, then list your linked accounts and choose your main.',
       },
       {
         name: 'delete-me',
         usage: '/delete-me',
         description: 'Permanently delete your BrawlHub identity data after confirmation.',
-      },
-      {
-        name: 'verify-info',
-        usage: '/verify-info',
-        description: 'Post the player verification guide in the current channel.',
-        permission: 'members:verify',
-      },
-      {
-        name: 'verify-settings',
-        usage: '/verify-settings',
-        description: 'Show this server’s verification settings.',
-        permission: 'members:verify',
       },
       {
         name: 'member-history',
@@ -238,22 +221,11 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         permission: 'clubs:write',
       },
       {
-        name: 'tag',
-        usage: '/tag set user:@USER tag:<tag>',
-        description: 'Staff-link a Discord user to a verified Brawl Stars player.',
-        permission: 'members:verify',
-      },
-      {
-        name: 'register-list',
-        usage: '/register-list',
-        description: 'List verified account links for this server’s tracked players.',
-        permission: 'members:verify',
-      },
-      {
-        name: 'find',
-        usage: '/find user @USER | /find tag <tag>',
-        description: 'Find a verified account link in this server.',
-        permission: 'members:verify',
+        name: 'verify',
+        usage:
+          '/verify info | /verify settings | /verify list | /verify tag set | /verify find user',
+        description: 'Post the verification guide, view settings and manage verified account links.',
+        permission: 'members:verify for management actions',
       },
       {
         name: 'unverify-one',
@@ -269,14 +241,8 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       },
       {
         name: 'sync',
-        usage: '/sync',
-        description: 'Run the existing all-clubs synchronisation pipeline.',
-        permission: 'sync:run',
-      },
-      {
-        name: 'sync-status',
-        usage: '/sync-status',
-        description: 'Show the latest stored synchronisation status.',
+        usage: '/sync run | /sync status',
+        description: 'Run the all-clubs synchronisation pipeline or show the latest stored status.',
         permission: 'sync:run',
       },
       {
@@ -331,14 +297,10 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         description: 'Show this command directory.',
       },
       {
-        name: 'about',
-        usage: '/about',
-        description: 'Explain BrawlHub’s purpose, data sources and limitations.',
-      },
-      {
-        name: 'status',
-        usage: '/status',
-        description: 'Show safe public operational health information.',
+        name: 'info',
+        usage: '/info about | /info status',
+        description:
+          'Explain BrawlHub’s purpose, data sources and limitations, or show safe public health.',
       },
       {
         name: 'ping',

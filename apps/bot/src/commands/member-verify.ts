@@ -91,7 +91,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     `**Verification started for ${challenge.playerName} (${formatTag(challenge.playerTag)})**`,
     '',
     `1. Open Brawl Stars and change your **player icon** to **${icon.name}** (shown below).`,
-    '2. Wait a moment for the official API to update, then run `/member-verify check`.',
+    '2. Wait a moment for the official API to update, then run `/account verify check`.',
     `3. This challenge expires ${formatExpiry(challenge.expiresAt)}.`,
     '',
     `Starting icon detected by the official API: \`${challenge.startingIconId}\``,
@@ -131,7 +131,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
       '',
       `Current icon ID from the official API: \`${result.currentIconId}\``,
       `Required icon: **${icon.name}** (ID \`${icon.id}\`)`,
-      `Set your in-game player icon to **${icon.name}** (shown below), wait briefly, then run \`/member-verify check\` again.`,
+      `Set your in-game player icon to **${icon.name}** (shown below), wait briefly, then run \`/account verify check\` again.`,
       'Changing to any other icon will not verify ownership.',
       `Challenge expires ${formatExpiry(result.expiresAt)}.`,
     ];
@@ -168,7 +168,7 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
   const challenge = getVerificationChallenge({ discordUserId: interaction.user.id });
   if (challenge === null) {
     await interaction.editReply({
-      content: 'No active verification challenge. Run `/member-verify start tag:<player-tag>` to begin.',
+      content: 'No active verification challenge. Run `/account verify start tag:<player-tag>` to begin.',
     });
     return;
   }
@@ -184,7 +184,7 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
       `Starting icon ID: \`${challenge.startingIconId}\`\n` +
       `Required icon: **${icon.name}** (ID \`${icon.id}\`) — default brawler icon\n` +
       `Expires: ${formatExpiry(challenge.expiresAt)}\n\n` +
-      `Set your in-game icon to **${icon.name}** (shown below), then run \`/member-verify check\`. Changing to any other icon will not verify.`,
+      `Set your in-game icon to **${icon.name}** (shown below), then run \`/account verify check\`. Changing to any other icon will not verify.`,
     embeds: [targetIconEmbed(icon)],
   });
 }
@@ -210,7 +210,7 @@ export async function handleMemberVerify(interaction: ChatInputCommandInteractio
       return;
     default:
       await interaction.editReply({
-        content: 'Unknown verification action. Use `/member-verify start`, `check`, `cancel`, or `status`.',
+        content: 'Unknown verification action. Use `/account verify start`, `check`, `cancel`, or `status`.',
       });
   }
 }
