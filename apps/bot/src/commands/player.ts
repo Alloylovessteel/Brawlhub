@@ -30,7 +30,7 @@ export async function handleMe(interaction: ChatInputCommandInteraction): Promis
       if (verified === null) {
         await interaction.editReply({
           content:
-            'You do not have a verified Brawl Stars player yet. Use `/account verify start tag:YOURTAG` to link one, or pass `tag:` explicitly.',
+            'You do not have a verified Brawl Stars player yet. Use `/members account verify start tag:YOURTAG` to link one, or pass `tag:` explicitly.',
           allowedMentions: { parse: [] },
         });
         return;

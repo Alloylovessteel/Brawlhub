@@ -77,7 +77,7 @@ export interface BrawlerAccessoryView {
   readonly level: number | null;
 }
 
-/** Lossless brawler detail used by `/brawlers` and `/brawler`. */
+/** Lossless brawler detail used by `/brawlers list` and `/brawlers detail`. */
 export interface PlayerBrawlerDetail {
   readonly id: number | null;
   readonly name: string;

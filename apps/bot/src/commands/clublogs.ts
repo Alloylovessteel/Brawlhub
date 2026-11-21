@@ -142,7 +142,7 @@ export async function handleClubLogs(interaction: ChatInputCommandInteraction): 
     }
 
     await interaction.editReply({
-      content: 'Choose `/clublogs add`, `/clublogs remove`, or `/clublogs list`.',
+      content: 'Choose `/clubs logs add`, `/clubs logs remove`, or `/clubs logs list`.',
       allowedMentions: { parse: [] },
     });
   } catch (error) {

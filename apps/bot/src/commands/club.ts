@@ -142,7 +142,7 @@ export interface ClubDetailsReply {
   readonly failure?: ClubLookupFailure;
 }
 
-/** Shared renderer for the club overview select menu and the `/club` overview section. */
+/** Shared renderer for the club overview select menu and the `/clubs details` overview section. */
 export async function buildClubDetailsReply(
   tag: string | undefined,
   guildId: string | null,
@@ -174,7 +174,7 @@ export async function buildClubDetailsReply(
     return {
       content:
         'More than one club is registered in this server. ' +
-        'Use the club chooser or `/club tag:<tag>` to choose one.',
+        'Use the club chooser or `/clubs details tag:<tag>` to choose one.',
       embeds: [],
       failure: result,
     };
@@ -217,7 +217,7 @@ function isClubMemberFilter(value: string): value is ClubMemberFilter {
   return FILTER_CHOICES.some((choice) => choice.value === value);
 }
 
-/** Encode the exact `/club` lookup into a compact, Discord-safe pagination state. */
+/** Encode the exact `/clubs details` lookup into a compact, Discord-safe pagination state. */
 function encodeSectionState(state: ClubSectionState): string {
   const member = (state.member ?? '').replace(/[^a-zA-Z0-9 ]/g, '').trim().slice(0, 24) || '-';
   return [
@@ -253,7 +253,7 @@ function failureReply(failure: ClubLookupFailure): ClubSectionReply {
   return { kind: 'lookup-failure', failure };
 }
 
-/** Build the requested `/club` section, with stored-data-only details and previous members. */
+/** Build the requested `/clubs details` section, with stored-data-only details and previous members. */
 async function buildClubSectionReply(
   input: ClubSectionState & { readonly guildId: string | null },
   config: BotConfig,
@@ -320,7 +320,7 @@ async function buildClubSectionReply(
   return { kind: 'ok', ...(content === undefined ? {} : { content }), embeds, components };
 }
 
-/** Handle `/club` with optional sections, sorting, filters and previous members. */
+/** Handle `/clubs details` with optional sections, sorting, filters and previous members. */
 export async function handleClub(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply();
   const config = getBotConfig();

@@ -109,23 +109,39 @@ beforeEach(() => {
 });
 
 describe('command registration', () => {
-  it('registers the consolidated account, verify and info commands', () => {
+  it('registers the consolidated Option 3 anchors', () => {
     const names = commands.map((command) => command.data.name);
-    expect(names).toContain('help');
-    expect(names).toContain('account');
-    expect(names).toContain('verify');
-    expect(names).toContain('info');
+    for (const anchor of ['clubs', 'me', 'brawlers', 'player', 'members', 'help']) {
+      expect(names).toContain(anchor);
+    }
     for (const retired of [
       'about',
       'status',
-      'accounts',
-      'member-verify',
-      'verify-info',
-      'verify-settings',
-      'sync-status',
-      'tag',
-      'register-list',
-      'find',
+      'account',
+      'verify',
+      'info',
+      'ping',
+      'club',
+      'club-members',
+      'club-leaderboard',
+      'club-log',
+      'club-history',
+      'club-compare',
+      'view',
+      'club-overview',
+      'clublogs',
+      'register-club',
+      'remove-club',
+      'player-history',
+      'player-battles',
+      'player-clubs',
+      'player-compare',
+      'brawler',
+      'delete-me',
+      'member-history',
+      'member-search',
+      'unverify-one',
+      'unverify-all',
     ]) {
       expect(names).not.toContain(retired);
     }
@@ -225,7 +241,7 @@ describe('/help', () => {
   });
 });
 
-describe('/info about', () => {
+describe('/help about', () => {
   it('states the project purpose, data sources and limitations honestly', async () => {
     const interaction = chat();
 
@@ -252,7 +268,7 @@ describe('/info about', () => {
   });
 });
 
-describe('/info status', () => {
+describe('/help status', () => {
   it('shows real loaded status information without requiring admin permission', async () => {
     const interaction = chat();
 

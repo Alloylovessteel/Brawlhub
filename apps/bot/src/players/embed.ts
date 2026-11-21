@@ -401,7 +401,7 @@ function accessoryLine(name: string, items: readonly { readonly name: string | n
   return `• ${name}: ${escapeMarkdown(labels.join(', '))}${extra}`;
 }
 
-/** Build the paginated `/brawlers` roster embed from full official brawler data. */
+/** Build the paginated `/brawlers list` roster embed from full official brawler data. */
 export function buildPlayerBrawlersPageEmbed(
   view: PlayerBrawlersView,
   page: Page<PlayerBrawlerDetail>,
@@ -449,7 +449,7 @@ export function buildPlayerBrawlersPageEmbed(
   return fitEmbedToDiscordLimits(embed);
 }
 
-/** Build the detailed `/brawler` embed. Official API supplies no class/rarity text. */
+/** Build the detailed `/brawlers detail` embed. Official API supplies no class/rarity text. */
 export function buildBrawlerDetailEmbed(
   view: PlayerBrawlersView,
   brawler: PlayerBrawlerDetail,
@@ -507,7 +507,7 @@ export function buildBrawlerDetailEmbed(
   return fitEmbedToDiscordLimits(embed);
 }
 
-/** Build a paginated `/player-history` embed. */
+/** Build a paginated `/player history` embed. */
 export function buildPlayerHistoryPageEmbed(
   view: PlayerHistoryView,
   page: Page<PlayerHistoryView['points'][number]>,
@@ -626,7 +626,7 @@ function battleResultLabel(result: string | null): string {
   }
 }
 
-/** Build a paginated `/player-battles` embed from stored battle-log rows. */
+/** Build a paginated `/player battles` embed from stored battle-log rows. */
 export function buildPlayerBattlesPageEmbed(
   view: PlayerBattleHistoryView,
   page: Page<PlayerBattleRecord>,
@@ -700,7 +700,7 @@ export function buildPlayerBattlesPageEmbed(
   return fitEmbedToDiscordLimits(embed);
 }
 
-/** Build a paginated `/player-clubs` embed. */
+/** Build a paginated `/player clubs` embed. */
 export function buildPlayerClubsPageEmbed(
   view: PlayerClubsView,
   page: Page<PlayerMembershipRecord>,
@@ -806,7 +806,7 @@ function addComparisonMetric(
   embed.addFields({ name, value: truncate(lines.join('\n'), 1024) });
 }
 
-/** Build the `/player-compare` embed. */
+/** Build the `/player compare` embed. */
 export function buildPlayerCompareEmbed(
   view: PlayerComparisonView,
   config: PlayerEmbedConfig,
@@ -982,7 +982,7 @@ export function buildMeBrawlersEmbed(
     .setTitle(truncate(`${playerName(view, config)} — Brawler Overview`, 256))
     .setFooter({
       text: truncate(
-        `Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total} • Use /brawler name:BRAWLER for full details`,
+        `Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total} • Use /brawlers detail name:BRAWLER for full details`,
         2048,
       ),
     });

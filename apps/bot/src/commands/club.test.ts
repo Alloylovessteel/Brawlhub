@@ -181,7 +181,7 @@ beforeEach(() => {
   mocks.resolveClubBadgeUrl.mockReset().mockResolvedValue(null);
 });
 
-describe('/club command', () => {
+describe('/clubs details command', () => {
   it('uses the only registered club when no tag is supplied', async () => {
     mocks.service.loadClubView.mockResolvedValue(okView());
     const interaction = chatInteraction();
@@ -252,7 +252,7 @@ describe('/club command', () => {
     );
   });
 
-  it('preserves /club options when resolving a tagless lookup through the chooser', async () => {
+  it('preserves /clubs details options when resolving a tagless lookup through the chooser', async () => {
     const base = {
       ...okView().view,
       rosterSource: 'snapshot' as const,

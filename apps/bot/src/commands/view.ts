@@ -139,7 +139,7 @@ export async function handleView(interaction: ChatInputCommandInteraction): Prom
     if (club === null) {
       await interaction.editReply({
         content:
-          'That club is not registered in this server. An authorised user must register it first with `/register-club`.',
+          'That club is not registered in this server. An authorised user must register it first with `/clubs register`.',
         components: [],
       });
       return;
@@ -187,7 +187,7 @@ export async function handleView(interaction: ChatInputCommandInteraction): Prom
       return;
     }
 
-    await interaction.editReply({ content: 'Unknown `/view` action.', components: [] });
+    await interaction.editReply({ content: 'Unknown `/clubs view` action.', components: [] });
   } catch (error) {
     await replyAdminError(interaction, error);
   }

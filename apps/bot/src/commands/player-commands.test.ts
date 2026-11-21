@@ -269,7 +269,7 @@ describe('/me command', () => {
     await handleMe(interaction);
 
     expect(mocks.service.loadPlayerProfile).not.toHaveBeenCalled();
-    expect(payload(interaction, 'editReply').content).toContain('/account verify start');
+    expect(payload(interaction, 'editReply').content).toContain('/members account verify start');
   });
 
   it('loads and renders a player profile with a Brawlify link', async () => {
@@ -333,7 +333,7 @@ describe('/me command', () => {
   });
 });
 
-describe('/player-history command', () => {
+describe('/player history command', () => {
   it('defaults to 30 days and keeps period/tag in pagination state', async () => {
     mocks.service.loadPlayerHistory.mockResolvedValue(historyResult(12));
     const interaction = chatInteraction({ tag: '#2c0y' });
@@ -370,7 +370,7 @@ describe('/player-history command', () => {
   });
 });
 
-describe('/player-battles command', () => {
+describe('/player battles command', () => {
   it('defaults to 30 days and keeps period/tag in pagination state', async () => {
     mocks.service.loadPlayerBattles.mockResolvedValue(battlesResult(12));
     const interaction = chatInteraction({ tag: '#2c0y' });
@@ -435,7 +435,7 @@ describe('/player-battles command', () => {
   });
 });
 
-describe('/player-clubs command', () => {
+describe('/player clubs command', () => {
   it('paginates stored memberships and preserves the tag', async () => {
     mocks.service.loadPlayerClubs.mockResolvedValue(clubsResult(12));
     const button = buttonInteraction('player-clubs:page:2:2C0Y');
@@ -467,7 +467,7 @@ describe('/player-clubs command', () => {
   });
 });
 
-describe('/player-compare command', () => {
+describe('/player compare command', () => {
   it('compares two players and shows the alignment warning when needed', async () => {
     mocks.service.loadPlayerCompare.mockResolvedValue(compareResult(false));
     const interaction = chatInteraction({ first: '2C0Y', second: 'Q8VR' });

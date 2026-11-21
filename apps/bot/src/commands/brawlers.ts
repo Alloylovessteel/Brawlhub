@@ -306,7 +306,7 @@ async function buildDetailPayload(
 async function replyExpired(interaction: CommandComponentInteraction): Promise<void> {
   if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
   await interaction.editReply({
-    content: 'This brawler view has expired. Run `/brawlers` again.',
+    content: 'This brawler view has expired. Run `/brawlers list` again.',
     embeds: [],
     components: [],
     allowedMentions: { parse: [] },
@@ -320,7 +320,7 @@ export async function handleBrawlers(interaction: ChatInputCommandInteraction): 
     await interaction.editReply({
       content:
         'No player tag was supplied and no verified Brawl Stars player is linked to you. ' +
-        'Use `/brawlers tag:YOURTAG` or verify with `/account verify start tag:YOURTAG`.',
+        'Use `/brawlers list tag:YOURTAG` or verify with `/members account verify start tag:YOURTAG`.',
       allowedMentions: { parse: [] },
     });
     return;
@@ -361,7 +361,7 @@ export async function handleBrawler(interaction: ChatInputCommandInteraction): P
     await interaction.editReply({
       content:
         'No player tag was supplied and no verified Brawl Stars player is linked to you. ' +
-        'Use `/brawler name:BRAWLER tag:YOURTAG` or verify with `/account verify start tag:YOURTAG`.',
+        'Use `/brawlers detail name:BRAWLER tag:YOURTAG` or verify with `/members account verify start tag:YOURTAG`.',
       allowedMentions: { parse: [] },
     });
     return;

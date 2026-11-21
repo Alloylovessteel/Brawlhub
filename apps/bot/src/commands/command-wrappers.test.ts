@@ -61,7 +61,7 @@ beforeEach(() => {
 });
 
 describe('consolidated command data', () => {
-  it('defines /account list, set-main and the verify group', () => {
+  it('defines /members account list, set-main and the verify group', () => {
     const json = accountCommandData.toJSON() as any;
     expect(json.name).toBe('account');
     expect(json.options.map((option: any) => option.name)).toEqual(['list', 'set-main', 'verify']);
@@ -73,7 +73,7 @@ describe('consolidated command data', () => {
     ]);
   });
 
-  it('defines /verify info, settings, list, tag and find actions', () => {
+  it('defines /members verify info, settings, list, tag and find actions', () => {
     const json = verifyCommandData.toJSON() as any;
     expect(json.name).toBe('verify');
     expect(json.options.map((option: any) => option.name)).toEqual([
@@ -87,14 +87,14 @@ describe('consolidated command data', () => {
     expect(json.options[4].options.map((option: any) => option.name)).toEqual(['user', 'tag']);
   });
 
-  it('defines /info about and status', () => {
+  it('defines /help about and status', () => {
     const json = infoCommandData.toJSON() as any;
     expect(json.name).toBe('info');
     expect(json.options.map((option: any) => option.name)).toEqual(['about', 'status']);
   });
 });
 
-describe('/account dispatch', () => {
+describe('/members account dispatch', () => {
   it('routes account management to the existing handler', async () => {
     await handleAccount(chat(null, 'list'));
 
@@ -125,7 +125,7 @@ describe('/account dispatch', () => {
   });
 });
 
-describe('/verify dispatch', () => {
+describe('/members verify dispatch', () => {
   it.each([
     ['info', 'handleVerifyInfo'],
     ['settings', 'handleVerifySettings'],
@@ -159,7 +159,7 @@ describe('/verify dispatch', () => {
   });
 });
 
-describe('/info dispatch', () => {
+describe('/help dispatch', () => {
   it.each([
     ['about', 'handleAbout'],
     ['status', 'handleStatus'],

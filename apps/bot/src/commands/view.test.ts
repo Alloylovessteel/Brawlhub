@@ -176,7 +176,7 @@ beforeEach(() => {
   mocks.permissions.getInteractionMemberRoleIds.mockReturnValue(null);
 });
 
-describe('/view command data', () => {
+describe('/clubs view command data', () => {
   it('registers flat add, remove and list subcommands', () => {
     const json = viewCommandData.toJSON() as any;
 
@@ -189,7 +189,7 @@ describe('/view command data', () => {
   });
 });
 
-describe('/view permission handling', () => {
+describe('/clubs view permission handling', () => {
   it('defers ephemerally and denies users without clubs:write', async () => {
     mocks.service.requireGlobalPermission.mockRejectedValueOnce(forbidden());
     const interaction = chat('list');
@@ -218,11 +218,11 @@ describe('/view permission handling', () => {
       'clubs:write',
       expect.objectContaining({ guildId: GUILD_ID }),
     );
-    expect(payload(interaction, 'editReply').content).toContain('Unknown `/view` action');
+    expect(payload(interaction, 'editReply').content).toContain('Unknown `/clubs view` action');
   });
 });
 
-describe('/view list', () => {
+describe('/clubs view list', () => {
   it('renders the current overview and refreshes without posting a second message', async () => {
     const summaries = [{ club: CLUB_A }];
     mocks.viewTags.loadViewTagSummaries.mockResolvedValue(summaries);
@@ -259,7 +259,7 @@ describe('/view list', () => {
   });
 });
 
-describe('/view add', () => {
+describe('/clubs view add', () => {
   it('resolves a club tag to a registered club and adds it', async () => {
     const interaction = chat('add', { tag: '#2ug9' });
 
@@ -326,7 +326,7 @@ describe('/view add', () => {
   });
 });
 
-describe('/view remove', () => {
+describe('/clubs view remove', () => {
   it('removes the club and reports that it remains registered', async () => {
     const interaction = chat('remove', { tag: '2UG9' });
 
@@ -358,7 +358,7 @@ describe('/view remove', () => {
   });
 });
 
-describe('/view unregistered clubs', () => {
+describe('/clubs view unregistered clubs', () => {
   it('refuses to add or remove a club that is not registered in the guild', async () => {
     mocks.clubs.getRegisteredClubs.mockResolvedValue([]);
     const add = chat('add', { tag: 'ZZZZ' });
@@ -376,7 +376,7 @@ describe('/view unregistered clubs', () => {
   });
 });
 
-describe('/view autocomplete', () => {
+describe('/clubs view autocomplete', () => {
   it('offers all registered clubs for add', async () => {
     const interaction = autocomplete('add', 'tag', '');
 

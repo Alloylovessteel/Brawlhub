@@ -209,7 +209,7 @@ beforeEach(() => {
   mocks.service.filterRegisteredClubs.mockReset();
 });
 
-describe('/club-history command', () => {
+describe('/clubs history command', () => {
   it('defaults to 30 days and pages stored snapshots with the period in state', async () => {
     mocks.service.loadHistoryView.mockResolvedValue(historyResult(12));
     const interaction = chatInteraction({ tag: '#2c0y' });
@@ -301,7 +301,7 @@ describe('/club-history command', () => {
   });
 });
 
-describe('/club-compare command', () => {
+describe('/clubs compare command', () => {
   it('loads and compares two registered clubs', async () => {
     mocks.service.loadCompareView.mockResolvedValue(compareResult(true));
     const interaction = chatInteraction({ first: '2C0Y', second: 'Q8VR' });

@@ -213,7 +213,7 @@ export interface ViewTagsEmbedInput extends ClubOverviewEmbedInput {
   readonly detail: string | null;
 }
 
-/** Reply embed for `/view add|remove|list`, built from stored official data. */
+/** Reply embed for `/clubs view add|remove|list`, built from stored official data. */
 export function buildViewTagsEmbed(input: ViewTagsEmbedInput): EmbedBuilder {
   const emoji = clubEmojis(input.config);
   const totals = aggregateViewTags(input.trackedSummaries);
@@ -223,7 +223,7 @@ export function buildViewTagsEmbed(input: ViewTagsEmbedInput): EmbedBuilder {
     .setDescription(
       truncate(
         input.detail ??
-          'Manage the clubs shown in this server’s auto-updating overview with `/view add|remove`.',
+          'Manage the clubs shown in this server’s auto-updating overview with `/clubs view add|remove`.',
         2048,
       ),
     )

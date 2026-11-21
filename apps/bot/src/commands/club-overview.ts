@@ -153,7 +153,7 @@ async function refreshAfterChange(context: OverviewMenuContext): Promise<void> {
 export async function handleClubOverview(interaction: ChatInputCommandInteraction): Promise<void> {
   try {
     if (interaction.options.getSubcommand(false) !== 'menu') {
-      await interaction.reply({ content: 'Choose `/club-overview menu`.', flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: 'Choose `/clubs fields`.', flags: MessageFlags.Ephemeral });
       return;
     }
     const context = await requireOverviewPermission(interaction);

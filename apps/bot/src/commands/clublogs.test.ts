@@ -119,7 +119,7 @@ beforeEach(() => {
   mocks.permissions.getInteractionMemberRoleIds.mockReturnValue(null);
 });
 
-describe('/clublogs command data', () => {
+describe('/clubs logs command data', () => {
   it('registers add, remove and list with the expected options', () => {
     const json = clubLogsCommandData.toJSON() as unknown as {
       name: string;
@@ -140,7 +140,7 @@ describe('/clublogs command data', () => {
   });
 });
 
-describe('/clublogs permission gating', () => {
+describe('/clubs logs permission gating', () => {
   it('defers ephemerally and denies users without clubs:write', async () => {
     mocks.adminService.requireGlobalPermission.mockRejectedValueOnce(forbidden());
     const interaction = chat('list');
@@ -159,7 +159,7 @@ describe('/clublogs permission gating', () => {
   });
 });
 
-describe('/clublogs configuration', () => {
+describe('/clubs logs configuration', () => {
   it('adds a club log and replies with the updated configuration embed', async () => {
     const interaction = chat('add', { club: CLUB_ID });
 
@@ -190,7 +190,7 @@ describe('/clublogs configuration', () => {
   });
 });
 
-describe('/clublogs autocomplete', () => {
+describe('/clubs logs autocomplete', () => {
   it('requires permission and suggests this guild’s active clubs by UUID', async () => {
     const club = { id: CLUB_ID, tag: 'ALPHA', name: 'Alpha' };
     mocks.clubs.getRegisteredClubs.mockResolvedValue([club]);
@@ -219,7 +219,7 @@ describe('/clublogs autocomplete', () => {
   });
 });
 
-describe('/clublogs components', () => {
+describe('/clubs logs components', () => {
   it('has no component handling', async () => {
     await expect(handleClubLogsComponent({} as never)).resolves.toBeUndefined();
   });

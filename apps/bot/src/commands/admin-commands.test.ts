@@ -321,7 +321,7 @@ beforeEach(() => {
   mocks.rateLimit.checkBotRateLimit.mockReturnValue({ allowed: true, retryAfterSeconds: 0 });
 });
 
-describe('/register-club', () => {
+describe('/clubs register', () => {
   it('validates and previews official club data without registering', async () => {
     const interaction = chat(null, { tag: '#2ug9' });
 
@@ -723,7 +723,7 @@ describe('/audit', () => {
   });
 });
 
-describe('/remove-club archival', () => {
+describe('/clubs remove archival', () => {
   it('previews archival without changing club data', async () => {
     const interaction = chat(null, { club: CLUB_ID });
 

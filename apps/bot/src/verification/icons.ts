@@ -149,7 +149,7 @@ function toDisplayBrawlerName(officialName: string): string {
 /**
  * Load the current default brawler icon pool.
  *
- * Official `/brawlers` provides the authoritative brawler names and IDs;
+ * Official `/brawlers list` provides the authoritative brawler names and IDs;
  * BrawlAPI `/v1/icons` supplies the profile-icon image URLs that the official
  * API does not expose. Any failure falls back to the bundled icon list so
  * verification remains available offline.

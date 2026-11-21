@@ -18,45 +18,23 @@ import {
   safeErrorMessage,
 } from '../discord/errors.js';
 import {
-  clubCommandData,
-  handleClub,
-  handleClubAutocomplete,
-  handleClubComponent,
-} from './club.js';
-import {
-  clubsCommandData,
-  handleClubs,
-  handleClubsComponent,
-} from './clubs.js';
-import {
-  clubMembersCommandData,
-  handleClubMembers,
-  handleClubMembersAutocomplete,
-  handleClubMembersComponent,
-} from './club-members.js';
-import {
-  clubLeaderboardCommandData,
-  handleClubLeaderboard,
-  handleClubLeaderboardAutocomplete,
-  handleClubLeaderboardComponent,
-} from './club-leaderboard.js';
-import {
-  clubLogCommandData,
-  handleClubLog,
-  handleClubLogAutocomplete,
-  handleClubLogComponent,
-} from './club-log.js';
-import {
-  clubHistoryCommandData,
-  handleClubHistory,
-  handleClubHistoryAutocomplete,
-  handleClubHistoryComponent,
-} from './club-history.js';
-import {
-  clubCompareCommandData,
-  handleClubCompare,
-  handleClubCompareAutocomplete,
-} from './club-compare.js';
+  brawlersAnchorData,
+  clubsAnchorData,
+  handleAnchoredComponent,
+  handleBrawlersAnchor,
+  handleBrawlersAnchorAutocomplete,
+  handleClubsAnchor,
+  handleClubsAnchorAutocomplete,
+  handleHelpAnchor,
+  handleMembersAnchor,
+  handleMembersAnchorAutocomplete,
+  handlePlayerAnchor,
+  handlePlayerAnchorAutocomplete,
+  helpAnchorData,
+  membersAnchorData,
+  playerAnchorData,
+} from './option3/anchors.js';
+import { resolveLegacyComponentCommand } from './option3/component-router.js';
 import {
   eventsCommandData,
   handleEvents,
@@ -69,37 +47,6 @@ import {
 } from './player.js';
 import { handleMeComponent } from './me-components.js';
 import {
-  playerHistoryCommandData,
-  handlePlayerHistory,
-  handlePlayerHistoryAutocomplete,
-  handlePlayerHistoryComponent,
-} from './player-history.js';
-import {
-  playerBattlesCommandData,
-  handlePlayerBattles,
-  handlePlayerBattlesAutocomplete,
-  handlePlayerBattlesComponent,
-} from './player-battles.js';
-import {
-  brawlersCommandData,
-  brawlerCommandData,
-  handleBrawlers,
-  handleBrawlersAutocomplete,
-  handleBrawlersComponent,
-  handleBrawler,
-} from './brawlers.js';
-import {
-  playerClubsCommandData,
-  handlePlayerClubs,
-  handlePlayerClubsAutocomplete,
-  handlePlayerClubsComponent,
-} from './player-clubs.js';
-import {
-  playerCompareCommandData,
-  handlePlayerCompare,
-  handlePlayerCompareAutocomplete,
-} from './player-compare.js';
-import {
   leaderboardCommandData,
   handleLeaderboard,
   handleLeaderboardComponent,
@@ -111,91 +58,14 @@ import {
   competitionCommandData,
 } from './competition.js';
 import {
-  membersCommandData,
-  handleMembers,
-  handleMembersAutocomplete,
-  handleMembersComponent,
-} from './members.js';
-import {
-  accountCommandData,
-  handleAccount,
-  handleAccountAutocomplete,
-} from './account.js';
-import { verifyCommandData, handleVerify } from './verify.js';
-import {
-  unverifyOneCommandData,
-  handleUnverifyOne,
-  handleUnverifyOneComponent,
-  unverifyAllCommandData,
-  handleUnverifyAll,
-  handleUnverifyAllComponent,
-} from './admin-identity.js';
-import {
-  deleteMeCommandData,
-  handleDeleteMe,
-  handleDeleteMeComponent,
-} from './delete-me.js';
-import {
-  memberHistoryCommandData,
-  handleMemberHistory,
-  handleMemberHistoryAutocomplete,
-  handleMemberHistoryComponent,
-} from './member-history.js';
-import {
-  memberSearchCommandData,
-  handleMemberSearch,
-  handleMemberSearchAutocomplete,
-  handleMemberSearchComponent,
-} from './member-search.js';
-import {
-  blacklistCommandData,
-  handleBlacklist,
-  handleBlacklistAutocomplete,
-  handleBlacklistComponent,
-} from './blacklist.js';
-import {
   staffCommandData,
   handleStaff,
   handleStaffComponent,
 } from './staff.js';
-import {
-  registerClubCommandData,
-  handleRegisterClub,
-  handleRegisterClubComponent,
-} from './register-club.js';
 import { syncCommandData, handleSyncCommand } from './sync.js';
 import { settingsCommandData, handleSettings, handleSettingsComponent } from './settings.js';
 import { inactivityCommandData, handleInactivity } from './inactivity.js';
 import { auditCommandData, handleAudit, handleAuditComponent } from './audit.js';
-import {
-  removeClubCommandData,
-  handleRemoveClub,
-  handleRemoveClubAutocomplete,
-  handleRemoveClubComponent,
-} from './remove-club.js';
-import {
-  viewCommandData,
-  handleView,
-  handleViewAutocomplete,
-} from './view.js';
-import {
-  clubOverviewCommandData,
-  handleClubOverview,
-  handleClubOverviewComponent,
-} from './club-overview.js';
-import {
-  clubLogsCommandData,
-  handleClubLogs,
-  handleClubLogsAutocomplete,
-  handleClubLogsComponent,
-} from './clublogs.js';
-import { handlePing } from './ping.js';
-import {
-  helpCommandData,
-  handleHelp,
-  handleHelpComponent,
-} from './help.js';
-import { infoCommandData, handleInfo } from './info.js';
 import {
   fnCommandData,
   handleFn,
@@ -212,6 +82,12 @@ import {
   handleUpdateComponent,
 } from './update.js';
 import { clubRolesCommandData, handleClubRoles } from './club-roles.js';
+import {
+  blacklistCommandData,
+  handleBlacklist,
+  handleBlacklistAutocomplete,
+  handleBlacklistComponent,
+} from './blacklist.js';
 
 const logger = createLogger('bot');
 
@@ -234,71 +110,10 @@ export interface CommandDefinition {
 
 export const commands: readonly CommandDefinition[] = [
   {
-    data: new SlashCommandBuilder()
-      .setName('ping')
-      .setDescription('Check that BrawlHub bot is online'),
-    handle: handlePing,
-  },
-  {
-    data: clubCommandData,
-    handle: handleClub,
-    autocomplete: handleClubAutocomplete,
-    handleComponent: handleClubComponent,
-  },
-  {
-    data: clubsCommandData,
-    handle: handleClubs,
-    handleComponent: handleClubsComponent,
-  },
-  {
-    data: clubMembersCommandData,
-    handle: handleClubMembers,
-    autocomplete: handleClubMembersAutocomplete,
-    handleComponent: handleClubMembersComponent,
-  },
-  {
-    data: clubLeaderboardCommandData,
-    handle: handleClubLeaderboard,
-    autocomplete: handleClubLeaderboardAutocomplete,
-    handleComponent: handleClubLeaderboardComponent,
-  },
-  {
-    data: clubLogCommandData,
-    handle: handleClubLog,
-    autocomplete: handleClubLogAutocomplete,
-    handleComponent: handleClubLogComponent,
-  },
-  {
-    data: clubHistoryCommandData,
-    handle: handleClubHistory,
-    autocomplete: handleClubHistoryAutocomplete,
-    handleComponent: handleClubHistoryComponent,
-  },
-  {
-    data: clubCompareCommandData,
-    handle: handleClubCompare,
-    autocomplete: handleClubCompareAutocomplete,
-  },
-  {
-    data: viewCommandData,
-    handle: handleView,
-    autocomplete: handleViewAutocomplete,
-  },
-  {
-    data: clubOverviewCommandData,
-    handle: handleClubOverview,
-    handleComponent: handleClubOverviewComponent,
-  },
-  {
-    data: clubLogsCommandData,
-    handle: handleClubLogs,
-    autocomplete: handleClubLogsAutocomplete,
-    handleComponent: handleClubLogsComponent,
-  },
-  {
-    data: eventsCommandData,
-    handle: handleEvents,
-    handleComponent: handleEventsComponent,
+    data: clubsAnchorData,
+    handle: handleClubsAnchor,
+    autocomplete: handleClubsAnchorAutocomplete,
+    handleComponent: handleAnchoredComponent,
   },
   {
     data: meCommandData,
@@ -307,43 +122,26 @@ export const commands: readonly CommandDefinition[] = [
     handleComponent: handleMeComponent,
   },
   {
-    data: playerHistoryCommandData,
-    handle: handlePlayerHistory,
-    autocomplete: handlePlayerHistoryAutocomplete,
-    handleComponent: handlePlayerHistoryComponent,
+    data: brawlersAnchorData,
+    handle: handleBrawlersAnchor,
+    autocomplete: handleBrawlersAnchorAutocomplete,
+    handleComponent: handleAnchoredComponent,
   },
   {
-    data: playerBattlesCommandData,
-    handle: handlePlayerBattles,
-    autocomplete: handlePlayerBattlesAutocomplete,
-    handleComponent: handlePlayerBattlesComponent,
-  },
-  {
-    data: brawlersCommandData,
-    handle: handleBrawlers,
-    autocomplete: handleBrawlersAutocomplete,
-    handleComponent: handleBrawlersComponent,
-  },
-  {
-    data: brawlerCommandData,
-    handle: handleBrawler,
-    autocomplete: handleBrawlersAutocomplete,
-  },
-  {
-    data: playerClubsCommandData,
-    handle: handlePlayerClubs,
-    autocomplete: handlePlayerClubsAutocomplete,
-    handleComponent: handlePlayerClubsComponent,
-  },
-  {
-    data: playerCompareCommandData,
-    handle: handlePlayerCompare,
-    autocomplete: handlePlayerCompareAutocomplete,
+    data: playerAnchorData,
+    handle: handlePlayerAnchor,
+    autocomplete: handlePlayerAnchorAutocomplete,
+    handleComponent: handleAnchoredComponent,
   },
   {
     data: leaderboardCommandData,
     handle: handleLeaderboard,
     handleComponent: handleLeaderboardComponent,
+  },
+  {
+    data: eventsCommandData,
+    handle: handleEvents,
+    handleComponent: handleEventsComponent,
   },
   {
     data: competitionCommandData,
@@ -352,56 +150,15 @@ export const commands: readonly CommandDefinition[] = [
     handleComponent: handleCompetitionComponent,
   },
   {
-    data: membersCommandData,
-    handle: handleMembers,
-    autocomplete: handleMembersAutocomplete,
-    handleComponent: handleMembersComponent,
-  },
-  {
-    data: accountCommandData,
-    handle: handleAccount,
-    autocomplete: handleAccountAutocomplete,
-  },
-  {
-    data: verifyCommandData,
-    handle: handleVerify,
-  },
-  {
-    data: unverifyOneCommandData,
-    handle: handleUnverifyOne,
-    handleComponent: handleUnverifyOneComponent,
-  },
-  {
-    data: unverifyAllCommandData,
-    handle: handleUnverifyAll,
-    handleComponent: handleUnverifyAllComponent,
-  },
-  {
-    data: deleteMeCommandData,
-    handle: handleDeleteMe,
-    handleComponent: handleDeleteMeComponent,
-  },
-  {
-    data: memberHistoryCommandData,
-    handle: handleMemberHistory,
-    autocomplete: handleMemberHistoryAutocomplete,
-    handleComponent: handleMemberHistoryComponent,
-  },
-  {
-    data: memberSearchCommandData,
-    handle: handleMemberSearch,
-    autocomplete: handleMemberSearchAutocomplete,
-    handleComponent: handleMemberSearchComponent,
+    data: membersAnchorData,
+    handle: handleMembersAnchor,
+    autocomplete: handleMembersAnchorAutocomplete,
+    handleComponent: handleAnchoredComponent,
   },
   {
     data: staffCommandData,
     handle: handleStaff,
     handleComponent: handleStaffComponent,
-  },
-  {
-    data: registerClubCommandData,
-    handle: handleRegisterClub,
-    handleComponent: handleRegisterClubComponent,
   },
   {
     data: syncCommandData,
@@ -422,19 +179,9 @@ export const commands: readonly CommandDefinition[] = [
     handleComponent: handleAuditComponent,
   },
   {
-    data: removeClubCommandData,
-    handle: handleRemoveClub,
-    autocomplete: handleRemoveClubAutocomplete,
-    handleComponent: handleRemoveClubComponent,
-  },
-  {
-    data: helpCommandData,
-    handle: handleHelp,
-    handleComponent: handleHelpComponent,
-  },
-  {
-    data: infoCommandData,
-    handle: handleInfo,
+    data: helpAnchorData,
+    handle: handleHelpAnchor,
+    handleComponent: handleAnchoredComponent,
   },
   {
     data: fnCommandData,
@@ -541,7 +288,10 @@ export async function dispatchInteraction(
 
   if (interaction.isButton() || interaction.isAnySelectMenu()) {
     const [commandName] = interaction.customId.split(':');
-    const command = definitions.find((candidate) => candidate.data.name === commandName);
+    const resolvedName = commandName === undefined ? undefined : resolveLegacyComponentCommand(commandName);
+    const command =
+      definitions.find((candidate) => candidate.data.name === commandName) ??
+      definitions.find((candidate) => candidate.data.name === resolvedName);
     if (command?.handleComponent === undefined) {
       return;
     }

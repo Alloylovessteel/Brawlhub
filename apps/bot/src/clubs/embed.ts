@@ -245,7 +245,7 @@ function progressionSummary(view: ClubView, config: EmbedConfig, now: Date): str
   return parts.length === 0 ? null : parts.join('  ');
 }
 
-/** Build the detailed `/club` embed. Static badge images are optional and best-effort. */
+/** Build the detailed `/clubs details` embed. Static badge images are optional and best-effort. */
 export function buildClubEmbed(
   view: ClubView,
   config: EmbedConfig,

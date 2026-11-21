@@ -190,7 +190,7 @@ describe('/brawlers handler', () => {
   });
 });
 
-describe('/brawler handler', () => {
+describe('/brawlers detail handler', () => {
   it('shows catalog brawlers with no profile stats without inventing values', async () => {
     const interaction = chat({ name: 'Nita' });
 

@@ -101,7 +101,7 @@ Register each club you want BrawlHub to track (after verifying the tag/name in t
 npm run clubs:register -- '#CLUBTAG1' '#CLUBTAG2'
 ```
 
-You can also register clubs by hand in Discord with `/register-club tag:<club-tag>` (requires `clubs:write` permission); it previews official API data and asks for confirmation before registering anything.
+You can also register clubs by hand in Discord with `/clubs register tag:<club-tag>` (requires `clubs:write` permission); it previews official API data and asks for confirmation before registering anything.
 
 Run a sync:
 
