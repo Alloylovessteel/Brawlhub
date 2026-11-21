@@ -1,14 +1,16 @@
 import { SlashCommandBuilder, type AutocompleteInteraction, type ChatInputCommandInteraction } from 'discord.js';
-import { buildPlayerProfileEmbed } from '../players/embed';
-import { loadPlayerProfile } from '../players/service';
-import { resolvePlayerIconUrl } from '../metadata/assets.js';
-import { getBotConfig } from '../config';
 import { findVerifiedPlayerForDiscordUser } from '../verification/index.js';
+import {
+  buildMeResponse,
+  createMeSession,
+  deleteMeSession,
+  type MeSessionInput,
+} from './me-components.js';
 import { replyPlayerLookupFailure, respondWithPlayerChoices } from './player-utils';
 
 export const meCommandData = new SlashCommandBuilder()
   .setName('me')
-  .setDescription('Show a Brawl Stars player profile')
+  .setDescription('Show an interactive Brawl Stars player overview')
   .addStringOption((option) =>
     option
       .setName('tag')
@@ -43,19 +45,28 @@ export async function handleMe(interaction: ChatInputCommandInteraction): Promis
     }
   }
 
-  const result = await loadPlayerProfile({
+  const guildId = interaction.guildId;
+  const isDm = guildId === null;
+  const session: MeSessionInput = {
+    guildId: guildId ?? '',
+    userId: interaction.user.id,
     tag,
-    guildId: interaction.guildId,
-  });
+    section: 'summary',
+    page: 1,
+  };
+  const nonce = isDm ? 'dm' : createMeSession(session);
+  const built = await buildMeResponse(session, nonce);
 
-  if (result.kind !== 'ok') {
-    await replyPlayerLookupFailure(interaction, result);
+  if (built.kind === 'lookup-failure') {
+    if (!isDm) deleteMeSession(nonce);
+    await replyPlayerLookupFailure(interaction, built.failure);
     return;
   }
 
-  const iconUrl = await resolvePlayerIconUrl(result.value.player.iconId);
   await interaction.editReply({
-    embeds: [buildPlayerProfileEmbed(result.value, getBotConfig(), iconUrl)],
+    ...built.payload,
+    // Components are guild-only: never expose actor-bound buttons in DMs.
+    components: isDm ? [] : built.payload.components,
     allowedMentions: { parse: [] },
   });
 }

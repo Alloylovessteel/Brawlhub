@@ -67,6 +67,7 @@ import {
   handleMe,
   handleMeAutocomplete,
 } from './player.js';
+import { handleMeComponent } from './me-components.js';
 import {
   playerHistoryCommandData,
   handlePlayerHistory,
@@ -79,6 +80,14 @@ import {
   handlePlayerBattlesAutocomplete,
   handlePlayerBattlesComponent,
 } from './player-battles.js';
+import {
+  brawlersCommandData,
+  brawlerCommandData,
+  handleBrawlers,
+  handleBrawlersAutocomplete,
+  handleBrawlersComponent,
+  handleBrawler,
+} from './brawlers.js';
 import {
   playerClubsCommandData,
   handlePlayerClubs,
@@ -309,6 +318,7 @@ export const commands: readonly CommandDefinition[] = [
     data: meCommandData,
     handle: handleMe,
     autocomplete: handleMeAutocomplete,
+    handleComponent: handleMeComponent,
   },
   {
     data: playerHistoryCommandData,
@@ -321,6 +331,17 @@ export const commands: readonly CommandDefinition[] = [
     handle: handlePlayerBattles,
     autocomplete: handlePlayerBattlesAutocomplete,
     handleComponent: handlePlayerBattlesComponent,
+  },
+  {
+    data: brawlersCommandData,
+    handle: handleBrawlers,
+    autocomplete: handleBrawlersAutocomplete,
+    handleComponent: handleBrawlersComponent,
+  },
+  {
+    data: brawlerCommandData,
+    handle: handleBrawler,
+    autocomplete: handleBrawlersAutocomplete,
   },
   {
     data: playerClubsCommandData,

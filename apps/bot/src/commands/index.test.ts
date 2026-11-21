@@ -75,6 +75,8 @@ describe('command registry', () => {
       'me',
       'player-history',
       'player-battles',
+      'brawlers',
+      'brawler',
       'player-clubs',
       'player-compare',
       'leaderboard',
@@ -120,13 +122,15 @@ describe('command registry', () => {
       'club-log',
       'club-history',
       'club-compare',
+      'brawlers',
+      'brawler',
       'members',
       'member-history',
       'member-search',
     ]) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf('function');
     }
-    for (const name of ['club-members', 'club-leaderboard', 'club-log', 'club-history', 'events', 'members', 'member-history', 'member-search', 'staff', 'register-club', 'settings', 'audit', 'help']) {
+    for (const name of ['club-members', 'club-leaderboard', 'club-log', 'club-history', 'events', 'me', 'brawlers', 'members', 'member-history', 'member-search', 'staff', 'register-club', 'settings', 'audit', 'help']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );

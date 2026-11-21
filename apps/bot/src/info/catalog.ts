@@ -84,7 +84,8 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       {
         name: 'me',
         usage: '/me [tag:PLAYERTAG]',
-        description: 'Show a player profile and club context. Leave tag blank to use your verified player.',
+        description:
+          'Show an interactive player overview with Summary, Brawlers and More sections. Leave tag blank to use your verified player.',
       },
       {
         name: 'player-history',
@@ -95,6 +96,17 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         name: 'player-battles',
         usage: '/player-battles tag:PLAYERTAG',
         description: 'Show stored battle-log history and results for a player.',
+      },
+      {
+        name: 'brawlers',
+        usage: '/brawlers [tag:PLAYERTAG] [sort:trophies] [filter:all]',
+        description:
+          'Show a player’s full brawler roster from official data, with sorting, filtering and detail views.',
+      },
+      {
+        name: 'brawler',
+        usage: '/brawler name:BRAWLER [tag:PLAYERTAG]',
+        description: 'Show official profile stats and accessories for one brawler.',
       },
       {
         name: 'player-clubs',

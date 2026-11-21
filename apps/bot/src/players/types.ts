@@ -70,6 +70,49 @@ export interface PlayerBrawler {
   readonly hyperCharges: number;
 }
 
+/** One accessory from the official player payload; names are never invented. */
+export interface BrawlerAccessoryView {
+  readonly id: number | null;
+  readonly name: string | null;
+  readonly level: number | null;
+}
+
+/** Lossless brawler detail used by `/brawlers` and `/brawler`. */
+export interface PlayerBrawlerDetail {
+  readonly id: number | null;
+  readonly name: string;
+  readonly trophies: number | null;
+  readonly highestTrophies: number | null;
+  readonly power: number | null;
+  readonly rank: number | null;
+  readonly prestigeLevel: number | null;
+  readonly currentWinStreak: number | null;
+  readonly maxWinStreak: number | null;
+  readonly gadgets: readonly BrawlerAccessoryView[];
+  readonly starPowers: readonly BrawlerAccessoryView[];
+  readonly gears: readonly BrawlerAccessoryView[];
+  readonly hyperCharges: readonly BrawlerAccessoryView[];
+}
+
+/** Minimal official catalog entry used for names and profile-completeness checks. */
+export interface OfficialBrawlerRef {
+  readonly id: number;
+  readonly name: string;
+}
+
+export type BrawlerSort = 'trophies' | 'highest' | 'power' | 'rank' | 'name';
+export type BrawlerFilter = 'all' | 'maxed' | 'ranked' | 'unowned';
+
+export interface PlayerBrawlersView {
+  readonly player: PlayerIdentity;
+  readonly brawlers: readonly PlayerBrawlerDetail[];
+  /** Official static catalog; contains names only, not stats, class or rarity. */
+  readonly catalog: readonly OfficialBrawlerRef[];
+  readonly source: 'live' | 'stored';
+  readonly apiIssue: PlayerApiIssue | null;
+  readonly fetchedAt: string | null;
+}
+
 export interface PlayerProfileStats {
   readonly brawlerCount: number | null;
   readonly totalPrestigeLevels: number | null;
@@ -157,6 +200,13 @@ export interface PlayerClubsView {
   readonly events: readonly PlayerMembershipEvent[];
   readonly latestSyncAt: string | null;
   readonly lastBattleAt: string | null;
+}
+
+/** Combined read-only data behind the interactive `/me` More section. */
+export interface PlayerHighlightsView {
+  readonly history: PlayerHistoryView;
+  readonly battles: PlayerBattleHistoryView;
+  readonly clubs: PlayerClubsView;
 }
 
 export interface PlayerComparisonSide {

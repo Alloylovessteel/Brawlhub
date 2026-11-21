@@ -61,6 +61,22 @@ export async function resolvePlayerIconUrl(
   }
 }
 
+/** Resolve a brawler portrait using BrawlAPI static metadata only. */
+export async function resolveBrawlerPortraitUrl(
+  brawlerName: string | null,
+  options: AssetLookupOptions = {},
+): Promise<string | null> {
+  if (brawlerName === null || brawlerName.trim() === '') return null;
+  try {
+    const assets = await (options.client ?? getGameAssetsClient()).resolveGameAssets({
+      brawlerName,
+    });
+    return assets.brawlerImageUrl;
+  } catch {
+    return null;
+  }
+}
+
 /** Test helper for resetting the shared client (also clears its cache). */
 export function resetGameAssetsClient(): void {
   sharedClient?.clearCache();
