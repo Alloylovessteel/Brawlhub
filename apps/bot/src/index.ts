@@ -13,6 +13,8 @@ import { markDiscordDisconnected, markDiscordReady } from './status/runtime.js';
 import { startClubOverviewSchedule } from './clubs/overview/service.js';
 import { startClubLogsSchedule } from './clubs/logs/poster.js';
 import { startReportsSchedule } from './reports/schedule.js';
+import { waitForInFlightWork } from './shutdown.js';
+import { startBattleRawRetentionSchedule } from './retention/schedule.js';
 
 const logger = createLogger('bot');
 
@@ -46,6 +48,20 @@ let syncTimer: ReturnType<typeof setInterval> | undefined;
 let stopOverviewSchedule: (() => void) | undefined;
 let stopClubLogsSchedule: (() => void) | undefined;
 let stopReportsSchedule: (() => void) | undefined;
+let stopRetentionSchedule: (() => void) | undefined;
+let activeSync: Promise<void> | undefined;
+
+const SHUTDOWN_SYNC_TIMEOUT_MS = 10_000;
+
+/** Start a scheduled sync and remember it so shutdown can drain it. */
+function startTrackedSync(): void {
+  const run = executeSync();
+  activeSync = run;
+  const clear = (): void => {
+    if (activeSync === run) activeSync = undefined;
+  };
+  void run.then(clear, clear);
+}
 
 /** Run scheduled sync for all guilds, skipping if a previous batch is running. */
 async function executeSync(): Promise<void> {
@@ -106,10 +122,10 @@ async function recoverSyncState(): Promise<void> {
 
 function startSyncSchedule(): void {
   initialSyncTimer = setTimeout(() => {
-    void executeSync();
+    startTrackedSync();
   }, INITIAL_SYNC_DELAY_MS);
   syncTimer = setInterval(() => {
-    void executeSync();
+    startTrackedSync();
   }, SYNC_INTERVAL_MS);
 
   logger.info('Scheduled sync enabled', {
@@ -188,26 +204,41 @@ client.once('clientReady', async () => {
   });
   stopClubLogsSchedule = startClubLogsSchedule();
   stopReportsSchedule = startReportsSchedule();
+  stopRetentionSchedule = startBattleRawRetentionSchedule();
 });
 
-process.on('SIGINT', () => {
-  logger.info('SIGINT received, shutting down');
+let shuttingDown = false;
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`${signal} received, shutting down`);
   stopSyncSchedule();
   stopOverviewSchedule?.();
   stopClubLogsSchedule?.();
   stopReportsSchedule?.();
+  stopRetentionSchedule?.();
+
+  if (activeSync !== undefined) {
+    logger.info('Waiting for in-flight sync before shutdown');
+    const drained = await waitForInFlightWork(activeSync, SHUTDOWN_SYNC_TIMEOUT_MS);
+    if (drained) {
+      logger.info('In-flight sync finished; shutting down');
+    } else {
+      logger.warn('In-flight sync did not finish in time; shutting down anyway');
+    }
+  }
+
   client.destroy();
   process.exit(0);
+}
+
+process.on('SIGINT', () => {
+  void shutdown('SIGINT');
 });
 
 process.on('SIGTERM', () => {
-  logger.info('SIGTERM received, shutting down');
-  stopSyncSchedule();
-  stopOverviewSchedule?.();
-  stopClubLogsSchedule?.();
-  stopReportsSchedule?.();
-  client.destroy();
-  process.exit(0);
+  void shutdown('SIGTERM');
 });
 
 process.on('unhandledRejection', (reason: unknown) => {
