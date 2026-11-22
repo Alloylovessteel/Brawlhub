@@ -5,6 +5,14 @@ export interface VerificationTargetIcon {
   readonly id: number;
   readonly name: string;
   readonly imageUrl: string;
+  /** Official brawler ID when the catalog provides it; bundled icons use name matching. */
+  readonly brawlerId?: number;
+}
+
+/** Brawlers the player actually owns, derived from official player data. */
+export interface VerificationOwnedBrawlers {
+  readonly ids?: ReadonlySet<number>;
+  readonly names?: ReadonlySet<string>;
 }
 
 export const DEFAULT_BRAWLER_VERIFICATION_ICONS: readonly VerificationTargetIcon[] = [
@@ -181,6 +189,7 @@ export async function loadBrawlerVerificationIcons(): Promise<readonly Verificat
             id: icon.id,
             name,
             imageUrl: icon.imageUrl,
+            brawlerId,
           },
         ];
       });
@@ -196,15 +205,46 @@ export async function loadBrawlerVerificationIcons(): Promise<readonly Verificat
   return DEFAULT_BRAWLER_VERIFICATION_ICONS;
 }
 
-/** Pick from the freshest available default brawler icon pool. */
+function normalizeBrawlerName(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function iconIsOwned(icon: VerificationTargetIcon, owned: VerificationOwnedBrawlers): boolean {
+  if (icon.brawlerId !== undefined && owned.ids?.has(icon.brawlerId) === true) return true;
+  if (owned.names === undefined || owned.names.size === 0) return false;
+  return owned.names.has(normalizeBrawlerName(icon.name));
+}
+
+/**
+ * Pick a default brawler icon the player can actually set in-game. When no
+ * owned icon differs from the current icon, fall back to another owned icon;
+ * never fall back to an unowned brawler.
+ */
 export async function pickRandomVerificationIconAsync(
   excludeId?: number,
-): Promise<VerificationTargetIcon> {
+  owned?: VerificationOwnedBrawlers,
+): Promise<VerificationTargetIcon | null> {
   const icons = await loadBrawlerVerificationIcons();
-  const pool = excludeId === undefined ? icons : icons.filter((icon) => icon.id !== excludeId);
-  const source = pool.length > 0 ? pool : icons;
-  const index = Math.floor(Math.random() * source.length);
-  return source[index] ?? DEFAULT_BRAWLER_VERIFICATION_ICONS[0]!;
+  const normalizedOwned: VerificationOwnedBrawlers | undefined = (() => {
+    if (owned === undefined) return undefined;
+    const normalized: { ids?: ReadonlySet<number>; names?: ReadonlySet<string> } = {};
+    if (owned.ids !== undefined) normalized.ids = owned.ids;
+    if (owned.names !== undefined) {
+      normalized.names = new Set(Array.from(owned.names, normalizeBrawlerName));
+    }
+    return normalized;
+  })();
+  const ownedPool =
+    normalizedOwned === undefined
+      ? icons
+      : icons.filter((icon) => iconIsOwned(icon, normalizedOwned));
+  if (ownedPool.length === 0) return null;
+
+  const withoutCurrent =
+    excludeId === undefined ? ownedPool : ownedPool.filter((icon) => icon.id !== excludeId);
+  const pool = withoutCurrent.length > 0 ? withoutCurrent : ownedPool;
+  const index = Math.floor(Math.random() * pool.length);
+  return pool[index] ?? null;
 }
 
 /** Test helper for resetting the in-process metadata cache. */

@@ -141,6 +141,7 @@ beforeEach(() => {
     name: 'Alpha',
     trophies: 100,
     icon: { id: 28000003 },
+    brawlers: [{ id: 16000016, name: 'Spike', trophies: 500, power: 1, rank: 1 }],
   });
   mocks.pickIcon.mockResolvedValue(TARGET_ICON);
 });
@@ -165,6 +166,42 @@ describe('startVerification active challenge handling', () => {
     expect(second.challenge).toEqual(first.challenge);
     expect(mocks.getPlayer).toHaveBeenCalledTimes(1);
     expect(mocks.pickIcon).toHaveBeenCalledTimes(1);
+  });
+
+  it('only asks for icons belonging to brawlers the player owns', async () => {
+    const result = await startVerification({
+      discordUserId: DISCORD_USER_ID,
+      tagInput: TAG,
+    });
+    expect(result.ok).toBe(true);
+
+    const [currentIconId, owned] = mocks.pickIcon.mock.calls[0] as [
+      number,
+      { ids: ReadonlySet<number>; names: ReadonlySet<string> },
+    ];
+    expect(currentIconId).toBe(28000003);
+    expect([...owned.ids]).toContain(16000016);
+    expect([...owned.names]).toContain('Spike');
+  });
+
+  it('fails cleanly when the player has no usable owned brawler icons', async () => {
+    mocks.getPlayer.mockResolvedValue({
+      name: 'Alpha',
+      trophies: 100,
+      icon: { id: 28000003 },
+      brawlers: [],
+    });
+    mocks.pickIcon.mockResolvedValue(null);
+
+    const result = await startVerification({
+      discordUserId: DISCORD_USER_ID,
+      tagInput: TAG,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('icon-unavailable');
+    expect(result.message).toContain('brawlers on this account');
   });
 
   it('does not silently replace the challenge when start uses a different tag', async () => {

@@ -876,8 +876,8 @@ export async function startVerification(
       code: 'active-challenge',
       message:
         `You already have an active verification challenge for ${formatTag(active.playerTag)} ` +
-        `with required icon **${active.targetIconName}**. Run \`/members accounts check\` ` +
-        `to finish it, or \`/members accounts cancel\` before verifying a different player tag.`,
+        `with required icon **${active.targetIconName}**. Run \`/members check\` ` +
+        `to finish it, or \`/members cancel\` before verifying a different player tag.`,
       challenge: active,
     };
   }
@@ -921,6 +921,14 @@ export async function startVerification(
     };
   }
 
+  const ownedBrawlerIds = new Set<number>();
+  const ownedBrawlerNames = new Set<string>();
+  for (const brawler of player.brawlers ?? []) {
+    if (typeof brawler.id === 'number') ownedBrawlerIds.add(brawler.id);
+    const name = asString(brawler.name);
+    if (name !== null) ownedBrawlerNames.add(name);
+  }
+
   let playerRow: PlayerRow;
   try {
     playerRow = await ensurePlayerRecord({
@@ -939,7 +947,18 @@ export async function startVerification(
     };
   }
 
-  const targetIcon = await pickRandomVerificationIconAsync(iconId);
+  const targetIcon = await pickRandomVerificationIconAsync(iconId, {
+    ids: ownedBrawlerIds,
+    names: ownedBrawlerNames,
+  });
+  if (targetIcon === null) {
+    return {
+      ok: false,
+      code: 'icon-unavailable',
+      message:
+        'None of the brawlers on this account has a default profile icon available for verification. Unlock a brawler or contact staff.',
+    };
+  }
   const createdAt = nowMs();
   const challenge: VerificationChallenge = {
     guildId,
@@ -967,8 +986,8 @@ export async function startVerification(
         code: 'active-challenge',
         message:
           `You already have an active verification challenge for ${formatTag(raced.challenge.playerTag)} ` +
-          `with required icon **${raced.challenge.targetIconName}**. Run \`/members accounts check\` ` +
-          `to finish it, or \`/members accounts cancel\` before verifying a different player tag.`,
+          `with required icon **${raced.challenge.targetIconName}**. Run \`/members check\` ` +
+          `to finish it, or \`/members cancel\` before verifying a different player tag.`,
         challenge: raced.challenge,
       };
     }
@@ -1008,8 +1027,8 @@ export async function checkVerification(
       ok: false,
       code: lookup.kind === 'expired' ? 'expired' : 'no-challenge',
       message: lookup.kind === 'expired'
-        ? 'Your verification challenge expired. Run `/members accounts verify` again to begin a new one.'
-        : 'No active verification challenge was found. Run `/members accounts verify tag:<player-tag>` first.',
+        ? 'Your verification challenge expired. Run `/members verify` again to begin a new one.'
+        : 'No active verification challenge was found. Run `/members verify tag:<player-tag>` first.',
     };
   }
   const challenge = lookup.challenge;
