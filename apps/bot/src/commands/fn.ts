@@ -128,7 +128,7 @@ export async function handleFn(interaction: ChatInputCommandInteraction): Promis
       const result = await refreshMemberRankedRole(interaction.guild!, interaction.user.id);
       if (result.kind === 'not-verified') {
         await interaction.editReply({
-          content: 'No verified main account was found for you in this server. Verify with `/members verify` first.',
+          content: 'No verified main account was found for you in this server. Verify with `/verify tag` first.',
         });
         return;
       }

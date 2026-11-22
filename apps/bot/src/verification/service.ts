@@ -876,8 +876,8 @@ export async function startVerification(
       code: 'active-challenge',
       message:
         `You already have an active verification challenge for ${formatTag(active.playerTag)} ` +
-        `with required icon **${active.targetIconName}**. Run \`/members check\` ` +
-        `to finish it, or \`/members cancel\` before verifying a different player tag.`,
+        `with required icon **${active.targetIconName}**. Run \`/verify check\` ` +
+        `to finish it, or \`/verify cancel\` before verifying a different player tag.`,
       challenge: active,
     };
   }
@@ -986,8 +986,8 @@ export async function startVerification(
         code: 'active-challenge',
         message:
           `You already have an active verification challenge for ${formatTag(raced.challenge.playerTag)} ` +
-          `with required icon **${raced.challenge.targetIconName}**. Run \`/members check\` ` +
-          `to finish it, or \`/members cancel\` before verifying a different player tag.`,
+          `with required icon **${raced.challenge.targetIconName}**. Run \`/verify check\` ` +
+          `to finish it, or \`/verify cancel\` before verifying a different player tag.`,
         challenge: raced.challenge,
       };
     }
@@ -1027,8 +1027,8 @@ export async function checkVerification(
       ok: false,
       code: lookup.kind === 'expired' ? 'expired' : 'no-challenge',
       message: lookup.kind === 'expired'
-        ? 'Your verification challenge expired. Run `/members verify` again to begin a new one.'
-        : 'No active verification challenge was found. Run `/members verify tag:<player-tag>` first.',
+        ? 'Your verification challenge expired. Run `/verify tag` again to begin a new one.'
+        : 'No active verification challenge was found. Run `/verify tag tag:<player-tag>` first.',
     };
   }
   const challenge = lookup.challenge;

@@ -36,7 +36,7 @@ export function meTagErrorMessage(
   if (resolution.kind === 'no-verified') {
     return (
       'You do not have a verified Brawl Stars player yet. Use ' +
-      '`/members verify tag:YOURTAG` to link one, or pass `tag:` to ' +
+      '`/verify tag tag:YOURTAG` to link one, or pass `tag:` to ' +
       `\`/me ${subcommand}\`.`
     );
   }

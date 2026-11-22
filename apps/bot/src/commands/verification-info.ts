@@ -46,9 +46,9 @@ export async function handleVerifyInfo(interaction: ChatInputCommandInteraction)
         mdSection(
           'Steps',
           [
-            `${mdBold('1.')} Run \`/members verify tag:YOURTAG\` with your player tag.`,
+            `${mdBold('1.')} Run \`/verify tag tag:YOURTAG\` with your player tag.`,
             `${mdBold('2.')} The bot shows a randomly chosen default brawler icon and its exact ID.`,
-            `${mdBold('3.')} In Brawl Stars, set your player icon to that exact brawler, then run \`/members check\`.`,
+            `${mdBold('3.')} In Brawl Stars, set your player icon to that exact brawler, then run \`/verify check\`.`,
             `${mdBold('4.')} The bot reads your current icon from the official Brawl Stars API. An exact match links the account to your Discord user.`,
           ].join('\n'),
         ),
@@ -56,7 +56,7 @@ export async function handleVerifyInfo(interaction: ChatInputCommandInteraction)
           'Notes',
           mdList([
             'Challenges expire after 10 minutes. Ownership is never guessed from names, tags or profile pictures.',
-            'After verifying, use `/members accounts list` to see your main and alt accounts, and `/members accounts set-main tag:TAG` to change your main.',
+            'After verifying, use `/verify accounts list` to see your main and alt accounts, and `/verify accounts set-main tag:TAG` to change your main.',
           ]),
         ),
       ),
@@ -92,7 +92,7 @@ export async function handleVerifySettings(interaction: ChatInputCommandInteract
         },
         {
           name: 'Change settings',
-          value: `${mdCode('/settings set-verified-role role:ROLE')} or ${mdCode('/settings setup')}.`,
+          value: `${mdCode('/verify set-verified-role role:ROLE')} or ${mdCode('/settings setup')}.`,
         },
       );
     await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } });

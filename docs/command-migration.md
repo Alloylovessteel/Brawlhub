@@ -1,6 +1,6 @@
 # Discord slash-command migration
 
-BrawlHub now registers **18 top-level slash commands** instead of **42**. The change affects the Discord slash-command picker only. The underlying features, permissions, data sources and message components are unchanged.
+BrawlHub now registers **20 top-level slash commands** instead of **42**. The change affects the Discord slash-command picker only. The underlying features, permissions, data sources and message components are unchanged.
 
 ## What members need to know
 
@@ -11,7 +11,7 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 - Sync and verification completion notices are posted as mention-safe embeds to the guild’s configured announcement or verification channel.
 - Blacklist commands remain disabled and unregistered.
 
-## Current 18 commands and the retired names they replace
+## Current 20 commands and the retired names they replace
 
 | Current command | Retired top-level command(s) now found here |
 | --- | --- |
@@ -22,10 +22,12 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 | `/leaderboard` | `/leaderboard` (unchanged) |
 | `/events` | `/events` (unchanged) |
 | `/competition` | `/competition` (unchanged) |
-| `/members` | `/members`, `/account`, `/verify`, `/unverify-one`, `/unverify-all`, `/delete-me`, `/member-history`, `/member-search` |
+| `/members` | `/members`, `/member-history`, `/member-search` (roster, history and player/discord searches only) |
+| `/verify` | `/verify`, `/account verify`, `/unverify-one`, `/unverify-all`, `/delete-me` |
+| `/tag-set` | `/tag-set` staff link (formerly `/members tag-set`) |
 | `/staff` | `/staff` (unchanged) |
 | `/sync` | `/sync` (unchanged) |
-| `/settings` | `/settings` (unchanged) |
+| `/settings` | `/settings` (verified-role subcommands moved to `/verify`) |
 | `/inactivity` | `/inactivity` (unchanged) |
 | `/audit` | `/audit` (unchanged) |
 | `/help` | `/help`, `/info`, `/ping` |
@@ -66,20 +68,22 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 | `/brawlers [tag:…] [sort:…] [filter:…]` | `/brawlers list [tag:…] [sort:…] [filter:…]` |
 | `/brawler name:… [tag:…]` | `/brawlers detail name:… [tag:…]` |
 
-### Member and identity commands
+### Member, verification and identity commands
 
 | Before | Use instead |
 | --- | --- |
 | `/members tag:…` | `/members roster tag:…` |
-| `/account list` | `/members accounts list` |
-| `/account set-main tag:…` | `/members accounts set-main tag:…` |
-| `/account verify start|check|cancel|status` | `/members verify|check|cancel|status` |
-| `/verify info|settings|list` | `/members verify-info|verify-settings|register-list` |
-| `/verify tag set …` | `/members tag-set …` |
-| `/verify find user|tag …` | `/members find user|tag …` |
-| `/unverify-one user|tag …` | `/members unverify-one user|tag …` |
-| `/unverify-all user:…` | `/members unverify-all user:…` |
-| `/delete-me` | `/members delete-me` |
+| `/account list` | `/verify accounts list` |
+| `/account set-main tag:…` | `/verify accounts set-main tag:…` |
+| `/account verify start|check|cancel|status` | `/verify tag tag:…` / `/verify check` / `/verify cancel` / `/verify status` |
+| `/verify info|settings|list` | `/verify info` / `/verify settings` / `/verify list` |
+| `/verify tag set …` | `/tag-set …` |
+| `/verify find user|tag …` | `/verify find user|tag …` |
+| `/unverify-one user|tag …` | `/verify unverify-one user|tag …` |
+| `/unverify-all user:…` | `/verify unverify-all user:…` |
+| `/delete-me` | `/verify delete-me` |
+| `/settings set-verified-role role:…` | `/verify set-verified-role role:…` |
+| `/settings clear-verified-role` | `/verify clear-verified-role` |
 | `/member-history tag:…` | `/members history tag:…` |
 | `/member-search player query:…` | `/members find player query:…` |
 | `/member-search discord user:…` | `/members find discord user:…` |

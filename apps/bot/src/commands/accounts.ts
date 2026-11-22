@@ -62,7 +62,7 @@ function accountsEmbed(
         ? mdParagraphs(...lines)
         : mdParagraphs(
             'You have no verified accounts.',
-            `Use ${mdCode('/members verify tag:YOURTAG')} to link one.`,
+            `Use ${mdCode('/verify tag tag:YOURTAG')} to link one.`,
           ),
     )
     .setFooter({ text: `${accounts.length} linked • ${mainCount} main • the rest are alts` });
@@ -73,7 +73,7 @@ export async function handleAccounts(interaction: ChatInputCommandInteraction): 
   const accounts = await listLinkedAccounts(interaction.user.id);
   if (accounts === null) {
     await interaction.editReply({
-      content: 'You do not have a BrawlHub profile yet. Use `/members verify tag:YOURTAG` first.',
+      content: 'You do not have a BrawlHub profile yet. Use `/verify tag tag:YOURTAG` first.',
       allowedMentions: { parse: [] },
     });
     return;
@@ -87,7 +87,7 @@ export async function handleAccounts(interaction: ChatInputCommandInteraction): 
         result.kind === 'invalid-tag'
           ? 'That player tag is not valid.'
           : result.kind === 'not-found'
-            ? `That account is not linked to you. Use \`/members accounts list\` to see your linked accounts.`
+            ? `That account is not linked to you. Use \`/verify accounts list\` to see your linked accounts.`
             : 'Could not update your main account right now. Please try again.';
       await interaction.editReply({ content: message, allowedMentions: { parse: [] } });
       return;

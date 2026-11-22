@@ -549,8 +549,6 @@ describe('/settings', () => {
       'clear-announcement-channel',
       'set-overview-channel',
       'clear-overview-channel',
-      'set-verified-role',
-      'clear-verified-role',
       'set-report-channel',
       'clear-report-channel',
     ]);

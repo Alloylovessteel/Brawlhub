@@ -42,6 +42,7 @@ import {
   membersAnchorData,
   playerAnchorData,
 } from './anchors';
+import { tagSetCommandData, verifyAnchorData } from './verify-anchor';
 import {
   COMPONENT_HANDLERS,
   LEGACY_COMPONENT_ALIASES,
@@ -58,6 +59,8 @@ const ACTIVE_COMMANDS = [
   'events',
   'competition',
   'members',
+  'verify',
+  'tag-set',
   'staff',
   'sync',
   'settings',
@@ -87,11 +90,10 @@ const EXPECTED_ALIASES: Readonly<Record<string, string>> = {
   'player-clubs': 'player',
   'player-compare': 'player',
   brawler: 'brawlers',
-  account: 'members',
-  verify: 'members',
-  'unverify-one': 'members',
-  'unverify-all': 'members',
-  'delete-me': 'members',
+  account: 'verify',
+  'unverify-one': 'verify',
+  'unverify-all': 'verify',
+  'delete-me': 'verify',
   'member-history': 'members',
   'member-search': 'members',
   info: 'help',
@@ -120,13 +122,13 @@ function optionNamed(options: readonly JsonOption[], name: string): JsonOption {
 }
 
 describe('Option 3 registry contract', () => {
-  it('registers exactly the 18 approved anchors', () => {
+  it('registers exactly the 20 approved anchors', () => {
     expect(commands.map((command) => command.data.name)).toEqual([...ACTIVE_COMMANDS]);
     expect(pendingCommands.map((command) => command.data.name)).toEqual(['blacklist']);
   });
 
   it('gives every anchor that absorbs legacy components a composite handler', () => {
-    for (const name of ['clubs', 'player', 'brawlers', 'members', 'help']) {
+    for (const name of ['clubs', 'player', 'brawlers', 'members', 'verify', 'tag-set', 'help']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );
@@ -134,7 +136,7 @@ describe('Option 3 registry contract', () => {
   });
 
   it('gives every folded command with autocomplete a matching anchor autocomplete handler', () => {
-    for (const name of ['clubs', 'player', 'brawlers', 'members']) {
+    for (const name of ['clubs', 'player', 'brawlers', 'members', 'verify']) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf(
         'function',
       );
@@ -302,39 +304,68 @@ describe('Option 3 anchor option preservation', () => {
     });
   });
 
-  it('preserves options from folded subcommand groups', () => {
+  it('keeps only member searches under /members', () => {
     const memberOptions = optionsOf(membersAnchorData);
-    const accounts = optionNamed(memberOptions, 'accounts');
-    expect(optionNamed(accounts.options ?? [], 'list')).toBeDefined();
-    expect(optionNamed(accounts.options ?? [], 'set-main')).toBeDefined();
-    expect((accounts.options ?? []).some((option) => option.name === 'verify')).toBe(false);
-
-    for (const name of ['verify', 'check', 'cancel', 'status']) {
-      expect(optionNamed(memberOptions, name)).toBeDefined();
-    }
-    expect(optionNamed(optionNamed(memberOptions, 'verify').options ?? [], 'tag')).toMatchObject({
-      name: 'tag',
-      required: true,
-    });
-
-    for (const name of ['verify-info', 'verify-settings', 'register-list']) {
-      expect(optionNamed(memberOptions, name)).toBeDefined();
-    }
-
-    const tagSet = optionNamed(memberOptions, 'tag-set');
-    expect(optionNamed(tagSet.options ?? [], 'user').type).toBe(6);
-    expect(optionNamed(tagSet.options ?? [], 'tag').required).toBe(true);
-    expect(optionNamed(tagSet.options ?? [], 'reason').required).toBe(false);
+    expect(memberOptions.map((option) => option.name)).toEqual(['roster', 'find', 'history']);
 
     const find = optionNamed(memberOptions, 'find');
-    expect(optionNamed(find.options ?? [], 'user')).toBeDefined();
-    expect(optionNamed(find.options ?? [], 'tag')).toBeDefined();
+    expect(find.options?.map((option) => option.name)).toEqual(['player', 'discord']);
     expect(optionNamed(optionNamed(find.options ?? [], 'player').options ?? [], 'query')).toMatchObject({
       name: 'query',
       required: true,
       autocomplete: true,
       max_length: 32,
     });
+  });
+
+  it('builds the /verify anchor with every verification action', () => {
+    const verifyOptions = optionsOf(verifyAnchorData);
+    expect(verifyOptions.map((option) => option.name)).toEqual([
+      'tag',
+      'check',
+      'cancel',
+      'status',
+      'info',
+      'settings',
+      'list',
+      'find',
+      'unverify-one',
+      'unverify-all',
+      'delete-me',
+      'set-verified-role',
+      'clear-verified-role',
+      'accounts',
+    ]);
+
+    expect(optionNamed(optionNamed(verifyOptions, 'tag').options ?? [], 'tag')).toMatchObject({
+      name: 'tag',
+      required: true,
+    });
+
+    const find = optionNamed(verifyOptions, 'find');
+    expect(find.options?.map((option) => option.name)).toEqual(['user', 'tag']);
+    expect(optionNamed(find.options ?? [], 'user').options?.[0]?.type).toBe(6);
+
+    const unverifyOne = optionNamed(verifyOptions, 'unverify-one');
+    expect(unverifyOne.options?.map((option) => option.name)).toEqual(['user', 'tag']);
+
+    const accounts = optionNamed(verifyOptions, 'accounts');
+    expect(accounts.options?.map((option) => option.name)).toEqual(['list', 'set-main']);
+    expect(
+      optionNamed(optionNamed(accounts.options ?? [], 'set-main').options ?? [], 'tag'),
+    ).toMatchObject({ name: 'tag', required: true, autocomplete: true });
+
+    expect(
+      optionNamed(optionNamed(verifyOptions, 'set-verified-role').options ?? [], 'role').type,
+    ).toBe(8);
+  });
+
+  it('builds the top-level /tag-set anchor with staff options', () => {
+    const tagSetOptions = optionsOf(tagSetCommandData);
+    expect(tagSetOptions.map((option) => option.name)).toEqual(['user', 'tag', 'reason']);
+    expect(optionNamed(tagSetOptions, 'user').type).toBe(6);
+    expect(optionNamed(tagSetOptions, 'tag').required).toBe(true);
+    expect(optionNamed(tagSetOptions, 'reason').required).toBe(false);
   });
 
   it('builds the help anchor from the retired help, info and ping commands', () => {

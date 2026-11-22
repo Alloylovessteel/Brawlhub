@@ -81,7 +81,7 @@ function chatInteraction(commandName: string): Interaction {
 }
 
 describe('command registry', () => {
-  it('registers the 18 Option 3 anchors in order', () => {
+  it('registers the 20 Option 3 anchors in order', () => {
     expect(commands.map((command) => command.data.name)).toEqual([
       'clubs',
       'me',
@@ -91,6 +91,8 @@ describe('command registry', () => {
       'events',
       'competition',
       'members',
+      'verify',
+      'tag-set',
       'staff',
       'sync',
       'settings',
@@ -124,12 +126,12 @@ describe('command registry', () => {
   });
 
   it('uses composite handlers for the folded anchors', () => {
-    for (const name of ['clubs', 'player', 'brawlers', 'members', 'help']) {
+    for (const name of ['clubs', 'player', 'brawlers', 'members', 'verify', 'tag-set', 'help']) {
       expect(commands.find((command) => command.data.name === name)?.handleComponent).toBeTypeOf(
         'function',
       );
     }
-    for (const name of ['clubs', 'player', 'brawlers', 'members']) {
+    for (const name of ['clubs', 'player', 'brawlers', 'members', 'verify']) {
       expect(commands.find((command) => command.data.name === name)?.autocomplete).toBeTypeOf(
         'function',
       );

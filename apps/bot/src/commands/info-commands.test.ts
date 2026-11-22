@@ -111,14 +111,13 @@ beforeEach(() => {
 describe('command registration', () => {
   it('registers the consolidated Option 3 anchors', () => {
     const names = commands.map((command) => command.data.name);
-    for (const anchor of ['clubs', 'me', 'brawlers', 'player', 'members', 'help']) {
+    for (const anchor of ['clubs', 'me', 'brawlers', 'player', 'members', 'verify', 'tag-set', 'help']) {
       expect(names).toContain(anchor);
     }
     for (const retired of [
       'about',
       'status',
       'account',
-      'verify',
       'info',
       'ping',
       'club',
@@ -137,11 +136,8 @@ describe('command registration', () => {
       'player-clubs',
       'player-compare',
       'brawler',
-      'delete-me',
       'member-history',
       'member-search',
-      'unverify-one',
-      'unverify-all',
     ]) {
       expect(names).not.toContain(retired);
     }

@@ -91,11 +91,24 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
     entries: [
       {
         name: 'members',
-        usage:
-          '/members roster | /members accounts list | /members verify tag:<tag> | /members register-list | /members find player query:PLAYERTAG',
+        usage: '/members roster | /members history | /members find player query:PLAYERTAG',
         description:
-          'Show tracked members and manage linked accounts, verification, identity data and verified-member searches.',
-        permission: 'members:verify for management actions and discord searches',
+          'Show tracked members, club history and verified-member searches.',
+        permission: 'members:verify for discord searches',
+      },
+      {
+        name: 'verify',
+        usage:
+          '/verify tag tag:<tag> | /verify check | /verify cancel | /verify status | /verify info | /verify settings | /verify list',
+        description:
+          'Verify ownership of a Brawl Stars account and manage verified links, identity data and the verified-member role.',
+        permission: 'members:verify for staff actions and clubs:write for the verified role',
+      },
+      {
+        name: 'tag-set',
+        usage: '/tag-set user:@USER tag:<tag> [reason:<text>]',
+        description: 'Staff-link a Discord user to a Brawl Stars player as fully verified.',
+        permission: 'members:verify',
       },
       {
         name: 'fn',
@@ -128,7 +141,7 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       },
       {
         name: 'settings',
-        usage: '/settings view | /settings set-report-channel',
+        usage: '/settings view | /settings set-report-channel | /settings setup',
         description:
           'View or change guild settings, including per-report daily/weekly/monthly channels.',
         permission: 'clubs:write',

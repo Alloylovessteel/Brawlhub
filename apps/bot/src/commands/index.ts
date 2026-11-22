@@ -34,6 +34,13 @@ import {
   membersAnchorData,
   playerAnchorData,
 } from './option3/anchors.js';
+import {
+  handleTagSet,
+  handleVerifyAnchor,
+  handleVerifyAnchorAutocomplete,
+  tagSetCommandData,
+  verifyAnchorData,
+} from './option3/verify-anchor.js';
 import { resolveLegacyComponentCommand } from './option3/component-router.js';
 import {
   eventsCommandData,
@@ -156,6 +163,17 @@ export const commands: readonly CommandDefinition[] = [
     handleComponent: handleAnchoredComponent,
   },
   {
+    data: verifyAnchorData,
+    handle: handleVerifyAnchor,
+    autocomplete: handleVerifyAnchorAutocomplete,
+    handleComponent: handleAnchoredComponent,
+  },
+  {
+    data: tagSetCommandData,
+    handle: handleTagSet,
+    handleComponent: handleAnchoredComponent,
+  },
+  {
     data: staffCommandData,
     handle: handleStaff,
     handleComponent: handleStaffComponent,
@@ -251,7 +269,7 @@ async function listBotGuildIds(rest: CommandRegistrationRest): Promise<readonly 
 /**
  * Register the full command set once, globally. Any stale guild-scoped copies
  * are cleared afterwards so Discord never shows two versions of the same
- * command (for example `/members delete-me` twice). If global registration
+ * command (for example `/verify delete-me` twice). If global registration
  * fails, guild commands are left untouched so the bot remains usable.
  */
 export async function registerCommands(options: CommandRegistrationOptions = {}): Promise<void> {

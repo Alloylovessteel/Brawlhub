@@ -281,9 +281,9 @@ export function buildVerificationMessage(guildId: string): {
     mdSection(
       'Steps',
       [
-        `${mdBold('1.')} Run \`/members verify tag:YOURTAG\` with your Brawl Stars player tag.`,
+        `${mdBold('1.')} Run \`/verify tag tag:YOURTAG\` with your Brawl Stars player tag.`,
         `${mdBold('2.')} The bot shows a randomly chosen default brawler icon and its exact ID.`,
-        `${mdBold('3.')} Set that exact icon in Brawl Stars, then run \`/members check\`.`,
+        `${mdBold('3.')} Set that exact icon in Brawl Stars, then run \`/verify check\`.`,
         `${mdBold('4.')} The official Brawl Stars API confirms the match and links the account to you.`,
       ].join('\n'),
     ),
@@ -291,7 +291,7 @@ export function buildVerificationMessage(guildId: string): {
       'Notes',
       mdList([
         'Challenges expire after 10 minutes. Ownership is never guessed from names, tags or profile pictures.',
-        'Use `/members accounts list` and `/members accounts set-main tag:TAG` to choose the account used for ranked roles.',
+        'Use `/verify accounts list` and `/verify accounts set-main tag:TAG` to choose the account used for ranked roles.',
       ]),
     ),
   ];

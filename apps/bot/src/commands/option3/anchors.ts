@@ -89,19 +89,6 @@ import {
   handleMembersAutocomplete,
 } from '../members.js';
 import {
-  accountCommandData,
-  handleAccount,
-  handleAccountAutocomplete,
-} from '../account.js';
-import { verifyCommandData, handleVerify } from '../verify.js';
-import {
-  unverifyOneCommandData,
-  handleUnverifyOne,
-  unverifyAllCommandData,
-  handleUnverifyAll,
-} from '../admin-identity.js';
-import { deleteMeCommandData, handleDeleteMe } from '../delete-me.js';
-import {
   memberHistoryCommandData,
   handleMemberHistory,
   handleMemberHistoryAutocomplete,
@@ -115,9 +102,7 @@ import { helpCommandData, handleHelp } from '../help.js';
 import { infoCommandData, handleInfo } from '../info.js';
 import { handlePing } from '../ping.js';
 import {
-  findSourceGroup,
   groupWithSubcommands,
-  subcommandFromGroup,
   subcommandFromSource,
   subcommandWithOptions,
 } from './option-copy.js';
@@ -384,76 +369,14 @@ export async function handleBrawlersAnchorAutocomplete(
 /* /members                                                                    */
 /* -------------------------------------------------------------------------- */
 
-const accountVerifyGroup = findSourceGroup(accountCommandData, 'verify');
-
-const membersBuilder = new SlashCommandBuilder()
+export const membersAnchorData = new SlashCommandBuilder()
   .setName('members')
-  .setDescription('Tracked members, accounts, verification and identity management')
+  .setDescription('Tracked members and verified-member searches')
   .addSubcommand(() =>
     subcommandWithOptions(membersCommandData, 'roster', 'Show tracked members in a club'),
   )
   .addSubcommandGroup((group) => {
-    group.setName('accounts').setDescription('Manage your linked Brawl Stars accounts');
-    group.addSubcommand(() => bare('list', 'List your linked accounts'));
-    group.addSubcommand(() =>
-      subcommandFromSource(
-        accountCommandData,
-        'set-main',
-        'set-main',
-        'Choose your main account',
-      ),
-    );
-    return group;
-  });
-
-// Verification actions are flat under /members: verify, check, cancel, status.
-if (accountVerifyGroup !== undefined) {
-  for (const option of accountVerifyGroup.options ?? []) {
-    membersBuilder.addSubcommand(() =>
-      subcommandFromGroup(
-        accountCommandData,
-        'verify',
-        option.name,
-        option.name === 'start' ? 'verify' : option.name,
-        option.description,
-      ),
-    );
-  }
-}
-
-export const membersAnchorData = membersBuilder
-  .addSubcommand(() => bare('verify-info', 'Post the player verification guide'))
-  .addSubcommand(() => bare('verify-settings', 'Show server verification settings'))
-  .addSubcommand(() => bare('register-list', 'List verified links in this server'))
-  .addSubcommand(() =>
-    subcommandFromGroup(
-      verifyCommandData,
-      'tag',
-      'set',
-      'tag-set',
-      'Link a Discord user to a Brawl Stars player',
-    ),
-  )
-  .addSubcommandGroup((group) => {
-    group.setName('find').setDescription('Find verified members and account links');
-    group.addSubcommand(() =>
-      subcommandFromGroup(
-        verifyCommandData,
-        'find',
-        'user',
-        'user',
-        'Find verified links for a Discord user',
-      ),
-    );
-    group.addSubcommand(() =>
-      subcommandFromGroup(
-        verifyCommandData,
-        'find',
-        'tag',
-        'tag',
-        'Find verified links for a Brawl Stars player tag',
-      ),
-    );
+    group.setName('find').setDescription('Find verified members in this server');
     group.addSubcommand(() =>
       subcommandFromSource(
         memberSearchCommandData,
@@ -472,117 +395,22 @@ export const membersAnchorData = membersBuilder
     );
     return group;
   })
-  .addSubcommandGroup(() =>
-    groupWithSubcommands(
-      unverifyOneCommandData,
-      'unverify-one',
-      'Revoke a verified account link',
-    ),
-  )
-  .addSubcommand(() =>
-    subcommandWithOptions(unverifyAllCommandData, 'unverify-all', 'Revoke all links for a user')
-      .setName('unverify-all'),
-  )
-  .addSubcommand(() => bare('delete-me', 'Permanently delete your BrawlHub identity data'))
   .addSubcommand(() =>
     subcommandWithOptions(memberHistoryCommandData, 'history', 'Show a member’s club history'),
   );
-
-const accountVerifyRoutes: Readonly<Record<string, string>> = {
-  start: 'start',
-  verify: 'start',
-  check: 'check',
-  cancel: 'cancel',
-  status: 'status',
-  'verify-start': 'start',
-  'verify-check': 'check',
-  'verify-cancel': 'cancel',
-  'verify-status': 'status',
-};
-
-type VerifyRoute = { readonly group: string | null; readonly subcommand: string };
-
-const verifyRoutes: Readonly<Record<string, VerifyRoute>> = {
-  'verify-info': { group: null, subcommand: 'info' },
-  'verify-settings': { group: null, subcommand: 'settings' },
-  'register-list': { group: null, subcommand: 'list' },
-  'tag-set': { group: 'tag', subcommand: 'set' },
-  'find-user': { group: 'find', subcommand: 'user' },
-  'find-tag': { group: 'find', subcommand: 'tag' },
-  info: { group: null, subcommand: 'info' },
-  settings: { group: null, subcommand: 'settings' },
-  list: { group: null, subcommand: 'list' },
-};
 
 export async function handleMembersAnchor(interaction: ChatInputCommandInteraction): Promise<void> {
   const group = interaction.options.getSubcommandGroup(false);
   const subcommand = interaction.options.getSubcommand(false);
 
-  if (group === 'accounts' || group === 'account') {
-    const verifySubcommand =
-      subcommand === null ? undefined : accountVerifyRoutes[subcommand];
-    if (verifySubcommand !== undefined) {
-      await handleAccount(
-        asLegacyChatInput(interaction, { group: 'verify', subcommand: verifySubcommand }),
-      );
-      return;
-    }
-    await handleAccount(asLegacyChatInput(interaction, { group: null, subcommand }));
-    return;
-  }
-
-  if (group === 'tag') {
-    await handleVerify(asLegacyChatInput(interaction, { group: 'tag', subcommand: 'set' }));
-    return;
-  }
-
   if (group === 'find' || group === 'search') {
-    if (subcommand === 'user' || subcommand === 'tag') {
-      await handleVerify(asLegacyChatInput(interaction, { group: 'find', subcommand }));
-      return;
-    }
     await handleMemberSearch(asLegacyChatInput(interaction, { group: null, subcommand }));
-    return;
-  }
-
-  if (group === 'verify') {
-    const route = subcommand === null ? undefined : verifyRoutes[subcommand];
-    if (route === undefined) {
-      await replyUnknown(interaction, '/members');
-      return;
-    }
-    await handleVerify(asLegacyChatInput(interaction, route));
-    return;
-  }
-
-  const accountRoute = subcommand === null ? undefined : accountVerifyRoutes[subcommand];
-  if (accountRoute !== undefined) {
-    await handleAccount(
-      asLegacyChatInput(interaction, { group: 'verify', subcommand: accountRoute }),
-    );
-    return;
-  }
-
-  if (group === 'unverify-one') {
-    await handleUnverifyOne(asLegacyChatInput(interaction, { group: null, subcommand }));
-    return;
-  }
-
-  const route = subcommand === null ? undefined : verifyRoutes[subcommand];
-  if (route !== undefined) {
-    await handleVerify(asLegacyChatInput(interaction, route));
     return;
   }
 
   switch (subcommand) {
     case 'roster':
       await handleMembers(asLegacyChatInput(interaction, { subcommand: 'roster' }));
-      return;
-    case 'unverify-all':
-      await handleUnverifyAll(asLegacyChatInput(interaction, { subcommand: 'unverify-all' }));
-      return;
-    case 'delete-me':
-      await handleDeleteMe(asLegacyChatInput(interaction, { subcommand: 'delete-me' }));
       return;
     case 'history':
       await handleMemberHistory(asLegacyChatInput(interaction, { subcommand: 'history' }));
@@ -598,23 +426,11 @@ export async function handleMembersAnchorAutocomplete(
   const group = interaction.options.getSubcommandGroup(false);
   const subcommand = interaction.options.getSubcommand(false);
 
-  if (group === 'accounts' || group === 'account') {
-    if (subcommand === 'set-main') {
-      await handleAccountAutocomplete(asLegacyAutocomplete(interaction, 'set-main'));
-      return;
-    }
-    await respondToAutocomplete(interaction, []);
-    return;
-  }
   if (group === 'find' || group === 'search') {
     if (subcommand === 'player') {
       await handleMemberSearchAutocomplete(asLegacyAutocomplete(interaction, 'player'));
       return;
     }
-    await respondToAutocomplete(interaction, []);
-    return;
-  }
-  if (group === 'tag' || group === 'verify' || group === 'unverify-one') {
     await respondToAutocomplete(interaction, []);
     return;
   }

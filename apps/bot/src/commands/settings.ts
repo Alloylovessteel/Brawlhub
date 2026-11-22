@@ -183,20 +183,6 @@ export const settingsCommandData = new SlashCommandBuilder()
   )
   .addSubcommand((subcommand) =>
     subcommand
-      .setName('set-verified-role')
-      .setDescription('Set the guild verified-member role')
-      .addRoleOption((option) =>
-        option
-          .setName('role')
-          .setDescription('Role assigned to verified BrawlHub members')
-          .setRequired(true),
-      ),
-  )
-  .addSubcommand((subcommand) =>
-    subcommand.setName('clear-verified-role').setDescription('Clear the guild verified-member role'),
-  )
-  .addSubcommand((subcommand) =>
-    subcommand
       .setName('set-report-channel')
       .setDescription('Set a channel for one of the scheduled club reports')
       .addStringOption((option) =>
