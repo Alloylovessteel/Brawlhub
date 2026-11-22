@@ -24,20 +24,31 @@ function clean(value: string | undefined, maxLength: number): string {
   return sanitized.slice(0, maxLength);
 }
 
-function formatEmbed(input: Parameters<SyncNotifier['send']>[0]): EmbedBuilder {
+/** Build the public, mention-safe join/leave/transfer notification embed. */
+export function buildClubMembershipNoticeEmbed(
+  input: Parameters<SyncNotifier['send']>[0],
+): EmbedBuilder {
   const player = `${clean(input.playerName, 60)} (${mdCode(clean(input.playerTag, 24))})`;
-  const embed = new EmbedBuilder().setColor(EMBED_COLORS.neutral).setTitle('Club membership update');
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLORS.neutral)
+    .setTitle('👥 Club membership update');
 
+  let action: string;
   switch (input.eventType) {
     case 'join':
-      return embed.setDescription(`${player} joined ${mdBold(clean(input.clubName, 60))}.`);
+      action = `joined ${mdBold(clean(input.clubName, 60))}`;
+      break;
     case 'leave':
-      return embed.setDescription(`${player} left ${mdBold(clean(input.clubName, 60))}.`);
+      action = `left ${mdBold(clean(input.clubName, 60))}`;
+      break;
     case 'transfer':
-      return embed.setDescription(
-        `${player} transferred from ${mdBold(clean(input.fromClubName, 60))} to ${mdBold(clean(input.toClubName, 60))}.`,
-      );
+      action = `transferred from ${mdBold(clean(input.fromClubName, 60))} to ${mdBold(clean(input.toClubName, 60))}`;
+      break;
+    default:
+      action = 'updated club membership';
   }
+
+  return embed.setDescription([`🏷️ ${player}`, `📝 ${action}.`].join('\n'));
 }
 
 function readFallbackChannelId(): string | undefined {
@@ -111,7 +122,7 @@ export async function createDiscordNotifier(
     channelId,
     async send(input) {
       try {
-        const embed = formatEmbed(input);
+        const embed = buildClubMembershipNoticeEmbed(input);
         const message = (await rest.post(Routes.channelMessages(channelId), {
           body: { embeds: [embed.toJSON()] },
         })) as { id?: string } | undefined;
