@@ -65,7 +65,7 @@ export interface PostOverviewInput {
   readonly token: string | undefined;
 }
 
-/** Send the overview once (or edit the existing message), returning its message ID. */
+/** Post a fresh overview, deleting the previous message only after the new one succeeds. */
 export async function postOverviewForGuild(input: PostOverviewInput): Promise<string | null> {
   const config = getBotConfig();
   const summaries = await loadClubSummaries(input.guildId);
@@ -85,23 +85,6 @@ export async function postOverviewForGuild(input: PostOverviewInput): Promise<st
     flags: 0,
   };
 
-  if (input.messageId !== null) {
-    try {
-      const message = (await input.rest.patch(Routes.channelMessage(input.channelId, input.messageId), {
-        body,
-      })) as { id?: string } | undefined;
-      return message?.id ?? input.messageId;
-    } catch (error: unknown) {
-      if (!isUnknownMessage(error)) {
-        logger.warn('Could not edit club overview message; posting a new one', {
-          guildId: input.guildId,
-          error: safeError(error, input.token),
-        });
-      }
-      // Unknown/deleted message (or a transient edit failure): post a replacement.
-    }
-  }
-
   try {
     const message = (await input.rest.post(Routes.channelMessages(input.channelId), {
       body,
@@ -109,7 +92,23 @@ export async function postOverviewForGuild(input: PostOverviewInput): Promise<st
     const messageId = message?.id ?? null;
     if (messageId === null) {
       logger.warn('Club overview post returned no message ID', { guildId: input.guildId });
+      return null;
     }
+
+    if (input.messageId !== null && input.messageId !== messageId) {
+      try {
+        await input.rest.delete(Routes.channelMessage(input.channelId, input.messageId));
+      } catch (error: unknown) {
+        if (!isUnknownMessage(error)) {
+          logger.warn('Could not delete previous club overview message', {
+            guildId: input.guildId,
+            messageId: input.messageId,
+            error: safeError(error, input.token),
+          });
+        }
+      }
+    }
+
     return messageId;
   } catch (error: unknown) {
     logger.error('Failed to post club overview', {

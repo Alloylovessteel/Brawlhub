@@ -223,7 +223,7 @@ describe('/clubs view permission handling', () => {
 });
 
 describe('/clubs view list', () => {
-  it('renders the current overview and refreshes without posting a second message', async () => {
+  it('renders the current overview and refreshes the channel message', async () => {
     const summaries = [{ club: CLUB_A }];
     mocks.viewTags.loadViewTagSummaries.mockResolvedValue(summaries);
     const interaction = chat('list');
