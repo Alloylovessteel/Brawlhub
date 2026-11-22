@@ -3,6 +3,7 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import { respondToAutocomplete } from '../discord/errors.js';
 import { handleAccounts, handleAccountsAutocomplete } from './accounts.js';
 import { handleMemberVerify } from './member-verify.js';
 
@@ -67,5 +68,5 @@ export async function handleAccountAutocomplete(interaction: AutocompleteInterac
     await handleAccountsAutocomplete(interaction);
     return;
   }
-  await interaction.respond([]);
+  await respondToAutocomplete(interaction, []);
 }

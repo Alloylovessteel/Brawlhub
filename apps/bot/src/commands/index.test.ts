@@ -10,9 +10,10 @@ function command(name: string, overrides: Partial<CommandDefinition> = {}): Comm
   };
 }
 
-function autocompleteInteraction(commandName: string): Interaction {
+function autocompleteInteraction(commandName: string, responded = false): Interaction {
   return {
     commandName,
+    responded,
     isAutocomplete: () => true,
     isButton: () => false,
     isAnySelectMenu: () => false,
@@ -116,6 +117,15 @@ describe('dispatchInteraction', () => {
       [command('club', { autocomplete })],
     );
     expect(autocomplete).toHaveBeenCalledOnce();
+  });
+
+  it('skips autocomplete handlers that are already acknowledged', async () => {
+    const autocomplete = vi.fn(async () => undefined);
+    await dispatchInteraction(
+      autocompleteInteraction('club', true),
+      [command('club', { autocomplete })],
+    );
+    expect(autocomplete).not.toHaveBeenCalled();
   });
 
   it('routes component interactions using the custom ID command prefix', async () => {

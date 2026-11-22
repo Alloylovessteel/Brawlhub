@@ -122,6 +122,7 @@ import {
   subcommandWithOptions,
 } from './option-copy.js';
 import { handleCompositeComponent } from './component-router.js';
+import { respondToAutocomplete } from '../../discord/errors.js';
 import { asLegacyAutocomplete, asLegacyChatInput } from './adapter.js';
 
 function bare(name: string, description: string): SlashCommandSubcommandBuilder {
@@ -171,7 +172,7 @@ export const clubsAnchorData = new SlashCommandBuilder()
     bare('fields', 'Choose which details appear in the server club overview'),
   )
   .addSubcommandGroup(() =>
-    groupWithSubcommands(clubLogsCommandData, 'logs', 'Configure scheduled club log reports'),
+    groupWithSubcommands(clubLogsCommandData, 'clublogs', 'Configure scheduled club log reports'),
   )
   .addSubcommand(() =>
     subcommandWithOptions(registerClubCommandData, 'register', 'Register a club in this server'),
@@ -188,7 +189,7 @@ export async function handleClubsAnchor(interaction: ChatInputCommandInteraction
     await handleView(asLegacyChatInput(interaction, { group: null, subcommand }));
     return;
   }
-  if (group === 'logs') {
+  if (group === 'clublogs' || group === 'logs') {
     await handleClubLogs(asLegacyChatInput(interaction, { group: null, subcommand }));
     return;
   }
@@ -241,7 +242,7 @@ export async function handleClubsAnchorAutocomplete(
     await handleViewAutocomplete(asLegacyAutocomplete(interaction, subcommand));
     return;
   }
-  if (group === 'logs') {
+  if (group === 'clublogs' || group === 'logs') {
     await handleClubLogsAutocomplete(asLegacyAutocomplete(interaction, subcommand));
     return;
   }
@@ -273,7 +274,7 @@ export async function handleClubsAnchorAutocomplete(
       );
       return;
     default:
-      await interaction.respond([]);
+      await respondToAutocomplete(interaction, []);
   }
 }
 
@@ -335,7 +336,7 @@ export async function handlePlayerAnchorAutocomplete(
       await handlePlayerCompareAutocomplete(interaction);
       return;
     default:
-      await interaction.respond([]);
+      await respondToAutocomplete(interaction, []);
   }
 }
 
@@ -376,7 +377,7 @@ export async function handleBrawlersAnchorAutocomplete(
     await handleBrawlersAutocomplete(asLegacyAutocomplete(interaction, subcommand));
     return;
   }
-  await interaction.respond([]);
+  await respondToAutocomplete(interaction, []);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -392,7 +393,7 @@ export const membersAnchorData = new SlashCommandBuilder()
     subcommandWithOptions(membersCommandData, 'roster', 'Show tracked members in a club'),
   )
   .addSubcommandGroup((group) => {
-    group.setName('account').setDescription('Manage your linked Brawl Stars accounts');
+    group.setName('accounts').setDescription('Manage your linked Brawl Stars accounts');
     group.addSubcommand(() => bare('list', 'List your linked accounts'));
     group.addSubcommand(() =>
       subcommandFromSource(
@@ -409,7 +410,7 @@ export const membersAnchorData = new SlashCommandBuilder()
             accountCommandData,
             'verify',
             option.name,
-            `verify-${option.name}`,
+            option.name === 'start' ? 'verify' : option.name,
             option.description,
           ),
         );
@@ -417,26 +418,30 @@ export const membersAnchorData = new SlashCommandBuilder()
     }
     return group;
   })
+  .addSubcommand(() => bare('verify-info', 'Post the player verification guide'))
+  .addSubcommand(() => bare('verify-settings', 'Show server verification settings'))
+  .addSubcommand(() => bare('register-list', 'List verified links in this server'))
   .addSubcommandGroup((group) => {
-    group.setName('verify').setDescription('Player verification and verified account links');
-    group.addSubcommand(() => bare('info', 'Post the player verification guide'));
-    group.addSubcommand(() => bare('settings', 'Show server verification settings'));
-    group.addSubcommand(() => bare('list', 'List verified links in this server'));
+    group.setName('tag').setDescription('Staff-link a Discord user to a player');
     group.addSubcommand(() =>
       subcommandFromGroup(
         verifyCommandData,
         'tag',
         'set',
-        'tag-set',
-        'Staff-link a Discord user to a player',
+        'set',
+        'Link a Discord user to a Brawl Stars player',
       ),
     );
+    return group;
+  })
+  .addSubcommandGroup((group) => {
+    group.setName('find').setDescription('Find verified members and account links');
     group.addSubcommand(() =>
       subcommandFromGroup(
         verifyCommandData,
         'find',
         'user',
-        'find-user',
+        'user',
         'Find verified links for a Discord user',
       ),
     );
@@ -445,8 +450,24 @@ export const membersAnchorData = new SlashCommandBuilder()
         verifyCommandData,
         'find',
         'tag',
-        'find-tag',
-        'Find verified links for a player tag',
+        'tag',
+        'Find verified links for a Brawl Stars player tag',
+      ),
+    );
+    group.addSubcommand(() =>
+      subcommandFromSource(
+        memberSearchCommandData,
+        'player',
+        'player',
+        'Search verified members by player tag or name',
+      ),
+    );
+    group.addSubcommand(() =>
+      subcommandFromSource(
+        memberSearchCommandData,
+        'discord',
+        'discord',
+        'Search verified members by Discord user',
       ),
     );
     return group;
@@ -465,37 +486,69 @@ export const membersAnchorData = new SlashCommandBuilder()
   .addSubcommand(() => bare('delete-me', 'Permanently delete your BrawlHub identity data'))
   .addSubcommand(() =>
     subcommandWithOptions(memberHistoryCommandData, 'history', 'Show a member’s club history'),
-  )
-  .addSubcommandGroup(() =>
-    groupWithSubcommands(memberSearchCommandData, 'search', 'Search verified members'),
   );
+
+const accountVerifyRoutes: Readonly<Record<string, string>> = {
+  start: 'start',
+  verify: 'start',
+  check: 'check',
+  cancel: 'cancel',
+  status: 'status',
+  'verify-start': 'start',
+  'verify-check': 'check',
+  'verify-cancel': 'cancel',
+  'verify-status': 'status',
+};
+
+type VerifyRoute = { readonly group: string | null; readonly subcommand: string };
+
+const verifyRoutes: Readonly<Record<string, VerifyRoute>> = {
+  'verify-info': { group: null, subcommand: 'info' },
+  'verify-settings': { group: null, subcommand: 'settings' },
+  'register-list': { group: null, subcommand: 'list' },
+  'tag-set': { group: 'tag', subcommand: 'set' },
+  'find-user': { group: 'find', subcommand: 'user' },
+  'find-tag': { group: 'find', subcommand: 'tag' },
+  info: { group: null, subcommand: 'info' },
+  settings: { group: null, subcommand: 'settings' },
+  list: { group: null, subcommand: 'list' },
+};
 
 export async function handleMembersAnchor(interaction: ChatInputCommandInteraction): Promise<void> {
   const group = interaction.options.getSubcommandGroup(false);
   const subcommand = interaction.options.getSubcommand(false);
 
-  if (group === 'account') {
-    if (subcommand?.startsWith('verify-') === true) {
-      const legacy = subcommand.slice('verify-'.length);
-      await handleAccount(asLegacyChatInput(interaction, { group: 'verify', subcommand: legacy }));
+  if (group === 'accounts' || group === 'account') {
+    const verifySubcommand =
+      subcommand === null ? undefined : accountVerifyRoutes[subcommand];
+    if (verifySubcommand !== undefined) {
+      await handleAccount(
+        asLegacyChatInput(interaction, { group: 'verify', subcommand: verifySubcommand }),
+      );
       return;
     }
     await handleAccount(asLegacyChatInput(interaction, { group: null, subcommand }));
     return;
   }
 
+  if (group === 'tag') {
+    await handleVerify(asLegacyChatInput(interaction, { group: 'tag', subcommand: 'set' }));
+    return;
+  }
+
+  if (group === 'find' || group === 'search') {
+    if (subcommand === 'user' || subcommand === 'tag') {
+      await handleVerify(asLegacyChatInput(interaction, { group: 'find', subcommand }));
+      return;
+    }
+    await handleMemberSearch(asLegacyChatInput(interaction, { group: null, subcommand }));
+    return;
+  }
+
   if (group === 'verify') {
-    const routes: Record<string, { readonly group: string | null; readonly subcommand: string }> = {
-      info: { group: null, subcommand: 'info' },
-      settings: { group: null, subcommand: 'settings' },
-      list: { group: null, subcommand: 'list' },
-      'tag-set': { group: 'tag', subcommand: 'set' },
-      'find-user': { group: 'find', subcommand: 'user' },
-      'find-tag': { group: 'find', subcommand: 'tag' },
-    };
-    const route = subcommand === null ? undefined : routes[subcommand];
+    const route = subcommand === null ? undefined : verifyRoutes[subcommand];
     if (route === undefined) {
-      await replyUnknown(interaction, '/members verify');
+      await replyUnknown(interaction, '/members');
       return;
     }
     await handleVerify(asLegacyChatInput(interaction, route));
@@ -507,8 +560,9 @@ export async function handleMembersAnchor(interaction: ChatInputCommandInteracti
     return;
   }
 
-  if (group === 'search') {
-    await handleMemberSearch(asLegacyChatInput(interaction, { group: null, subcommand }));
+  const route = subcommand === null ? undefined : verifyRoutes[subcommand];
+  if (route !== undefined) {
+    await handleVerify(asLegacyChatInput(interaction, route));
     return;
   }
 
@@ -536,24 +590,24 @@ export async function handleMembersAnchorAutocomplete(
   const group = interaction.options.getSubcommandGroup(false);
   const subcommand = interaction.options.getSubcommand(false);
 
-  if (group === 'account') {
+  if (group === 'accounts' || group === 'account') {
     if (subcommand === 'set-main') {
       await handleAccountAutocomplete(asLegacyAutocomplete(interaction, 'set-main'));
       return;
     }
-    await interaction.respond([]);
+    await respondToAutocomplete(interaction, []);
     return;
   }
-  if (group === 'unverify-one' || group === 'verify') {
-    await interaction.respond([]);
-    return;
-  }
-  if (group === 'search') {
+  if (group === 'find' || group === 'search') {
     if (subcommand === 'player') {
       await handleMemberSearchAutocomplete(asLegacyAutocomplete(interaction, 'player'));
       return;
     }
-    await interaction.respond([]);
+    await respondToAutocomplete(interaction, []);
+    return;
+  }
+  if (group === 'tag' || group === 'verify' || group === 'unverify-one') {
+    await respondToAutocomplete(interaction, []);
     return;
   }
 
@@ -565,7 +619,7 @@ export async function handleMembersAnchorAutocomplete(
       await handleMemberHistoryAutocomplete(asLegacyAutocomplete(interaction, 'history'));
       return;
     default:
-      await interaction.respond([]);
+      await respondToAutocomplete(interaction, []);
   }
 }
 
@@ -599,4 +653,4 @@ export async function handleHelpAnchor(interaction: ChatInputCommandInteraction)
   }
 }
 
-export { handleCompositeComponent as handleAnchoredComponent };;
+export { handleCompositeComponent as handleAnchoredComponent };

@@ -160,7 +160,7 @@ beforeEach(() => {
   mocks.permissions.getInteractionMemberRoleIds.mockReturnValue(null);
 });
 
-describe('/clubs logs command data', () => {
+describe('/clubs clublogs command data', () => {
   it('registers add, remove, list and preview with the expected options', () => {
     const json = clubLogsCommandData.toJSON() as unknown as {
       name: string;
@@ -185,7 +185,7 @@ describe('/clubs logs command data', () => {
   });
 });
 
-describe('/clubs logs permission gating', () => {
+describe('/clubs clublogs permission gating', () => {
   it('defers ephemerally and denies users without clubs:write', async () => {
     mocks.adminService.requireGlobalPermission.mockRejectedValueOnce(forbidden());
     const interaction = chat('list');
@@ -204,7 +204,7 @@ describe('/clubs logs permission gating', () => {
   });
 });
 
-describe('/clubs logs configuration', () => {
+describe('/clubs clublogs configuration', () => {
   it('adds a club log and replies with the updated configuration embed', async () => {
     const interaction = chat('add', { club: CLUB_ID });
 
@@ -235,7 +235,7 @@ describe('/clubs logs configuration', () => {
   });
 });
 
-describe('/clubs logs preview', () => {
+describe('/clubs clublogs preview', () => {
   const configuredLog = {
     id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
     guildId: GUILD_ID,
@@ -312,7 +312,7 @@ describe('/clubs logs preview', () => {
   });
 });
 
-describe('/clubs logs autocomplete', () => {
+describe('/clubs clublogs autocomplete', () => {
   it('requires permission and suggests this guild’s active clubs by UUID', async () => {
     const club = { id: CLUB_ID, tag: 'ALPHA', name: 'Alpha' };
     mocks.clubs.getRegisteredClubs.mockResolvedValue([club]);
@@ -341,7 +341,7 @@ describe('/clubs logs autocomplete', () => {
   });
 });
 
-describe('/clubs logs components', () => {
+describe('/clubs clublogs components', () => {
   it('has no component handling', async () => {
     await expect(handleClubLogsComponent({} as never)).resolves.toBeUndefined();
   });

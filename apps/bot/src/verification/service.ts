@@ -739,8 +739,8 @@ export async function startVerification(
       code: 'active-challenge',
       message:
         `You already have an active verification challenge for ${formatTag(active.playerTag)} ` +
-        `with required icon **${active.targetIconName}**. Run \`/members account verify check\` ` +
-        `to finish it, or \`/members account verify cancel\` before verifying a different player tag.`,
+        `with required icon **${active.targetIconName}**. Run \`/members accounts check\` ` +
+        `to finish it, or \`/members accounts cancel\` before verifying a different player tag.`,
       challenge: active,
     };
   }
@@ -848,8 +848,8 @@ export async function checkVerification(
       ok: false,
       code: expired ? 'expired' : 'no-challenge',
       message: expired
-        ? 'Your verification challenge expired. Run `/members account verify start` again to begin a new one.'
-        : 'No active verification challenge was found. Run `/members account verify start tag:<player-tag>` first.',
+        ? 'Your verification challenge expired. Run `/members accounts verify` again to begin a new one.'
+        : 'No active verification challenge was found. Run `/members accounts verify tag:<player-tag>` first.',
     };
   }
 

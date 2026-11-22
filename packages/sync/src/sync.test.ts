@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BrawlStarsClient, Club, ClubMember } from '@brawlhub/brawl-stars';
+import type { BattleLogItem, BrawlStarsClient, Club, ClubMember } from '@brawlhub/brawl-stars';
 import { recoverInterruptedSyncs, registerClubs, runSync } from './index';
 
 type Call = {
@@ -348,6 +348,33 @@ function setupSuccessfulSync(options: {
   return state;
 }
 
+const OLD_BATTLE: BattleLogItem = {
+  battleTime: '20260101T000000.000Z',
+  event: { mode: 'gemGrab', map: 'Battlefield' },
+  battle: { type: 'ranked', result: 'victory', trophyChange: 8 },
+};
+const NEW_BATTLE: BattleLogItem = {
+  battleTime: '20260101T001000.000Z',
+  event: { mode: 'gemGrab', map: 'Battlefield' },
+  battle: { type: 'ranked', result: 'victory', trophyChange: 9 },
+};
+
+function setupBattleSync(input: {
+  lastBattleAt: string | null;
+  battles: BattleLogItem[];
+}): void {
+  setupSuccessfulSync();
+  fake.state.handlers['players:select'] = (call) => {
+    if (call.mode === 'array') {
+      return { data: [{ id: 'player-1', last_battle_at: input.lastBattleAt }] };
+    }
+    return { data: { id: 'player-1', tag: 'G2P9', name: 'Player One' } };
+  };
+  fake.state.handlers['players:update'] = () => ({ data: [] });
+  fake.state.handlers['player_battles:upsert'] = () => ({ data: [] });
+  fake.api.current = apiClient({ getBattleLog: async () => input.battles });
+}
+
 beforeEach(() => {
   fake.state.handlers = {};
   fake.state.calls.length = 0;
@@ -604,6 +631,51 @@ describe('runSync', () => {
     expect(second.snapshotsWritten).toBeGreaterThan(0);
     expect(callsFor('player_snapshots', 'upsert')).toHaveLength(2);
     expect(state.playerHash).toBeDefined();
+  });
+
+  it('upserts only battles newer than the stored last_battle_at', async () => {
+    setupBattleSync({
+      lastBattleAt: '2026-01-01T00:00:00.000Z',
+      battles: [OLD_BATTLE, NEW_BATTLE],
+    });
+
+    const result = await runSync({ now: T0, guildId: 'guild-test' });
+
+    expect(result.status).toBe('completed');
+    const upserts = callsFor('player_battles', 'upsert');
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]?.payload).toHaveLength(1);
+    expect(upserts[0]?.payload[0]).toMatchObject({
+      player_id: 'player-1',
+      battle_time: '2026-01-01T00:10:00.000Z',
+    });
+    expect(callsFor('players', 'update')[0]?.payload).toEqual({
+      last_battle_at: '2026-01-01T00:10:00.000Z',
+    });
+  });
+
+  it('skips battle writes when the stored log is already current', async () => {
+    setupBattleSync({
+      lastBattleAt: '2026-01-01T00:10:00.000Z',
+      battles: [OLD_BATTLE, NEW_BATTLE],
+    });
+
+    const result = await runSync({ now: T0, guildId: 'guild-test' });
+
+    expect(result.status).toBe('completed');
+    expect(callsFor('player_battles', 'upsert')).toHaveLength(0);
+    expect(callsFor('players', 'update')).toHaveLength(0);
+  });
+
+  it('writes all fetched battles when last_battle_at is unknown', async () => {
+    setupBattleSync({ lastBattleAt: null, battles: [OLD_BATTLE, NEW_BATTLE] });
+
+    const result = await runSync({ now: T0, guildId: 'guild-test' });
+
+    expect(result.status).toBe('completed');
+    const upserts = callsFor('player_battles', 'upsert');
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]?.payload).toHaveLength(2);
   });
 });
 

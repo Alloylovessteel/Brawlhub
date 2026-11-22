@@ -8,6 +8,7 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import { respondToAutocomplete } from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import {
@@ -267,7 +268,7 @@ export async function handleBlacklist(interaction: ChatInputCommandInteraction):
 export async function handleBlacklistAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'entry') {
-    await interaction.respond([]);
+    await respondToAutocomplete(interaction, []);
     return;
   }
   try {
@@ -279,9 +280,9 @@ export async function handleBlacklistAutocomplete(interaction: AutocompleteInter
       name: `${entry.playerTag === null ? entry.id : `#${entry.playerTag}`} — ${entry.reason}`,
       value: entry.id,
     }));
-    await interaction.respond(choices);
+    await respondToAutocomplete(interaction, choices);
   } catch {
-    await interaction.respond([]).catch(() => undefined);
+    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
   }
 }
 

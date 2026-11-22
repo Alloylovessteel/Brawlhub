@@ -41,13 +41,13 @@ export async function handleVerifyInfo(interaction: ChatInputCommandInteraction)
     .setTitle('How to verify your Brawl Stars account')
     .setDescription(
       [
-        '**1.** Run `/members account verify start tag:YOURTAG` with your player tag.',
+        '**1.** Run `/members accounts verify tag:YOURTAG` with your player tag.',
         '**2.** The bot shows a randomly chosen default brawler icon and its exact ID.',
-        '**3.** In Brawl Stars, set your player icon to that exact brawler, then run `/members account verify check`.',
+        '**3.** In Brawl Stars, set your player icon to that exact brawler, then run `/members accounts check`.',
         '**4.** The bot reads your current icon from the official Brawl Stars API. An exact match links the account to your Discord user.',
         '',
         'Challenges expire after 10 minutes. Ownership is never guessed from names, tags or profile pictures.',
-        'After verifying, use `/members account list` to see your main and alt accounts, and `/members account set-main tag:TAG` to change your main.',
+        'After verifying, use `/members accounts list` to see your main and alt accounts, and `/members accounts set-main tag:TAG` to change your main.',
       ].join('\n'),
     )
     .setFooter({ text: 'BrawlHub • verification is required for account-linked features' });

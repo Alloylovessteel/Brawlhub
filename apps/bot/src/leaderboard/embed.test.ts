@@ -218,7 +218,7 @@ describe('global leaderboard embeds', () => {
     expect(fields[0]?.value).toContain(formatAbsoluteTime('2026-11-17T00:00:00.000Z'));
     expect(data.description).toContain('different times');
     expect(data.footer?.text).toContain('Page 1 / 2');
-    expect(data.footer?.text).toContain('Showing 1–10 of 12');
+    expect(data.footer?.text).toContain('1–10 of 12');
   });
 
   it('distinguishes current trophies from recorded personal bests', () => {

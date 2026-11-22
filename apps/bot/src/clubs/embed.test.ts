@@ -319,9 +319,31 @@ describe('club embeds', () => {
     expect(json.fields?.[5]?.value).toContain(
       'Vice-Presidents: [Vice](https://brawlify.com/player/2C0Y) (600)',
     );
-    expect(json.fields?.[6]?.value).toContain('Today +100');
-    expect(json.fields?.[6]?.value).toContain('Week +200');
-    expect(json.fields?.[6]?.value).toContain('Season +300');
+    expect(json.fields?.[6]?.value).toContain('Today: +100');
+    expect(json.fields?.[6]?.value).toContain('Week: +200');
+    expect(json.fields?.[6]?.value).toContain('Season: +300');
+  });
+
+  it('expands match activity periods and keeps the club footer short', () => {
+    const json = buildClubEmbed(
+      view({
+        matchActivity: {
+          today: 5,
+          week: 43,
+          season: 0,
+          sampleSize: 23,
+          lastBattleAt: '2026-11-18T10:00:00.000Z',
+        },
+      }),
+      CONFIG,
+      NOW,
+    ).toJSON();
+    const field = json.fields?.find((entry) => entry.name === 'Average Matches Played');
+
+    expect(field?.value).toContain('Today: 5 • Week: 43 • Season: 0');
+    expect(field?.value).not.toContain('T 5 | W 43 | S 0');
+    expect(json.footer?.text).toContain('Official API data');
+    expect(json.footer?.text).not.toContain('online status');
   });
 
   it('uses a resolved club badge as an optional thumbnail', () => {
@@ -469,7 +491,7 @@ describe('club embeds', () => {
     const json = buildHistoryPageEmbed(view, paginate([], 1, 10), CONFIG).toJSON();
 
     expect((json.fields ?? []).map((field) => field.name)).toEqual([
-      'Available Range',
+      'Stored Snapshots',
       'Changes',
       'Snapshots',
     ]);
@@ -506,7 +528,7 @@ describe('club embeds', () => {
 
     expect(json.title?.length).toBeLessThanOrEqual(256);
     expect(json.description).toContain(formatAbsoluteTime(view.latestSnapshotAt));
-    expect(json.fields?.find((field) => field.name === 'Available Range')?.value).toContain('→');
+    expect(json.fields?.find((field) => field.name === 'Stored Snapshots')?.value).toContain('→');
     expect(json.fields?.find((field) => field.name === 'Club Trophies')?.value).toContain('+1,100');
     expect(json.fields?.find((field) => field.name === 'Trophy Progression')?.value).toContain('Week: +200');
     expect(json.fields?.length).toBeLessThanOrEqual(25);

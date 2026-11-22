@@ -13,6 +13,7 @@ import {
   formatPlayerLink,
 } from '../discord/format';
 import type { Page } from '../discord/pagination';
+import { paginationFooter } from '../discord/ux.js';
 import type { ClubMembershipStatus, PlayerClubRef, PlayerIdentity } from '../players/types';
 import type {
   ClubLeaderboardView,
@@ -102,9 +103,7 @@ function baseEmbed(
   const latestSync = formatSyncTime(meta.latestSyncAt);
   const generated = formatSyncTime(meta.generatedAt);
   const footer = [
-    category,
-    `Page ${page.page} / ${page.pageCount}`,
-    `Showing ${page.start}–${page.end} of ${page.total}`,
+    paginationFooter(page, category),
     latestSync === null ? null : `Latest sync: ${latestSync}`,
     generated === null ? null : `Generated: ${generated}`,
   ]

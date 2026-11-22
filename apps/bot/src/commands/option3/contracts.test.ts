@@ -290,6 +290,7 @@ describe('Option 3 anchor option preservation', () => {
       required: true,
       autocomplete: true,
     });
+    expect(optionNamed(clubsOptions, 'clublogs')).toBeDefined();
 
     const brawlersOptions = optionsOf(brawlersAnchorData);
     const detail = optionNamed(brawlersOptions, 'detail');
@@ -303,21 +304,27 @@ describe('Option 3 anchor option preservation', () => {
 
   it('preserves options from folded subcommand groups', () => {
     const memberOptions = optionsOf(membersAnchorData);
-    const account = optionNamed(memberOptions, 'account');
-    const verifyStart = optionNamed(account.options ?? [], 'verify-start');
+    const accounts = optionNamed(memberOptions, 'accounts');
+    const verifyStart = optionNamed(accounts.options ?? [], 'verify');
     expect(optionNamed(verifyStart.options ?? [], 'tag')).toMatchObject({
       name: 'tag',
       required: true,
     });
 
-    const verify = optionNamed(memberOptions, 'verify');
-    const tagSet = optionNamed(verify.options ?? [], 'tag-set');
+    for (const name of ['verify-info', 'verify-settings', 'register-list']) {
+      expect(optionNamed(memberOptions, name)).toBeDefined();
+    }
+
+    const tag = optionNamed(memberOptions, 'tag');
+    const tagSet = optionNamed(tag.options ?? [], 'set');
     expect(optionNamed(tagSet.options ?? [], 'user').type).toBe(6);
     expect(optionNamed(tagSet.options ?? [], 'tag').required).toBe(true);
     expect(optionNamed(tagSet.options ?? [], 'reason').required).toBe(false);
 
-    const search = optionNamed(memberOptions, 'search');
-    expect(optionNamed(optionNamed(search.options ?? [], 'player').options ?? [], 'query')).toMatchObject({
+    const find = optionNamed(memberOptions, 'find');
+    expect(optionNamed(find.options ?? [], 'user')).toBeDefined();
+    expect(optionNamed(find.options ?? [], 'tag')).toBeDefined();
+    expect(optionNamed(optionNamed(find.options ?? [], 'player').options ?? [], 'query')).toMatchObject({
       name: 'query',
       required: true,
       autocomplete: true,

@@ -4,6 +4,7 @@ import { EmbedBuilder } from 'discord.js';
 import type { BotConfig } from '../config';
 import { escapeMarkdown, formatClubLink, formatInteger, formatPlayerLink, cleanTag } from '../discord/format';
 import type { Page } from '../discord/pagination';
+import { paginationFooter } from '../discord/ux.js';
 import { fitEmbedToDiscordLimits, formatAbsoluteTime } from '../clubs/embed';
 import { statusLabel } from '../players/embed';
 import type { MemberListView, MemberSearchView, TrackedMemberRecord } from './types';
@@ -17,10 +18,6 @@ type MemberEmbedConfig = Pick<
 
 function truncate(value: string, maximum: number): string {
   return value.length <= maximum ? value : `${value.slice(0, maximum - 1)}…`;
-}
-
-function footer(page: Page<unknown>, label: string): string {
-  return `${label} • Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total}`;
 }
 
 function membershipValue(record: TrackedMemberRecord, config: MemberEmbedConfig): string {
@@ -52,7 +49,7 @@ export function buildMembersPageEmbed(
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
     .setTitle(truncate(title, 256))
-    .setFooter({ text: truncate(footer(page, 'Stored memberships'), 2048) });
+    .setFooter({ text: truncate(paginationFooter(page, 'Stored memberships'), 2048) });
 
   embed.setDescription(
     truncate(
@@ -85,7 +82,7 @@ export function buildMembersPageEmbed(
   return fitEmbedToDiscordLimits(embed);
 }
 
-/** Build the paginated `/members search` embed. */
+/** Build the paginated `/members find` embed. */
 export function buildMemberSearchPageEmbed(
   view: MemberSearchView,
   page: Page<MemberSearchView['entries'][number]>,
@@ -94,7 +91,7 @@ export function buildMemberSearchPageEmbed(
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
     .setTitle(view.identityContext ? 'Linked Discord Players' : 'Tracked Player Search')
-    .setFooter({ text: truncate(footer(page, 'Search results'), 2048) });
+    .setFooter({ text: truncate(paginationFooter(page, 'Search results'), 2048) });
 
   embed.setDescription(
     truncate(

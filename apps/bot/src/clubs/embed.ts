@@ -9,6 +9,7 @@ import {
   formatPlayerLink,
 } from '../discord/format';
 import { paginate, type Page } from '../discord/pagination';
+import { paginationFooter, periodSummary, sourceFooter } from '../discord/ux.js';
 import { calculateAverage, calculateTrophyProgression, calculateTrophyRange, countRole } from './calculate';
 import type {
   ClubLogPeriod,
@@ -238,11 +239,11 @@ function progressionSummary(view: ClubView, config: EmbedConfig, now: Date): str
     seasonStartIso: config.seasonStartIso,
   });
 
-  const parts: string[] = [];
-  if (progression.today !== null) parts.push(`Today ${formatDelta(progression.today)}`);
-  if (progression.week !== null) parts.push(`Week ${formatDelta(progression.week)}`);
-  if (progression.season !== null) parts.push(`Season ${formatDelta(progression.season)}`);
-  return parts.length === 0 ? null : parts.join('  ');
+  return periodSummary({
+    today: progression.today === null ? null : formatDelta(progression.today),
+    week: progression.week === null ? null : formatDelta(progression.week),
+    season: progression.season === null ? null : formatDelta(progression.season),
+  });
 }
 
 /** Build the detailed `/clubs details` embed. Static badge images are optional and best-effort. */
@@ -343,18 +344,21 @@ export function buildClubEmbed(
 
   const activity = view.matchActivity;
   if (activity !== null && (activity.today !== null || activity.week !== null || activity.season !== null)) {
-    const parts: string[] = [];
-    if (activity.today !== null) parts.push(`T ${formatInteger(activity.today)}`);
-    if (activity.week !== null) parts.push(`W ${formatInteger(activity.week)}`);
-    if (activity.season !== null) parts.push(`S ${formatInteger(activity.season)}`);
-    const matchesEmoji = formatEmoji(config.emojis.matches, 'matches');
-    const lastBattle = formatSyncTime(activity.lastBattleAt);
-    const lines = [`${matchesEmoji}${parts.join(' | ')}`.trim()];
-    if (lastBattle !== null) lines.push(`Last battle: ${lastBattle}`);
-    embed.addFields({
-      name: 'Average Matches Played',
-      value: truncate(lines.join('\n'), 1024),
+    const summary = periodSummary({
+      today: activity.today === null ? null : formatInteger(activity.today),
+      week: activity.week === null ? null : formatInteger(activity.week),
+      season: activity.season === null ? null : formatInteger(activity.season),
     });
+    if (summary !== null) {
+      const matchesEmoji = formatEmoji(config.emojis.matches, 'matches');
+      const lastBattle = formatSyncTime(activity.lastBattleAt);
+      const lines = [`${matchesEmoji} ${summary}`.trim()];
+      if (lastBattle !== null) lines.push(`Last battle: ${lastBattle}`);
+      embed.addFields({
+        name: 'Average Matches Played',
+        value: truncate(lines.join('\n'), 1024),
+      });
+    }
   } else if (activity?.lastBattleAt) {
     const lastBattle = formatSyncTime(activity.lastBattleAt);
     if (lastBattle !== null) {
@@ -394,13 +398,12 @@ export function buildClubEmbed(
     });
   }
 
-  const footer: string[] = [
-    view.liveStatus === 'live' ? 'Live official API data' : 'Latest synced data',
-    'Live online status is not exposed by the Brawl Stars API',
-  ];
-  const syncedAt = formatSyncTime(view.latestSyncAt);
-  if (syncedAt !== null) footer.push(`Synced ${syncedAt}`);
-  embed.setFooter({ text: truncate(footer.join(' • '), 2048) });
+  embed.setFooter({
+    text: truncate(
+      sourceFooter(view.liveStatus === 'live' ? 'live' : 'stored', formatSyncTime(view.latestSyncAt)),
+      2048,
+    ),
+  });
 
   return fitEmbedToDiscordLimits(embed);
 }
@@ -518,10 +521,6 @@ function memberName(member: RosterMember, config: EmbedConfig): string {
   return formatPlayerLink(name, member.tag, config.playerProfileUrlTemplate);
 }
 
-function pageFooter(page: Page<unknown>, label: string): string {
-  return `${label} • Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total}`;
-}
-
 /** Build a page of the latest synchronised club roster. */
 export function buildClubMembersPageEmbed(
   view: MemberView,
@@ -531,7 +530,7 @@ export function buildClubMembersPageEmbed(
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
     .setTitle(truncate(`${escapeMarkdown(view.club.name)} • ${displayTag(view.club.tag)} — Members`, 256))
-    .setFooter({ text: truncate(pageFooter(page, 'Roster'), 2048) });
+    .setFooter({ text: truncate(paginationFooter(page, 'Roster'), 2048) });
 
   const sync = formatSyncTime(view.latestSnapshot?.capturedAt ?? view.latestSyncAt);
   embed.setDescription(
@@ -607,7 +606,7 @@ export function buildClubMemberDetailsPageEmbed(
 ): EmbedBuilder {
   const emoji = clubEmojis(config);
   const footer = [
-    pageFooter(page, 'Member details'),
+    paginationFooter(page, 'Member details'),
     `Sorted by ${CLUB_MEMBER_SORT_LABELS[view.sort]}`,
     view.filter === null ? null : `Filter: ${CLUB_MEMBER_FILTER_LABELS[view.filter]}`,
   ].filter((line): line is string => line !== null);
@@ -749,7 +748,7 @@ export function buildLeaderboardPageEmbed(
     .setTitle(
       truncate(`${escapeMarkdown(view.club.name)} • ${displayTag(view.club.tag)} — Trophy Leaderboard`, 256),
     )
-    .setFooter({ text: truncate(pageFooter(page, 'Leaderboard'), 2048) });
+    .setFooter({ text: truncate(paginationFooter(page, 'Leaderboard'), 2048) });
 
   const snapshotAt = formatAbsoluteTime(view.latestSnapshot?.capturedAt);
   embed.setDescription(
@@ -784,14 +783,14 @@ export function buildLeaderboardPageEmbed(
 }
 
 function historyPointValue(point: HistoryPoint): string {
-  const lines: string[] = [];
+  const parts: string[] = [];
   const trophies = formatInteger(point.trophies);
   const average = formatInteger(point.averageTrophies);
   const members = formatInteger(point.memberCount);
-  if (trophies !== null) lines.push(`Club trophies: ${trophies}`);
-  if (average !== null) lines.push(`Average member trophies: ${average}`);
-  if (members !== null) lines.push(`Members: ${members}`);
-  return lines.length === 0 ? 'Snapshot contains no stored values.' : lines.join('\n');
+  if (trophies !== null) parts.push(`Trophies ${trophies}`);
+  if (average !== null) parts.push(`Average ${average}`);
+  if (members !== null) parts.push(`Members ${members}`);
+  return parts.length === 0 ? 'Snapshot contains no stored values.' : parts.join(' • ');
 }
 
 function addHistoryChangeField(
@@ -817,24 +816,19 @@ export function buildHistoryPageEmbed(
     .setTitle(
       truncate(`${escapeMarkdown(view.club.name)} • ${displayTag(view.club.tag)} — History`, 256),
     )
-    .setFooter({ text: truncate(pageFooter(page, HISTORY_LABELS[view.period]), 2048) });
+    .setFooter({ text: truncate(paginationFooter(page, HISTORY_LABELS[view.period]), 2048) });
 
   const latest = formatAbsoluteTime(view.latestSnapshotAt);
-  embed.setDescription(
-    truncate(
-      `${HISTORY_LABELS[view.period]} • Latest snapshot: ${latest ?? 'none stored'}`,
-      2048,
-    ),
-  );
+  embed.setDescription(truncate(`Latest stored snapshot: ${latest ?? 'none yet'}`, 2048));
 
   const rangeStart = formatAbsoluteTime(view.rangeStart);
   const rangeEnd = formatAbsoluteTime(view.rangeEnd);
   embed.addFields({
-    name: 'Available Range',
+    name: 'Stored Snapshots',
     value:
       rangeStart === null || rangeEnd === null
-        ? 'No stored snapshots in this period.'
-        : `${rangeStart} → ${rangeEnd}\n${view.points.length} stored snapshot${view.points.length === 1 ? '' : 's'}`,
+        ? 'No stored snapshots in this period yet.'
+        : `${view.points.length} stored snapshot${view.points.length === 1 ? '' : 's'}\nCoverage: ${rangeStart} → ${rangeEnd}`,
   });
 
   const change = view.change;
@@ -847,9 +841,9 @@ export function buildHistoryPageEmbed(
           : 'At least two stored snapshots are required to calculate changes.',
     });
   } else {
-    addHistoryChangeField(embed, 'Club Trophies', change.trophies, 'Change');
-    addHistoryChangeField(embed, 'Average Member Trophies', change.averageTrophies, 'Change');
-    addHistoryChangeField(embed, 'Member Count', change.memberCount, 'Change');
+    addHistoryChangeField(embed, 'Club Trophies', change.trophies, 'Change from first snapshot');
+    addHistoryChangeField(embed, 'Average Member Trophies', change.averageTrophies, 'Change from first snapshot');
+    addHistoryChangeField(embed, 'Member Count', change.memberCount, 'Change from first snapshot');
   }
 
   const progression = formatProgressionLines(view.progression, '');
@@ -1004,7 +998,7 @@ export function buildClubLogPageEmbed(
         256,
       ),
     )
-    .setFooter({ text: truncate(pageFooter(page, periodLabel), 2048) });
+    .setFooter({ text: truncate(paginationFooter(page, periodLabel), 2048) });
 
   const snapshotAt = formatAbsoluteTime(view.latestSnapshotAt);
   const syncAt = formatSyncTime(view.latestSyncAt);

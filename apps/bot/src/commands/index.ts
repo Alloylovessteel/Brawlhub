@@ -272,6 +272,7 @@ export async function dispatchInteraction(
   definitions: readonly CommandDefinition[],
 ): Promise<void> {
   if (interaction.isAutocomplete()) {
+    if (interaction.responded) return;
     const command = definitions.find((candidate) => candidate.data.name === interaction.commandName);
     if (command?.autocomplete === undefined) {
       return;

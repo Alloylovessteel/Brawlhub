@@ -11,7 +11,7 @@ import {
 } from 'discord.js';
 import { getBotConfig } from '../config';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
-import { replyWithSafeError } from '../discord/errors';
+import { replyWithSafeError, respondToAutocomplete } from '../discord/errors';
 import {
   buildPaginationRowWithState,
   isPaginationButtonWithState,
@@ -320,7 +320,7 @@ export async function handleBrawlers(interaction: ChatInputCommandInteraction): 
     await interaction.editReply({
       content:
         'No player tag was supplied and no verified Brawl Stars player is linked to you. ' +
-        'Use `/brawlers list tag:YOURTAG` or verify with `/members account verify start tag:YOURTAG`.',
+        'Use `/brawlers list tag:YOURTAG` or verify with `/members accounts verify tag:YOURTAG`.',
       allowedMentions: { parse: [] },
     });
     return;
@@ -361,7 +361,7 @@ export async function handleBrawler(interaction: ChatInputCommandInteraction): P
     await interaction.editReply({
       content:
         'No player tag was supplied and no verified Brawl Stars player is linked to you. ' +
-        'Use `/brawlers detail name:BRAWLER tag:YOURTAG` or verify with `/members account verify start tag:YOURTAG`.',
+        'Use `/brawlers detail name:BRAWLER tag:YOURTAG` or verify with `/members accounts verify tag:YOURTAG`.',
       allowedMentions: { parse: [] },
     });
     return;
@@ -541,5 +541,5 @@ export async function handleBrawlersAutocomplete(
     .filter((brawler) => brawler.name.toLowerCase().includes(query))
     .slice(0, 25)
     .map((brawler) => ({ name: brawler.name, value: brawler.name }));
-  await interaction.respond(choices);
+  await respondToAutocomplete(interaction, choices);
 }

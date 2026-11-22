@@ -7,7 +7,7 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 - Retired top-level names no longer appear in Discord’s slash-command picker. Use the replacement paths below.
 - Buttons and select menus on existing messages still work. Their custom IDs—including guild IDs, nonces, pagination state and the `club-overview` toggle/done controls—are unchanged, so old messages do not need to be reposted.
 - Reports remain scheduled auto-posts. They are not posted immediately when the bot starts.
-- Scheduled club logs now post one full-page PNG from stored official-API history; `/clubs logs preview` can post the same page on demand.
+- Scheduled club logs now post one full-page PNG from stored official-API history; `/clubs clublogs preview` can post the same page on demand.
 - Sync and verification completion notices are posted as mention-safe embeds to the guild’s configured announcement or verification channel.
 - Blacklist commands remain disabled and unregistered.
 
@@ -49,7 +49,7 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 | `/club-compare first:… second:…` | `/clubs compare first:… second:…` |
 | `/view add|remove|list` | `/clubs view add|remove|list` |
 | `/club-overview menu` | `/clubs fields` |
-| `/clublogs add|remove|list` | `/clubs logs add|remove|list` (new: `/clubs logs preview`) |
+| `/clublogs add|remove|list` | `/clubs clublogs add|remove|list` (new: `/clubs clublogs preview`) |
 | `/register-club tag:…` | `/clubs register tag:…` |
 | `/remove-club club:…` | `/clubs remove club:…` |
 
@@ -71,18 +71,18 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 | Before | Use instead |
 | --- | --- |
 | `/members tag:…` | `/members roster tag:…` |
-| `/account list` | `/members account list` |
-| `/account set-main tag:…` | `/members account set-main tag:…` |
-| `/account verify start|check|cancel|status` | `/members account verify-start|verify-check|verify-cancel|verify-status` |
-| `/verify info|settings|list` | `/members verify info|settings|list` |
-| `/verify tag set …` | `/members verify tag-set …` |
-| `/verify find user|tag …` | `/members verify find-user|find-tag …` |
+| `/account list` | `/members accounts list` |
+| `/account set-main tag:…` | `/members accounts set-main tag:…` |
+| `/account verify start|check|cancel|status` | `/members accounts verify|check|cancel|status` |
+| `/verify info|settings|list` | `/members verify-info|verify-settings|register-list` |
+| `/verify tag set …` | `/members tag set …` |
+| `/verify find user|tag …` | `/members find user|tag …` |
 | `/unverify-one user|tag …` | `/members unverify-one user|tag …` |
 | `/unverify-all user:…` | `/members unverify-all user:…` |
 | `/delete-me` | `/members delete-me` |
 | `/member-history tag:…` | `/members history tag:…` |
-| `/member-search player query:…` | `/members search player query:…` |
-| `/member-search discord user:…` | `/members search discord user:…` |
+| `/member-search player query:…` | `/members find player query:…` |
+| `/member-search discord user:…` | `/members find discord user:…` |
 
 ### Information commands
 
@@ -94,7 +94,7 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 
 ## Automation added with this build
 
-- `/clubs logs preview club:<club-uuid> [period:today|week|season]` requires `clubs:write` and only accepts a log configured for the current guild. It acknowledges privately, then posts the full-page PNG publicly in that channel without components.
+- `/clubs clublogs preview club:<club-uuid> [period:today|week|season]` requires `clubs:write` and only accepts a log configured for the current guild. It acknowledges privately, then posts the full-page PNG publicly in that channel without components.
 - Scheduled club-log posts use the existing configured log channels and delivery watermark. A change is marked delivered only after its PNG is posted successfully; failures remain queued for retry.
 - Club-log PNGs combine the selected stored trophy-progression period with recent stored membership, role and capacity changes. They are not live and never use BrawlAPI event rotation data.
 - Operator notices reuse guild settings: sync uses the announcement channel with verification fallback; verification uses the verification channel with announcement fallback. All notices disable Discord mentions and are best-effort so they cannot fail a sync or verification.

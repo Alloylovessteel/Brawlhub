@@ -2,6 +2,7 @@ import {
   DiscordAPIError,
   MessageFlags,
   type AnySelectMenuInteraction,
+  type ApplicationCommandOptionChoiceData,
   type AutocompleteInteraction,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
@@ -18,6 +19,31 @@ export type RepliableInteraction =
 export function isIgnorableInteractionError(error: unknown): boolean {
   if (!(error instanceof DiscordAPIError)) return false;
   return error.code === 10062 || error.code === 40060 || error.code === 10008;
+}
+
+export interface RespondToAutocompleteOptions {
+  /** Suppress unexpected response failures when already handling another error. */
+  readonly swallowUnexpectedErrors?: boolean;
+}
+
+/**
+ * Send autocomplete choices only while the interaction is still unacknowledged.
+ * Discord acknowledgement races are ignored so handlers do not log noise when a
+ * response arrives after another path already answered. Fallback callers can
+ * also suppress secondary failures that would otherwise mask the original error.
+ */
+export async function respondToAutocomplete(
+  interaction: AutocompleteInteraction,
+  choices: readonly ApplicationCommandOptionChoiceData[],
+  options: RespondToAutocompleteOptions = {},
+): Promise<void> {
+  if (interaction.responded) return;
+  try {
+    await interaction.respond(choices);
+  } catch (error) {
+    if (isIgnorableInteractionError(error) || options.swallowUnexpectedErrors === true) return;
+    throw error;
+  }
 }
 
 /** Sanitise an error for logs, redacting known secrets from the message. */

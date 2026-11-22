@@ -4,6 +4,7 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import { respondToAutocomplete } from '../discord/errors.js';
 import { listLinkedAccounts, setMainVerification } from '../verification/index.js';
 
 const COMMAND_NAME = 'accounts';
@@ -57,7 +58,7 @@ function accountsEmbed(
     .setDescription(
       lines.length > 0
         ? lines.join('\n')
-        : 'You have no verified accounts. Use `/members account verify start tag:YOURTAG` to link one.',
+        : 'You have no verified accounts. Use `/members accounts verify tag:YOURTAG` to link one.',
     )
     .setFooter({ text: `${accounts.length} linked • ${mainCount} main • the rest are alts` });
 }
@@ -67,7 +68,7 @@ export async function handleAccounts(interaction: ChatInputCommandInteraction): 
   const accounts = await listLinkedAccounts(interaction.user.id);
   if (accounts === null) {
     await interaction.editReply({
-      content: 'You do not have a BrawlHub profile yet. Use `/members account verify start tag:YOURTAG` first.',
+      content: 'You do not have a BrawlHub profile yet. Use `/members accounts verify tag:YOURTAG` first.',
       allowedMentions: { parse: [] },
     });
     return;
@@ -81,7 +82,7 @@ export async function handleAccounts(interaction: ChatInputCommandInteraction): 
         result.kind === 'invalid-tag'
           ? 'That player tag is not valid.'
           : result.kind === 'not-found'
-            ? `That account is not linked to you. Use \`/members account list\` to see your linked accounts.`
+            ? `That account is not linked to you. Use \`/members accounts list\` to see your linked accounts.`
             : 'Could not update your main account right now. Please try again.';
       await interaction.editReply({ content: message, allowedMentions: { parse: [] } });
       return;
@@ -104,7 +105,7 @@ export async function handleAccounts(interaction: ChatInputCommandInteraction): 
 export async function handleAccountsAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'tag') {
-    await interaction.respond([]);
+    await respondToAutocomplete(interaction, []);
     return;
   }
   const accounts = await listLinkedAccounts(interaction.user.id);
@@ -120,5 +121,5 @@ export async function handleAccountsAutocomplete(interaction: AutocompleteIntera
       name: `${account.isMain ? '★ MAIN — ' : 'Alt — '}${account.name ?? 'Unknown'} (#${account.tag})`.slice(0, 100),
       value: account.tag,
     }));
-  await interaction.respond(choices);
+  await respondToAutocomplete(interaction, choices);
 }

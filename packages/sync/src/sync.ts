@@ -79,6 +79,40 @@ function battleKey(item: BattleLogItem): string {
   return createHash('sha256').update(parts.join('|')).digest('hex');
 }
 
+const LAST_BATTLE_LOOKUP_CHUNK_SIZE = 100;
+
+/** Reads the newest battle already stored for each player, in batched lookups. */
+async function readLastBattleTimes(
+  db: SupabaseClient,
+  playerIds: ReadonlyArray<string>,
+): Promise<Map<string, string>> {
+  const lastBattleTimes = new Map<string, string>();
+  for (let index = 0; index < playerIds.length; index += LAST_BATTLE_LOOKUP_CHUNK_SIZE) {
+    const chunk = playerIds.slice(index, index + LAST_BATTLE_LOOKUP_CHUNK_SIZE);
+    const { data, error } = await db
+      .from('players')
+      .select('id, last_battle_at')
+      .in('id', [...chunk]);
+    if (error) {
+      // Treat unreadable cutoffs as unknown: writing an old battle again is
+      // harmless (the unique key dedupes it), while skipping one is not.
+      log.warn('Could not read stored last battle times', {
+        chunkSize: chunk.length,
+        reason: error.message,
+      });
+      continue;
+    }
+    for (const row of data ?? []) {
+      const item = row as { id?: unknown; last_battle_at?: unknown } | null;
+      if (typeof item?.id !== 'string') continue;
+      if (typeof item.last_battle_at !== 'string') continue;
+      if (Number.isNaN(Date.parse(item.last_battle_at))) continue;
+      lastBattleTimes.set(item.id, item.last_battle_at);
+    }
+  }
+  return lastBattleTimes;
+}
+
 async function collectBattleLogs(
   db: SupabaseClient,
   client: BrawlStarsClient,
@@ -88,6 +122,7 @@ async function collectBattleLogs(
 ): Promise<number> {
   const byPlayer = new Map<string, string>();
   for (const state of states) byPlayer.set(state.playerId, state.tag);
+  const lastBattleTimes = await readLastBattleTimes(db, [...byPlayer.keys()]);
   let inserted = 0;
 
   for (const [playerId, tag] of byPlayer) {
@@ -103,6 +138,8 @@ async function collectBattleLogs(
       continue;
     }
 
+    const cutoff = lastBattleTimes.get(playerId) ?? null;
+    const cutoffMs = cutoff === null ? null : Date.parse(cutoff);
     const rows = items
       .map((item) => {
         const battleTime = parseBattleTime(item.battleTime);
@@ -123,7 +160,10 @@ async function collectBattleLogs(
           raw: item as unknown as Record<string, unknown>,
         };
       })
-      .filter((row): row is NonNullable<typeof row> => row !== null);
+      .filter(
+        (row): row is NonNullable<typeof row> =>
+          row !== null && (cutoffMs === null || Date.parse(row.battle_time) > cutoffMs),
+      );
 
     if (rows.length === 0) continue;
 

@@ -33,3 +33,5 @@ jobs:
 
       - name: Verify security invariants
         run: npm run verify:security
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

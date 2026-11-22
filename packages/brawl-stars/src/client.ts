@@ -35,7 +35,7 @@ export interface BrawlStarsClientOptions {
   sleepFn?: (delayMs: number) => Promise<void>;
   /**
    * Minimum spacing between the start of consecutive API requests. Defaults to
-   * BRAWL_STARS_MIN_INTERVAL_MS (250ms). Set to 0 to disable spacing.
+   * BRAWL_STARS_MIN_INTERVAL_MS (150ms). Set to 0 to disable spacing.
    */
   minIntervalMs?: number;
   /** Injectable wait used only for request spacing (useful in tests). */
@@ -53,7 +53,7 @@ export interface BrawlStarsClient {
 
 const MAX_ATTEMPTS = 3;
 const BASE_RETRY_DELAY_MS = 200;
-const DEFAULT_MIN_INTERVAL_MS = 250;
+const DEFAULT_MIN_INTERVAL_MS = 150;
 const MAX_MIN_INTERVAL_MS = 60_000;
 const DEFAULT_BASE_URL = 'https://api.brawlstars.com/v1';
 const TAG_PATTERN = /^[0289CGJLPQRUVY]{3,10}$/;

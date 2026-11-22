@@ -22,7 +22,7 @@ import {
   loadRecentClubLogEvents,
   removeClubLog,
 } from '../clubs/logs/service';
-import { isIgnorableInteractionError } from '../discord/errors.js';
+import { isIgnorableInteractionError, respondToAutocomplete } from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 
@@ -233,7 +233,7 @@ export async function handleClubLogs(interaction: ChatInputCommandInteraction): 
     }
 
     await interaction.editReply({
-      content: 'Choose `/clubs logs add`, `/clubs logs remove`, `/clubs logs list`, or `/clubs logs preview`.',
+      content: 'Choose `/clubs clublogs add`, `/clubs clublogs remove`, `/clubs clublogs list`, or `/clubs clublogs preview`.',
       allowedMentions: { parse: [] },
     });
   } catch (error) {
@@ -250,7 +250,7 @@ export async function handleClubLogsAutocomplete(
 ): Promise<void> {
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'club') {
-    await interaction.respond([]);
+    await respondToAutocomplete(interaction, []);
     return;
   }
   try {
@@ -267,9 +267,9 @@ export async function handleClubLogsAutocomplete(
       name: `${club.name} (#${club.tag})`,
       value: club.id,
     }));
-    await interaction.respond(choices);
+    await respondToAutocomplete(interaction, choices);
   } catch {
-    await interaction.respond([]).catch(() => undefined);
+    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
   }
 }
 

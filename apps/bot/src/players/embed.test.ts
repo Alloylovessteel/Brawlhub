@@ -126,7 +126,7 @@ describe('player embeds', () => {
     expect(text).toContain('👑 Highest Trophies');
     expect(text).toContain('Experience');
     expect(text).toContain('🟢 Player Activity');
-    expect(text).toContain('Live online status is not exposed by the Brawl Stars API');
+    expect(text).toContain('Online status is not exposed by the official API');
     expect(text).toContain('[Alpha Club](https://example.test/clubs/8QCL)');
     expect(text).toContain('Top Brawlers (Live API)');
     expect(text).toContain('Snapshot:');

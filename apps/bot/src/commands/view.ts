@@ -17,6 +17,7 @@ import {
   removeViewTag,
 } from '../clubs/view-tags';
 import { getBotConfig } from '../config';
+import { respondToAutocomplete } from '../discord/errors.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 
 const logger = createLogger('bot');
@@ -196,7 +197,7 @@ export async function handleView(interaction: ChatInputCommandInteraction): Prom
 export async function handleViewAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'tag') {
-    await interaction.respond([]);
+    await respondToAutocomplete(interaction, []);
     return;
   }
   try {
@@ -211,8 +212,8 @@ export async function handleViewAutocomplete(interaction: AutocompleteInteractio
       name: `${club.name} (#${club.tag})`,
       value: club.id,
     }));
-    await interaction.respond(choices);
+    await respondToAutocomplete(interaction, choices);
   } catch {
-    await interaction.respond([]).catch(() => undefined);
+    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
   }
 }

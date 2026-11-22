@@ -4,6 +4,7 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
+import { respondToAutocomplete } from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { buildClubArchivedEmbed, buildClubArchivePreviewEmbed } from '../admin/embed';
 import { replyAdminError } from '../admin/errors';
@@ -149,7 +150,7 @@ export async function handleRemoveClubComponent(interaction: CommandComponentInt
 export async function handleRemoveClubAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'club') {
-    await interaction.respond([]);
+    await respondToAutocomplete(interaction, []);
     return;
   }
   try {
@@ -159,8 +160,8 @@ export async function handleRemoveClubAutocomplete(interaction: AutocompleteInte
       name: `${club.name} (#${club.tag})`,
       value: club.id,
     }));
-    await interaction.respond(choices);
+    await respondToAutocomplete(interaction, choices);
   } catch {
-    await interaction.respond([]).catch(() => undefined);
+    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
   }
 }

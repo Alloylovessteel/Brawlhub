@@ -10,6 +10,7 @@ import {
 import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
 import type { ClubLookupFailure } from '../clubs/types';
 import { cleanTag } from '../discord/format';
+import { respondToAutocomplete } from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 
 const logger = createLogger('bot');
@@ -233,7 +234,7 @@ export async function respondWithClubChoices(
   try {
     const focused = interaction.options.getFocused(true);
     if (optionName !== undefined && focused.name !== optionName) {
-      await interaction.respond([]);
+      await respondToAutocomplete(interaction, []);
       return;
     }
     const query = typeof focused.value === 'string' ? focused.value : '';
@@ -242,11 +243,11 @@ export async function respondWithClubChoices(
       name: `${club.name} (#${club.tag})`,
       value: club.tag,
     }));
-    await interaction.respond(choices);
+    await respondToAutocomplete(interaction, choices);
   } catch (error) {
     logger.warn('Club autocomplete could not read registered clubs', {
       error: error instanceof Error ? error.message : 'unknown error',
     });
-    await interaction.respond([]).catch(() => undefined);
+    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
   }
 }

@@ -15,6 +15,12 @@ import { startClubOverviewSchedule } from './clubs/overview/service.js';
 import { startClubLogsSchedule } from './clubs/logs/poster.js';
 import { startReportsSchedule } from './reports/schedule.js';
 import { waitForInFlightWork } from './shutdown.js';
+import {
+  acquireSingleInstanceLock,
+  releaseSingleInstanceLock,
+  SingleInstanceBusyError,
+  type SingleInstanceLock,
+} from './single-instance.js';
 import { startBattleRawRetentionSchedule } from './retention/schedule.js';
 import { refreshAllConfiguredClubRoles } from './club-roles/service.js';
 
@@ -27,6 +33,16 @@ function safeError(error: unknown, secret?: string): string {
     return message.split(secret).join('[REDACTED]');
   }
   return message;
+}
+
+async function releaseLockSafely(): Promise<void> {
+  try {
+    await releaseSingleInstanceLock(instanceLock);
+  } catch (error) {
+    logger.warn('Could not release the single-instance lock', {
+      error: safeError(error, token),
+    });
+  }
 }
 
 const config = getBotConfig();
@@ -52,6 +68,7 @@ let stopClubLogsSchedule: (() => void) | undefined;
 let stopReportsSchedule: (() => void) | undefined;
 let stopRetentionSchedule: (() => void) | undefined;
 let activeSync: Promise<void> | undefined;
+let instanceLock: SingleInstanceLock | undefined;
 
 const SHUTDOWN_SYNC_TIMEOUT_MS = 10_000;
 
@@ -205,6 +222,22 @@ if (token === undefined) {
   process.exit(0);
 }
 
+try {
+  instanceLock = await acquireSingleInstanceLock();
+} catch (error) {
+  if (error instanceof SingleInstanceBusyError) {
+    logger.warn(error.message, {
+      lockPath: error.lockPath,
+      holderPid: error.holderPid,
+    });
+  } else {
+    logger.error('Could not acquire the single-instance lock', {
+      error: safeError(error, token),
+    });
+  }
+  process.exit(1);
+}
+
 const client = new Client({
   intents: getGatewayIntents(),
 });
@@ -265,6 +298,7 @@ async function shutdown(signal: string): Promise<void> {
   }
 
   client.destroy();
+  await releaseLockSafely();
   process.exit(0);
 }
 
@@ -278,17 +312,18 @@ process.on('SIGTERM', () => {
 
 process.on('unhandledRejection', (reason: unknown) => {
   logger.error('Unhandled promise rejection', { error: safeError(reason, token) });
-  process.exit(1);
+  void releaseLockSafely().finally(() => process.exit(1));
 });
 
 process.on('uncaughtException', (error: Error) => {
   logger.error('Uncaught exception', { error: safeError(error, token) });
-  process.exit(1);
+  void releaseLockSafely().finally(() => process.exit(1));
 });
 
 try {
   await client.login(token);
 } catch (error) {
   logger.error('Discord login failed', { error: safeError(error, token) });
+  await releaseLockSafely();
   process.exit(1);
 }

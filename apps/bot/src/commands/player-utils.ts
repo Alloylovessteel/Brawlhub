@@ -1,6 +1,7 @@
 import { createLogger } from '@brawlhub/logging';
 import type { AutocompleteInteraction, ChatInputCommandInteraction } from 'discord.js';
 import type { HistoryPeriod } from '../clubs/types';
+import { respondToAutocomplete } from '../discord/errors.js';
 import { searchPlayers } from '../players/service';
 import type { PlayerLookupFailure } from '../players/types';
 import {
@@ -77,12 +78,13 @@ export async function respondWithPlayerChoices(
   try {
     const focused = interaction.options.getFocused(true);
     if (optionName !== undefined && focused.name !== optionName) {
-      await interaction.respond([]);
+      await respondToAutocomplete(interaction, []);
       return;
     }
     const query = typeof focused.value === 'string' ? focused.value : '';
     const players = await searchPlayers(query, { guildId: interaction.guildId });
-    await interaction.respond(
+    await respondToAutocomplete(
+      interaction,
       players.map((player) => ({
         name: `${player.name} (#${player.tag})`,
         value: player.tag,
@@ -92,6 +94,6 @@ export async function respondWithPlayerChoices(
     logger.warn('Player autocomplete could not read players', {
       error: error instanceof Error ? error.message : 'unknown error',
     });
-    await interaction.respond([]).catch(() => undefined);
+    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
   }
 }

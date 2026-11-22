@@ -75,7 +75,7 @@ async function readGuildClubIds(guildId: string | null | undefined, db: Database
     .filter((id): id is string => id !== null);
 }
 
-/** Validate the free-text part of a `/members search` query. */
+/** Validate the free-text part of a `/members find` query. */
 export function normalizeMemberSearchQuery(query: string): string | null {
   const trimmed = query.trim();
   if (trimmed.length < 2 || trimmed.length > 32) return null;

@@ -35,10 +35,10 @@ Variables (from `.env.example`):
 | Brawl Stars | `BRAWL_STARS_API_KEY` | Official developer key, sent as `Authorization: Bearer <key>`; no token endpoint or caching. |
 | Brawl Stars | `BRAWL_STARS_BASE_URL` | API base URL (default `https://api.brawlstars.com/v1`). |
 | Brawl Stars | `SYNC_INTERVAL_MINUTES` | Sync cadence in minutes (default `15`, clamped to `1`–`1440`). |
-| Brawl Stars | `BRAWL_STARS_MIN_INTERVAL_MS` | Minimum delay between Brawl Stars API requests in ms (default `250`). |
+| Brawl Stars | `BRAWL_STARS_MIN_INTERVAL_MS` | Minimum delay between Brawl Stars API requests in ms (default `150`). |
 | Sync | `SYNC_SECRET` | Server-only bearer secret for `/api/sync`; blank makes the endpoint return `503`. |
 | Discord | `OVERVIEW_INTERVAL_MINUTES` | Club stats overview refresh cadence (default `30`, clamped to `1`–`1440`). The channel is set per guild with `/settings set-overview-channel`. |
-| Discord | `CLUB_LOGS_INTERVAL_MINUTES` | Scheduled club-log PNG poll cadence (default `5`, clamped to `1`–`1440`). Channels are set per guild with `/clubs logs add`. |
+| Discord | `CLUB_LOGS_INTERVAL_MINUTES` | Scheduled club-log PNG poll cadence (default `5`, clamped to `1`–`1440`). Channels are set per guild with `/clubs clublogs add`. |
 | Discord | `CLUB_LOGS_PERIOD` | Trophy period used by scheduled club-log PNGs: `today`, `week` or `season` (default `today`). |
 | Discord | `DISCORD_TOKEN` | Bot token (server-side only). |
 | Discord | `DISCORD_CLIENT_ID` | Discord application ID. |
@@ -144,7 +144,7 @@ For each guild with an overview channel configured via `/settings set-overview-c
 
 ### Club logs and operator notices
 
-For each guild with club logs configured via `/clubs logs add`, the bot polls every `CLUB_LOGS_INTERVAL_MINUTES` (default `5`). One full-page PNG is posted per waiting log; it combines the stored trophy-progression period selected by `CLUB_LOGS_PERIOD` (default `today`) with recent stored membership, role and capacity changes. The image uses official-API sync history only, is not live, and does not use BrawlAPI event rotation data. Event IDs are marked delivered only after the PNG posts successfully, so failures stay queued for retry. `/clubs logs preview club:<club-uuid> [period:...]` posts the same page on demand: it requires `clubs:write`, only accepts a log configured for the current guild, acknowledges privately and posts the PNG publicly with no components.
+For each guild with club logs configured via `/clubs clublogs add`, the bot polls every `CLUB_LOGS_INTERVAL_MINUTES` (default `5`). One full-page PNG is posted per waiting log; it combines the stored trophy-progression period selected by `CLUB_LOGS_PERIOD` (default `today`) with recent stored membership, role and capacity changes. The image uses official-API sync history only, is not live, and does not use BrawlAPI event rotation data. Event IDs are marked delivered only after the PNG posts successfully, so failures stay queued for retry. `/clubs clublogs preview club:<club-uuid> [period:...]` posts the same page on demand: it requires `clubs:write`, only accepts a log configured for the current guild, acknowledges privately and posts the PNG publicly with no components.
 
 Sync completion/failure and verification completion send best-effort, mention-safe embeds to guild-configured channels. Sync notices use the announcement channel with verification fallback; verification notices use the verification channel with announcement fallback. A notice failure never changes the sync or verification result. Reports remain scheduled auto-posts; leave `REPORTS_IMMEDIATE_ON_START=false`.
 

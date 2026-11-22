@@ -13,6 +13,7 @@ import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
 import {
   logAutocompleteError,
   replyWithSafeError,
+  respondToAutocomplete,
   safeErrorMessage,
 } from '../discord/errors';
 import {
@@ -474,10 +475,10 @@ export async function handleCompetitionAutocomplete(interaction: AutocompleteInt
           : focused.name === 'account'
             ? await accountChoices(interaction, focused.value)
             : [];
-    await interaction.respond(choices);
+    await respondToAutocomplete(interaction, choices);
   } catch (error) {
     const { token } = getBotConfig();
     logAutocompleteError(logger, COMMAND_NAME, error, token === undefined ? [] : [token]);
-    await interaction.respond([]).catch(() => undefined);
+    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
   }
 }

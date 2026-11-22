@@ -1,6 +1,7 @@
 import { EmbedBuilder } from 'discord.js';
 import { fitEmbedToDiscordLimits, formatAbsoluteTime } from '../clubs/embed';
 import { paginate, type Page } from '../discord/pagination';
+import { paginationFooter } from '../discord/ux.js';
 import type { EventKind, EventSlotView, EventView } from './types';
 
 const EMBED_COLOR = 0x5865_f2;
@@ -21,10 +22,9 @@ export function paginateEvents(view: EventView, page: number, pageSize = 1): Pag
 
 export function buildEventPageEmbed(view: EventView, page: Page<EventSlotView>): EmbedBuilder {
   const label = kindLabel(view.kind);
-  const footer =
-    `${label} events • Page ${page.page} / ${page.pageCount} • ` +
-    `Showing ${page.start}–${page.end} of ${page.total}`;
-  const embed = new EmbedBuilder().setTitle(`${label} Events`).setFooter({ text: footer });
+  const embed = new EmbedBuilder()
+    .setTitle(`${label} Events`)
+    .setFooter({ text: paginationFooter(page, `${label} events`) });
 
   const slot = page.items[0];
   if (slot === undefined) {

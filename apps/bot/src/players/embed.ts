@@ -11,6 +11,7 @@ import {
   formatPlayerLink,
 } from '../discord/format';
 import type { Page } from '../discord/pagination';
+import { ONLINE_STATUS_NOTE, paginationFooter } from '../discord/ux.js';
 import type {
   BrawlerFilter,
   BrawlerSort,
@@ -252,7 +253,7 @@ export function buildPlayerProfileEmbed(
     embed.addFields({
       name: `${emoji.online} Player Activity`,
       value: truncate(
-        `Last battle: ${lastBattle}\nLive online status is not exposed by the Brawl Stars API`,
+        `Last battle: ${lastBattle}\n${ONLINE_STATUS_NOTE}`,
         1024,
       ),
     });
@@ -943,7 +944,7 @@ export function buildMeSummaryEmbed(
   if (lastBattle !== null) {
     embed.addFields({
       name: `${emoji.online} Last Battle`,
-      value: truncate(`${lastBattle}\nLive online status is not exposed by the Brawl Stars API`, 1024),
+      value: truncate(`${lastBattle}\n${ONLINE_STATUS_NOTE}`, 1024),
     });
   }
 
@@ -982,7 +983,7 @@ export function buildMeBrawlersEmbed(
     .setTitle(truncate(`${playerName(view, config)} — Brawler Overview`, 256))
     .setFooter({
       text: truncate(
-        `Page ${page.page} / ${page.pageCount} • Showing ${page.start}–${page.end} of ${page.total} • Use /brawlers detail name:BRAWLER for full details`,
+        `${paginationFooter(page, 'Brawlers')} • Use /brawlers detail name:BRAWLER for full details`,
         2048,
       ),
     });
