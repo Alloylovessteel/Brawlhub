@@ -281,9 +281,9 @@ export function buildVerificationMessage(guildId: string): {
     mdSection(
       'Steps',
       [
-        `${mdBold('1.')} Run \`/members accounts verify tag:YOURTAG\` with your Brawl Stars player tag.`,
+        `${mdBold('1.')} Run \`/members verify tag:YOURTAG\` with your Brawl Stars player tag.`,
         `${mdBold('2.')} The bot shows a randomly chosen default brawler icon and its exact ID.`,
-        `${mdBold('3.')} Set that exact icon in Brawl Stars, then run \`/members accounts check\`.`,
+        `${mdBold('3.')} Set that exact icon in Brawl Stars, then run \`/members check\`.`,
         `${mdBold('4.')} The official Brawl Stars API confirms the match and links the account to you.`,
       ].join('\n'),
     ),

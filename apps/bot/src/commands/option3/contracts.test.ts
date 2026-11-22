@@ -305,8 +305,14 @@ describe('Option 3 anchor option preservation', () => {
   it('preserves options from folded subcommand groups', () => {
     const memberOptions = optionsOf(membersAnchorData);
     const accounts = optionNamed(memberOptions, 'accounts');
-    const verifyStart = optionNamed(accounts.options ?? [], 'verify');
-    expect(optionNamed(verifyStart.options ?? [], 'tag')).toMatchObject({
+    expect(optionNamed(accounts.options ?? [], 'list')).toBeDefined();
+    expect(optionNamed(accounts.options ?? [], 'set-main')).toBeDefined();
+    expect((accounts.options ?? []).some((option) => option.name === 'verify')).toBe(false);
+
+    for (const name of ['verify', 'check', 'cancel', 'status']) {
+      expect(optionNamed(memberOptions, name)).toBeDefined();
+    }
+    expect(optionNamed(optionNamed(memberOptions, 'verify').options ?? [], 'tag')).toMatchObject({
       name: 'tag',
       required: true,
     });
@@ -315,8 +321,7 @@ describe('Option 3 anchor option preservation', () => {
       expect(optionNamed(memberOptions, name)).toBeDefined();
     }
 
-    const tag = optionNamed(memberOptions, 'tag');
-    const tagSet = optionNamed(tag.options ?? [], 'set');
+    const tagSet = optionNamed(memberOptions, 'tag-set');
     expect(optionNamed(tagSet.options ?? [], 'user').type).toBe(6);
     expect(optionNamed(tagSet.options ?? [], 'tag').required).toBe(true);
     expect(optionNamed(tagSet.options ?? [], 'reason').required).toBe(false);

@@ -386,7 +386,7 @@ export async function handleBrawlersAnchorAutocomplete(
 
 const accountVerifyGroup = findSourceGroup(accountCommandData, 'verify');
 
-export const membersAnchorData = new SlashCommandBuilder()
+const membersBuilder = new SlashCommandBuilder()
   .setName('members')
   .setDescription('Tracked members, accounts, verification and identity management')
   .addSubcommand(() =>
@@ -403,37 +403,37 @@ export const membersAnchorData = new SlashCommandBuilder()
         'Choose your main account',
       ),
     );
-    if (accountVerifyGroup !== undefined) {
-      for (const option of accountVerifyGroup.options ?? []) {
-        group.addSubcommand(() =>
-          subcommandFromGroup(
-            accountCommandData,
-            'verify',
-            option.name,
-            option.name === 'start' ? 'verify' : option.name,
-            option.description,
-          ),
-        );
-      }
-    }
     return group;
-  })
+  });
+
+// Verification actions are flat under /members: verify, check, cancel, status.
+if (accountVerifyGroup !== undefined) {
+  for (const option of accountVerifyGroup.options ?? []) {
+    membersBuilder.addSubcommand(() =>
+      subcommandFromGroup(
+        accountCommandData,
+        'verify',
+        option.name,
+        option.name === 'start' ? 'verify' : option.name,
+        option.description,
+      ),
+    );
+  }
+}
+
+export const membersAnchorData = membersBuilder
   .addSubcommand(() => bare('verify-info', 'Post the player verification guide'))
   .addSubcommand(() => bare('verify-settings', 'Show server verification settings'))
   .addSubcommand(() => bare('register-list', 'List verified links in this server'))
-  .addSubcommandGroup((group) => {
-    group.setName('tag').setDescription('Staff-link a Discord user to a player');
-    group.addSubcommand(() =>
-      subcommandFromGroup(
-        verifyCommandData,
-        'tag',
-        'set',
-        'set',
-        'Link a Discord user to a Brawl Stars player',
-      ),
-    );
-    return group;
-  })
+  .addSubcommand(() =>
+    subcommandFromGroup(
+      verifyCommandData,
+      'tag',
+      'set',
+      'tag-set',
+      'Link a Discord user to a Brawl Stars player',
+    ),
+  )
   .addSubcommandGroup((group) => {
     group.setName('find').setDescription('Find verified members and account links');
     group.addSubcommand(() =>
@@ -552,6 +552,14 @@ export async function handleMembersAnchor(interaction: ChatInputCommandInteracti
       return;
     }
     await handleVerify(asLegacyChatInput(interaction, route));
+    return;
+  }
+
+  const accountRoute = subcommand === null ? undefined : accountVerifyRoutes[subcommand];
+  if (accountRoute !== undefined) {
+    await handleAccount(
+      asLegacyChatInput(interaction, { group: 'verify', subcommand: accountRoute }),
+    );
     return;
   }
 

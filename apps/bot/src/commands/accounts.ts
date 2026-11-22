@@ -62,7 +62,7 @@ function accountsEmbed(
         ? mdParagraphs(...lines)
         : mdParagraphs(
             'You have no verified accounts.',
-            `Use ${mdCode('/members accounts verify tag:YOURTAG')} to link one.`,
+            `Use ${mdCode('/members verify tag:YOURTAG')} to link one.`,
           ),
     )
     .setFooter({ text: `${accounts.length} linked • ${mainCount} main • the rest are alts` });
@@ -73,7 +73,7 @@ export async function handleAccounts(interaction: ChatInputCommandInteraction): 
   const accounts = await listLinkedAccounts(interaction.user.id);
   if (accounts === null) {
     await interaction.editReply({
-      content: 'You do not have a BrawlHub profile yet. Use `/members accounts verify tag:YOURTAG` first.',
+      content: 'You do not have a BrawlHub profile yet. Use `/members verify tag:YOURTAG` first.',
       allowedMentions: { parse: [] },
     });
     return;

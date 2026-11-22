@@ -92,7 +92,7 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       {
         name: 'members',
         usage:
-          '/members roster | /members accounts list | /members accounts verify tag:<tag> | /members register-list | /members find player query:PLAYERTAG',
+          '/members roster | /members accounts list | /members verify tag:<tag> | /members register-list | /members find player query:PLAYERTAG',
         description:
           'Show tracked members and manage linked accounts, verification, identity data and verified-member searches.',
         permission: 'members:verify for management actions and discord searches',

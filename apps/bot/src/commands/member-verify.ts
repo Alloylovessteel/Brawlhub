@@ -199,12 +199,12 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     `**${heading} for ${challenge.playerName} (${formatTag(challenge.playerTag)})**`,
     '',
     `1. Open Brawl Stars and change your **player icon** to **${icon.name}** (shown below).`,
-    '2. Wait for the official API to update, then run `/members accounts check`. If it is not detected yet, keep this exact icon and check again.',
+    '2. Wait for the official API to update, then run `/members check`. If it is not detected yet, keep this exact icon and check again.',
     `3. This challenge expires ${formatExpiry(challenge.expiresAt)}.`,
     '',
     `Starting icon detected by the official API: \`${challenge.startingIconId}\``,
     `Required icon: **${icon.name}** (ID \`${icon.id}\`) — default brawler icon (randomly selected)`,
-    'Re-running `/members accounts verify` for the same player keeps this exact required icon. BrawlHub only verifies ownership when the official Brawl Stars API shows this exact required icon. Changing to any other icon will not verify, and BrawlHub will not infer ownership from names, tags, or Discord profile details.',
+    'Re-running `/members verify` for the same player keeps this exact required icon. BrawlHub only verifies ownership when the official Brawl Stars API shows this exact required icon. Changing to any other icon will not verify, and BrawlHub will not infer ownership from names, tags, or Discord profile details.',
   ];
   await interaction.editReply({ content: lines.join('\n'), embeds: [targetIconEmbed(icon)] });
 }
@@ -262,7 +262,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
       '',
       `Current icon ID from the official API: \`${result.currentIconId}\``,
       `Required icon: **${icon.name}** (ID \`${icon.id}\`)`,
-      `Keep your in-game player icon set to **${icon.name}** (shown below). The official API can take a few minutes to show a new icon, so run \`/members accounts check\` again shortly.`,
+      `Keep your in-game player icon set to **${icon.name}** (shown below). The official API can take a few minutes to show a new icon, so run \`/members check\` again shortly.`,
       'Changing to any other icon will not verify ownership.',
       `Challenge expires ${formatExpiry(result.expiresAt)}.`,
     ];
@@ -312,7 +312,7 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
   });
   if (challenge === null) {
     await interaction.editReply({
-      content: 'No active verification challenge. Run `/members accounts verify tag:<player-tag>` to begin.',
+      content: 'No active verification challenge. Run `/members verify tag:<player-tag>` to begin.',
     });
     return;
   }
@@ -328,7 +328,7 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
       `Starting icon ID: \`${challenge.startingIconId}\`\n` +
       `Required icon: **${icon.name}** (ID \`${icon.id}\`) — default brawler icon\n` +
       `Expires: ${formatExpiry(challenge.expiresAt)}\n\n` +
-      `Set your in-game icon to **${icon.name}** (shown below), then run \`/members accounts check\`. Changing to any other icon will not verify.`,
+      `Set your in-game icon to **${icon.name}** (shown below), then run \`/members check\`. Changing to any other icon will not verify.`,
     embeds: [targetIconEmbed(icon)],
   });
 }
@@ -354,7 +354,7 @@ export async function handleMemberVerify(interaction: ChatInputCommandInteractio
       return;
     default:
       await interaction.editReply({
-        content: 'Unknown verification action. Use `/members accounts verify`, `check`, `cancel`, or `status`.',
+        content: 'Unknown verification action. Use `/members verify`, `check`, `cancel`, or `status`.',
       });
   }
 }

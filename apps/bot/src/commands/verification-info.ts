@@ -46,9 +46,9 @@ export async function handleVerifyInfo(interaction: ChatInputCommandInteraction)
         mdSection(
           'Steps',
           [
-            `${mdBold('1.')} Run \`/members accounts verify tag:YOURTAG\` with your player tag.`,
+            `${mdBold('1.')} Run \`/members verify tag:YOURTAG\` with your player tag.`,
             `${mdBold('2.')} The bot shows a randomly chosen default brawler icon and its exact ID.`,
-            `${mdBold('3.')} In Brawl Stars, set your player icon to that exact brawler, then run \`/members accounts check\`.`,
+            `${mdBold('3.')} In Brawl Stars, set your player icon to that exact brawler, then run \`/members check\`.`,
             `${mdBold('4.')} The bot reads your current icon from the official Brawl Stars API. An exact match links the account to your Discord user.`,
           ].join('\n'),
         ),

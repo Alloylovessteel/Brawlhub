@@ -321,7 +321,7 @@ describe('/me command', () => {
     await handleMe(interaction);
 
     expect(mocks.service.loadPlayerProfile).not.toHaveBeenCalled();
-    expect(payload(interaction, 'editReply').content).toContain('/members accounts verify');
+    expect(payload(interaction, 'editReply').content).toContain('/members verify');
   });
 
   it('loads and renders a player profile with a Brawlify link', async () => {

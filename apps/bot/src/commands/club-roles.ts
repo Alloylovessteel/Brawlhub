@@ -173,7 +173,7 @@ export async function handleClubRoles(interaction: ChatInputCommandInteraction):
         result.kind === 'not-configured'
           ? 'Club-rank roles are not configured in this server yet.'
           : result.kind === 'not-verified'
-            ? 'No verified main account with a role in this server’s clubs was found for you. Verify with `/members accounts verify` first.'
+            ? 'No verified main account with a role in this server’s clubs was found for you. Verify with `/members verify` first.'
             : result.kind === 'not-member'
               ? 'You are not a member of this server.'
               : result.rank === null

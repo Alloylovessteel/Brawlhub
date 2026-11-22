@@ -73,9 +73,9 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 | `/members tag:…` | `/members roster tag:…` |
 | `/account list` | `/members accounts list` |
 | `/account set-main tag:…` | `/members accounts set-main tag:…` |
-| `/account verify start|check|cancel|status` | `/members accounts verify|check|cancel|status` |
+| `/account verify start|check|cancel|status` | `/members verify|check|cancel|status` |
 | `/verify info|settings|list` | `/members verify-info|verify-settings|register-list` |
-| `/verify tag set …` | `/members tag set …` |
+| `/verify tag set …` | `/members tag-set …` |
 | `/verify find user|tag …` | `/members find user|tag …` |
 | `/unverify-one user|tag …` | `/members unverify-one user|tag …` |
 | `/unverify-all user:…` | `/members unverify-all user:…` |
