@@ -249,10 +249,10 @@ async function listBotGuildIds(rest: CommandRegistrationRest): Promise<readonly 
 }
 
 /**
- * Register the full command set globally so new servers receive commands, and
- * also register it directly to every joined guild for instant availability.
- * DISCORD_GUILD_ID remains a fast-update target but is no longer the only
- * registration scope.
+ * Register the full command set once, globally. Any stale guild-scoped copies
+ * are cleared afterwards so Discord never shows two versions of the same
+ * command (for example `/members delete-me` twice). If global registration
+ * fails, guild commands are left untouched so the bot remains usable.
  */
 export async function registerCommands(options: CommandRegistrationOptions = {}): Promise<void> {
   const config = getBotConfig();
@@ -285,6 +285,7 @@ export async function registerCommands(options: CommandRegistrationOptions = {})
     );
   } catch (error) {
     logger.error('Failed to register global slash commands', { error: errorMessage(error) });
+    return;
   }
 
   let joinedGuildIds = options.guildIds;
@@ -304,10 +305,10 @@ export async function registerCommands(options: CommandRegistrationOptions = {})
 
   for (const targetGuildId of targets) {
     try {
-      await rest.put(Routes.applicationGuildCommands(clientId, targetGuildId), { body });
-      logger.info(`Registered ${body.length} guild slash command(s) for ${targetGuildId}`);
+      await rest.put(Routes.applicationGuildCommands(clientId, targetGuildId), { body: [] });
+      logger.info(`Cleared stale guild slash command(s) for ${targetGuildId}`);
     } catch (error) {
-      logger.error('Failed to register guild slash commands', {
+      logger.error('Failed to clear stale guild slash commands', {
         guildId: targetGuildId,
         error: errorMessage(error),
       });

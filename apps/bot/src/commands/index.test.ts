@@ -163,7 +163,7 @@ describe('registerCommands', () => {
     return { rest: { get, put } as unknown as CommandRegistrationRest, get, put };
   }
 
-  it('registers globally and to every joined guild, not only the configured guild', async () => {
+  it('registers globally once and clears stale guild copies in every joined guild', async () => {
     const { rest, get, put } = registrar();
 
     await registerCommands({
@@ -180,12 +180,12 @@ describe('registerCommands', () => {
       Routes.applicationGuildCommands(CLIENT_ID, JOINED_GUILD_ID),
       Routes.applicationGuildCommands(CLIENT_ID, PRIMARY_GUILD_ID),
     ]);
-    for (const [, options] of put.mock.calls) {
-      expect(options.body).toHaveLength(commands.length);
-    }
+    expect(put.mock.calls[0]?.[1].body).toHaveLength(commands.length);
+    expect(put.mock.calls[1]?.[1].body).toEqual([]);
+    expect(put.mock.calls[2]?.[1].body).toEqual([]);
   });
 
-  it('still registers global and configured-guild commands when guild listing fails', async () => {
+  it('clears the configured guild command scope when guild listing fails', async () => {
     const get = vi.fn(async () => {
       throw new Error('guild list unavailable');
     });
@@ -202,6 +202,21 @@ describe('registerCommands', () => {
       Routes.applicationCommands(CLIENT_ID),
       Routes.applicationGuildCommands(CLIENT_ID, PRIMARY_GUILD_ID),
     ]);
+    expect(put.mock.calls[1]?.[1].body).toEqual([]);
+  });
+
+  it('leaves guild commands untouched when global registration fails', async () => {
+    const { rest, put } = registrar();
+    put.mockRejectedValueOnce(new Error('global unavailable'));
+
+    await registerCommands({
+      rest,
+      token: 'test-token',
+      clientId: CLIENT_ID,
+      guildId: PRIMARY_GUILD_ID,
+    });
+
+    expect(put).toHaveBeenCalledTimes(1);
   });
 });
 
