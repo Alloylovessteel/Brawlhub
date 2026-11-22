@@ -312,6 +312,8 @@ describe('club embeds', () => {
       'Description',
     ]);
     expect(json.title).toBe('Alpha • #2C0Y');
+    expect(json.fields?.slice(0, 5).every((field) => field.inline === true)).toBe(true);
+    expect(json.fields?.slice(5).every((field) => field.inline !== true)).toBe(true);
     expect(plain(json.fields?.[0]?.value)).toContain('🏆1,300');
     expect(plain(json.fields?.[0]?.value)).toContain('👑 Highest 900');
     expect(plain(json.fields?.[0]?.value)).toContain('Avg 🏆733');

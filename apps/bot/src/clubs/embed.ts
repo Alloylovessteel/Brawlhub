@@ -298,6 +298,7 @@ export function buildClubEmbed(
     embed.addFields({
       name: 'Trophies',
       value: truncate(mdList(trophyParts), 1024),
+      inline: true,
     });
   }
 
@@ -308,6 +309,7 @@ export function buildClubEmbed(
         `${emoji.trophyRange}${formatInteger(range.low) ?? '—'} - ${formatInteger(range.high) ?? '—'}`,
         1024,
       ),
+      inline: true,
     });
   }
 
@@ -319,6 +321,7 @@ export function buildClubEmbed(
         `${emoji.crown} ${formatPlayerLink(leader.name, leader.tag, config.playerProfileUrlTemplate)} (${mdCode(displayTag(leader.tag))})`,
         1024,
       ),
+      inline: true,
     });
   }
 
@@ -327,6 +330,7 @@ export function buildClubEmbed(
     embed.addFields({
       name: 'Required Trophies',
       value: truncate(`${emoji.required} ${required}`, 1024),
+      inline: true,
     });
   }
 
@@ -335,6 +339,7 @@ export function buildClubEmbed(
     embed.addFields({
       name: 'Type',
       value: truncate(mdCode(type), 1024),
+      inline: true,
     });
   }
 
@@ -344,7 +349,7 @@ export function buildClubEmbed(
     const seniors = countRole(view.roster, 'senior');
     if (vicePresidents !== null) lines.push(`${emoji.members}${mdBold('Vice-Presidents')} ${vicePresidents}`);
     if (seniors !== null) lines.push(`${emoji.members}${mdBold('Seniors')} ${seniors}`);
-    embed.addFields({ name: 'Members', value: truncate(mdList(lines), 1024) });
+    embed.addFields({ name: 'Members', value: truncate(mdList(lines), 1024), inline: true });
 
     const staff = staffLines(view.roster, config);
     if (staff.length > 0) {
