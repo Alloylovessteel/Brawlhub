@@ -3,6 +3,8 @@ import { recordAdminAudit, AdminServiceError } from '../../admin/service';
 import type { AdminActor } from '../../admin/types';
 import { asNumber, asString, record, relationRecord, requireOk } from '../service';
 import { cleanTag } from '../../discord/format';
+import { isClubLogPeriod } from './page-view';
+import type { ClubLogPeriod } from '../types';
 import type {
   ClubLogConfig,
   ClubLogDelivery,
@@ -100,6 +102,7 @@ function roleLabel(value: unknown): string {
 function parseLogRows(
   rows: readonly RawClubLog[],
   clubs: ReadonlyMap<string, { readonly tag: string; readonly name: string }>,
+  periodsByLog: ReadonlyMap<string, readonly ClubLogPeriod[]>,
 ): ClubLogRow[] {
   const logs: ClubLogRow[] = [];
   for (const row of rows) {
@@ -109,9 +112,41 @@ function parseLogRows(
       ...row,
       clubTag: club.tag,
       clubName: club.name,
+      periods: periodsByLog.get(row.id) ?? ['today'],
     });
   }
   return logs;
+}
+
+async function readLogPeriods(
+  guildId: string,
+  logIds: readonly string[],
+  db: DatabaseClient,
+): Promise<Map<string, ClubLogPeriod[]>> {
+  const periods = new Map<string, ClubLogPeriod[]>();
+  if (logIds.length === 0) return periods;
+  const result = await db
+    .from('guild_club_log_periods')
+    .select('log_id, period')
+    .eq('guild_id', guildId)
+    .in('log_id', [...logIds]);
+  requireOk(result.error, 'Read club log periods');
+  for (const item of result.data ?? []) {
+    const row = record(item);
+    const logId = eventId(row?.['log_id']);
+    const period = asString(row?.['period']);
+    if (logId === null || period === null || !isClubLogPeriod(period)) continue;
+    const current = periods.get(logId) ?? [];
+    if (!current.includes(period)) current.push(period);
+    periods.set(logId, current);
+  }
+  for (const [logId, current] of periods) {
+    periods.set(
+      logId,
+      (['today', 'week', 'season'] as const).filter((candidate) => current.includes(candidate)),
+    );
+  }
+  return periods;
 }
 
 interface RawClubLog {
@@ -194,7 +229,12 @@ export async function loadClubLogRows(
     clubs.set(id, { tag, name });
   }
 
-  return parseLogRows(rawLogs, clubs).sort(
+  const periodsByLog = await readLogPeriods(
+    parsedGuildId,
+    [...new Set(rawLogs.map((row) => row.id))],
+    db,
+  );
+  return parseLogRows(rawLogs, clubs, periodsByLog).sort(
     (left, right) =>
       left.clubName.localeCompare(right.clubName) ||
       left.clubTag.localeCompare(right.clubTag) ||
@@ -211,13 +251,14 @@ export async function loadClubLogs(
   return rows.map(({ createdAt: _createdAt, ...config }) => config);
 }
 
-/** Subscribe one active guild club to a text channel (idempotent per guild/club/channel). */
+/** Subscribe one active guild club to a text channel and trophy period. */
 export async function addClubLog(
   input: {
     readonly actor: AdminActor;
     readonly guildId: string;
     readonly clubId: string;
     readonly channelId: string;
+    readonly period?: string | null;
   },
   options: ClubLogServiceOptions = {},
 ): Promise<ClubLogConfig[]> {
@@ -228,6 +269,11 @@ export async function addClubLog(
     'invalid_channel',
     'Choose a text channel for these club logs.',
   );
+  const rawPeriod = input.period ?? 'today';
+  if (!isClubLogPeriod(rawPeriod)) {
+    throw new AdminServiceError('invalid_period', 'Choose a valid club log period.');
+  }
+  const period: ClubLogPeriod = rawPeriod;
   const db = dbFor(options);
 
   const clubResult = await db
@@ -273,6 +319,27 @@ export async function addClubLog(
   );
   requireOk(saved.error, 'Save club log');
 
+  const savedRows = await readRawClubLogs(guildId, db);
+  const savedRow = savedRows.find(
+    (row) => row.clubId === clubId && row.channelId === channelId,
+  );
+  if (savedRow === undefined) {
+    throw new AdminServiceError('save_failed', 'Could not save that club log.');
+  }
+
+  const savedPeriod = await db.from('guild_club_log_periods').upsert(
+    {
+      guild_id: guildId,
+      log_id: savedRow.id,
+      period,
+    },
+    {
+      onConflict: 'guild_id,log_id,period',
+      ignoreDuplicates: true,
+    },
+  );
+  requireOk(savedPeriod.error, 'Save club log period');
+
   await recordAdminAudit(
     {
       actor: input.actor,
@@ -280,7 +347,7 @@ export async function addClubLog(
       targetType: 'club',
       targetId: clubId,
       guildId,
-      details: { guildId, clubId, channelId },
+      details: { guildId, clubId, channelId, period },
     },
     { db },
   );
@@ -288,25 +355,78 @@ export async function addClubLog(
   return loadClubLogs(guildId, { db });
 }
 
-/** Remove all log subscriptions for a club in this guild. */
+/** Remove a trophy period from a club log, or all log subscriptions when no period is given. */
 export async function removeClubLog(
-  input: { readonly actor: AdminActor; readonly guildId: string; readonly clubId: string },
+  input: {
+    readonly actor: AdminActor;
+    readonly guildId: string;
+    readonly clubId: string;
+    readonly period?: string | null;
+  },
   options: ClubLogServiceOptions = {},
 ): Promise<ClubLogConfig[]> {
   const guildId = requireGuildId(input.guildId);
   const clubId = requireId(input.clubId, 'invalid_club', 'Choose a registered club from the list.');
+  const rawPeriod = input.period ?? null;
+  if (rawPeriod !== null && !isClubLogPeriod(rawPeriod)) {
+    throw new AdminServiceError('invalid_period', 'Choose a valid club log period.');
+  }
   const db = dbFor(options);
+  let removed = 0;
 
-  const removed = await db
-    .from('guild_club_logs')
-    .delete()
-    .eq('guild_id', guildId)
-    .eq('club_id', clubId)
-    .select('id');
-  requireOk(removed.error, 'Remove club log');
-  const removedRows = Array.isArray(removed.data) ? removed.data : [];
-  if (removedRows.length === 0) {
-    throw new AdminServiceError('not_found', 'That club has no logs configured in this server.');
+  if (rawPeriod !== null) {
+    const targetLogs = (await readRawClubLogs(guildId, db)).filter((row) => row.clubId === clubId);
+    if (targetLogs.length === 0) {
+      throw new AdminServiceError('not_found', 'That club has no logs configured in this server.');
+    }
+    const logIds = targetLogs.map((row) => row.id);
+    const deletedPeriods = await db
+      .from('guild_club_log_periods')
+      .delete()
+      .eq('guild_id', guildId)
+      .eq('period', rawPeriod)
+      .in('log_id', logIds)
+      .select('log_id');
+    requireOk(deletedPeriods.error, 'Remove club log period');
+    if ((deletedPeriods.data ?? []).length === 0) {
+      throw new AdminServiceError('not_found', 'That club log does not use the selected period.');
+    }
+
+    const remaining = await db
+      .from('guild_club_log_periods')
+      .select('log_id')
+      .eq('guild_id', guildId)
+      .in('log_id', logIds);
+    requireOk(remaining.error, 'Read remaining club log periods');
+    const remainingIds = new Set(
+      (remaining.data ?? [])
+        .map((item) => eventId(record(item)?.['log_id']))
+        .filter((id): id is string => id !== null),
+    );
+    const emptyLogIds = logIds.filter((id) => !remainingIds.has(id));
+    if (emptyLogIds.length > 0) {
+      const removedLogs = await db
+        .from('guild_club_logs')
+        .delete()
+        .eq('guild_id', guildId)
+        .eq('club_id', clubId)
+        .in('id', emptyLogIds)
+        .select('id');
+      requireOk(removedLogs.error, 'Remove empty club log');
+      removed = (removedLogs.data ?? []).length;
+    }
+  } else {
+    const removedLogs = await db
+      .from('guild_club_logs')
+      .delete()
+      .eq('guild_id', guildId)
+      .eq('club_id', clubId)
+      .select('id');
+    requireOk(removedLogs.error, 'Remove club log');
+    removed = (removedLogs.data ?? []).length;
+    if (removed === 0) {
+      throw new AdminServiceError('not_found', 'That club has no logs configured in this server.');
+    }
   }
 
   await recordAdminAudit(
@@ -316,7 +436,7 @@ export async function removeClubLog(
       targetType: 'club',
       targetId: clubId,
       guildId,
-      details: { guildId, clubId, removed: removedRows.length },
+      details: { guildId, clubId, ...(rawPeriod === null ? {} : { period: rawPeriod }), removed },
     },
     { db },
   );

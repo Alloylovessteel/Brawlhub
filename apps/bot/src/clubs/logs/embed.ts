@@ -2,6 +2,7 @@ import { EmbedBuilder } from 'discord.js';
 import { getBotConfig } from '../../config';
 import { clubEmojis, fitEmbedToDiscordLimits } from '../embed';
 import { cleanTag } from '../../discord/format';
+import { CLUB_LOG_PERIOD_LABELS } from './page-view';
 import type { ClubLogConfig, ClubLogEvent } from './types';
 
 const EMBED_COLOR = 0x5865_f2;
@@ -46,9 +47,12 @@ export function buildClubLogsConfigEmbed(input: {
 
   const shown = input.logs.length > MAX_FIELDS ? MAX_FIELDS - 1 : MAX_FIELDS;
   for (const log of input.logs.slice(0, shown)) {
+    const periodLabels = (log.periods.length > 0 ? log.periods : (['today'] as const))
+      .map((period) => CLUB_LOG_PERIOD_LABELS[period])
+      .join(', ');
     embed.addFields({
       name: truncate(`${log.clubName} (#${cleanTag(log.clubTag)})`, 256),
-      value: truncate(`<#${log.channelId}>`, 1024),
+      value: truncate(`<#${log.channelId}> • ${periodLabels}`, 1024),
     });
   }
   if (input.logs.length > MAX_FIELDS) {

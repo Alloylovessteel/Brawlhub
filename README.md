@@ -250,9 +250,11 @@ The bot reports missing configuration and exits safely when `DISCORD_TOKEN` is b
 
 ### Discord automation
 
+- `/clubs clublogs add club:<club-uuid> channel:<#channel> [period:Daily (Today)|Weekly (This Week)|Season]` requires `clubs:write`. Repeat the command with another period to post more than one trophy page for the same club and channel; omitting `period` uses `today`.
+- `/clubs clublogs remove club:<club-uuid> [period:...]` removes one period or, when omitted, every subscription for that club in the guild.
 - `/clubs clublogs preview club:<club-uuid> [period:today|week|season]` requires `clubs:write` and a log configured for the current guild. It replies privately, then posts the full-page club-log PNG publicly in the channel.
-- Scheduled club-log posts use those same configured channels and existing delivery dedupe. The PNG combines stored trophy progression with recent stored membership, role and capacity changes; it is marked delivered only after the image posts successfully.
-- `CLUB_LOGS_INTERVAL_MINUTES` controls the poll cadence (default `5`, clamped to `1`–`1440`) and `CLUB_LOGS_PERIOD` selects the trophy period (default `today`).
+- Scheduled club-log posts use those same configured channels and existing delivery dedupe. One PNG is posted per subscribed period when new stored events exist, combining trophy progression with recent membership, role and capacity changes; events are marked delivered only after every subscribed period posts successfully.
+- `CLUB_LOGS_INTERVAL_MINUTES` controls the poll cadence (default `5`, clamped to `1`–`1440`). The old global `CLUB_LOGS_PERIOD` variable is unused; periods are stored per subscription.
 - Icon verification challenges last 30 minutes. Re-running `/members accounts verify` for the same player resumes the existing required icon instead of rotating it; use `/members accounts cancel` first to verify a different tag. The official API can take a few minutes to reflect an in-game icon change, so players should keep the exact shown icon and retry `/members accounts check`. Challenges are held in memory, so a bot restart expires any active challenge and the player should run `/members accounts verify` again.
 - Completed and failed syncs, plus successful icon or staff verification, send mention-safe embeds to the guild’s configured announcement or verification channel. These notices are best-effort and never change the command or sync result.
 - Reports remain scheduled auto-posts; `REPORTS_IMMEDIATE_ON_START` must remain `false`. The legacy `primary_club_id` setting is untouched and ignored at runtime.

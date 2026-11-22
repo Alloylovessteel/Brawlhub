@@ -1,5 +1,7 @@
 /** Stored, guild-scoped club log configuration and derived event views. */
 
+import type { ClubLogPeriod } from '../types';
+
 export interface ClubLogConfig {
   readonly id: string;
   readonly guildId: string;
@@ -7,6 +9,8 @@ export interface ClubLogConfig {
   readonly clubTag: string;
   readonly clubName: string;
   readonly channelId: string;
+  /** Trophy periods this subscription posts; legacy rows without a row default to `today`. */
+  readonly periods: readonly ClubLogPeriod[];
 }
 
 /** Internal row with the subscription timestamp used as the event watermark. */

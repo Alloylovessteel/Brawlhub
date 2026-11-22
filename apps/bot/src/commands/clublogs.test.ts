@@ -172,11 +172,15 @@ describe('/clubs clublogs command data', () => {
     const add = json.options[0]?.options ?? [];
     expect(add[0]).toMatchObject({ name: 'club', autocomplete: true, required: true });
     expect(add[1]).toMatchObject({ name: 'channel', required: true, channel_types: [0] });
+    expect(add[2]).toMatchObject({ name: 'period', required: false });
+    expect((add[2]?.['choices'] as unknown[] | undefined)?.length).toBe(3);
     expect(json.options[1]?.options?.[0]).toMatchObject({
       name: 'club',
       autocomplete: true,
       required: true,
     });
+    expect(json.options[1]?.options?.[1]).toMatchObject({ name: 'period', required: false });
+    expect((json.options[1]?.options?.[1]?.['choices'] as unknown[] | undefined)?.length).toBe(3);
     expect(json.options[2]?.options ?? []).toHaveLength(0);
     const preview = json.options[3]?.options ?? [];
     expect(preview[0]).toMatchObject({ name: 'club', autocomplete: true, required: true });
@@ -215,11 +219,42 @@ describe('/clubs clublogs configuration', () => {
       guildId: GUILD_ID,
       clubId: CLUB_ID,
       channelId: CHANNEL_ID,
+      period: 'today',
     });
     expect(mocks.logsEmbed.buildClubLogsConfigEmbed).toHaveBeenCalledWith(
       expect.objectContaining({ guildId: GUILD_ID, notice: expect.stringContaining(CHANNEL_ID) }),
     );
     expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'club-logs-config' }]);
+  });
+
+  it('adds the selected period and reports it in the confirmation', async () => {
+    const interaction = chat('add', { club: CLUB_ID, period: 'week' });
+
+    await handleClubLogs(interaction);
+
+    expect(mocks.logsService.addClubLog).toHaveBeenCalledWith(
+      expect.objectContaining({ channelId: CHANNEL_ID, period: 'week' }),
+    );
+    expect(mocks.logsEmbed.buildClubLogsConfigEmbed).toHaveBeenCalledWith(
+      expect.objectContaining({ notice: expect.stringContaining('This Week') }),
+    );
+  });
+
+  it('removes one selected period or all periods when omitted', async () => {
+    const onePeriod = chat('remove', { club: CLUB_ID, period: 'season' });
+    await handleClubLogs(onePeriod);
+    expect(mocks.logsService.removeClubLog).toHaveBeenCalledWith(
+      expect.objectContaining({ clubId: CLUB_ID, period: 'season' }),
+    );
+    expect(mocks.logsEmbed.buildClubLogsConfigEmbed).toHaveBeenCalledWith(
+      expect.objectContaining({ notice: expect.stringContaining('This Season') }),
+    );
+
+    const allPeriods = chat('remove', { club: CLUB_ID });
+    await handleClubLogs(allPeriods);
+    expect(mocks.logsService.removeClubLog).toHaveBeenLastCalledWith(
+      expect.objectContaining({ clubId: CLUB_ID, period: null }),
+    );
   });
 
   it('lists only this guild’s logs', async () => {
@@ -243,6 +278,7 @@ describe('/clubs clublogs preview', () => {
     clubTag: 'ALPHA',
     clubName: 'Alpha',
     channelId: CHANNEL_ID,
+    periods: ['today'],
   };
 
   it('posts a public PNG follow-up with no components and a private acknowledgement', async () => {

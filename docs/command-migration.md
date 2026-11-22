@@ -49,7 +49,7 @@ BrawlHub now registers **18 top-level slash commands** instead of **42**. The ch
 | `/club-compare first:… second:…` | `/clubs compare first:… second:…` |
 | `/view add|remove|list` | `/clubs view add|remove|list` |
 | `/club-overview menu` | `/clubs fields` |
-| `/clublogs add|remove|list` | `/clubs clublogs add|remove|list` (new: `/clubs clublogs preview`) |
+| `/clublogs add|remove|list` | `/clubs clublogs add|remove|list` with optional `period:` on `add`/`remove` (new: `/clubs clublogs preview`) |
 | `/register-club tag:…` | `/clubs register tag:…` |
 | `/remove-club club:…` | `/clubs remove club:…` |
 

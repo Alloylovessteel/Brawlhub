@@ -244,7 +244,29 @@ describe('loadClubLogs', () => {
       clubTag: 'ALPHA',
       clubName: 'Alpha',
       channelId: CHANNEL_ID,
+      periods: ['today'],
     });
+  });
+
+  it('reads and orders only valid periods for this guild’s logs', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', (call) => {
+      expect(call.filters['guild_id']).toBe(GUILD_ID);
+      expect(call.inValues).toEqual({ column: 'log_id', values: [LOG_ID] });
+      return {
+        data: [
+          { log_id: LOG_ID, period: 'season' },
+          { log_id: LOG_ID, period: 'week' },
+          { log_id: LOG_ID, period: 'unknown' },
+          { log_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', period: 'today' },
+        ],
+      };
+    });
+
+    const logs = await loadClubLogs(GUILD_ID);
+
+    expect(logs[0]?.periods).toEqual(['week', 'season']);
   });
 });
 
@@ -347,6 +369,7 @@ describe('loadUndeliveredClubLogEvents', () => {
       clubTag: 'ALPHA',
       clubName: 'Alpha',
       channelId: CHANNEL_ID,
+      periods: ['today'],
     });
     expect(groups[0]?.events.map((event) => event.description)).toEqual([
       '#NEWROLE role changed President → none',
@@ -430,6 +453,53 @@ describe('addClubLog', () => {
       expect.objectContaining({ db: expect.any(Object) }),
     );
   });
+
+  it('stores the selected period and rejects unknown periods', async () => {
+    setHandler('clubs:select', (call) =>
+      call.mode === 'maybeSingle' ? { data: clubRow() } : { data: [clubRow()] },
+    );
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('guild_club_log_periods:upsert', (call) => {
+      expect(call.filters['guild_id']).toBeUndefined();
+      expect(call.payload).toEqual({ guild_id: GUILD_ID, log_id: LOG_ID, period: 'week' });
+      expect(call.options).toEqual({
+        onConflict: 'guild_id,log_id,period',
+        ignoreDuplicates: true,
+      });
+      return { data: [] };
+    });
+    setHandler('guild_club_log_periods:select', () => ({
+      data: [{ log_id: LOG_ID, period: 'week' }],
+    }));
+
+    const logs = await addClubLog({
+      actor: actor(),
+      guildId: GUILD_ID,
+      clubId: CLUB_ID,
+      channelId: CHANNEL_ID,
+      period: 'week',
+    });
+
+    expect(logs[0]?.periods).toEqual(['week']);
+    expect(mocks.recordAdminAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'club_log.added',
+        details: expect.objectContaining({ guildId: GUILD_ID, period: 'week' }),
+      }),
+      expect.any(Object),
+    );
+
+    await expect(
+      addClubLog({
+        actor: actor(),
+        guildId: GUILD_ID,
+        clubId: CLUB_ID,
+        channelId: CHANNEL_ID,
+        period: 'month',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_period' });
+    expect(callsFor('guild_club_log_periods', 'upsert')).toHaveLength(1);
+  });
 });
 
 describe('removeClubLog and delivery marking', () => {
@@ -448,6 +518,59 @@ describe('removeClubLog and delivery marking', () => {
       expect.objectContaining({ action: 'club_log.removed', targetId: CLUB_ID }),
       expect.any(Object),
     );
+  });
+
+  it('removes only the selected period and keeps a log that still has another period', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:delete', (call) => {
+      expect(call.filters['guild_id']).toBe(GUILD_ID);
+      expect(call.filters['period']).toBe('today');
+      expect(call.inValues).toEqual({ column: 'log_id', values: [LOG_ID] });
+      return { data: [{ log_id: LOG_ID }] };
+    });
+    setHandler('guild_club_log_periods:select', () => ({
+      data: [{ log_id: LOG_ID, period: 'season' }],
+    }));
+
+    const logs = await removeClubLog({
+      actor: actor(),
+      guildId: GUILD_ID,
+      clubId: CLUB_ID,
+      period: 'today',
+    });
+
+    expect(callsFor('guild_club_logs', 'delete')).toHaveLength(0);
+    expect(logs[0]?.periods).toEqual(['season']);
+    expect(mocks.recordAdminAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'club_log.removed',
+        details: expect.objectContaining({ period: 'today' }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it('deletes the parent log when its last period is removed', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('guild_club_logs:delete', (call) => {
+      expect(call.filters['guild_id']).toBe(GUILD_ID);
+      expect(call.filters['club_id']).toBe(CLUB_ID);
+      expect(call.inValues).toEqual({ column: 'id', values: [LOG_ID] });
+      return { data: [{ id: LOG_ID }] };
+    });
+    setHandler('guild_club_log_periods:delete', () => ({ data: [{ log_id: LOG_ID }] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [] }));
+
+    await expect(
+      removeClubLog({
+        actor: actor(),
+        guildId: GUILD_ID,
+        clubId: CLUB_ID,
+        period: 'today',
+      }),
+    ).resolves.toEqual([]);
+    expect(callsFor('guild_club_logs', 'delete')).toHaveLength(1);
   });
 
   it('writes delivery rows with the guild id and ignores foreign log ids', async () => {

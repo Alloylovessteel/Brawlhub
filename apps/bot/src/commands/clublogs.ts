@@ -25,6 +25,7 @@ import {
 import { isIgnorableInteractionError, respondToAutocomplete } from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
+import type { ClubLogPeriod } from '../clubs/types';
 
 const COMMAND_NAME = 'clublogs';
 const FORBIDDEN_MESSAGE = 'You do not have permission to manage club logs in this server.';
@@ -68,7 +69,12 @@ commandBuilder.addSubcommand((subcommand) =>
         .setDescription('Text channel that receives the club log')
         .addChannelTypes(ChannelType.GuildText)
         .setRequired(true),
-    ),
+    )
+    .addStringOption((option) => {
+      option.setName('period').setDescription('Trophy progression period (default: daily)').setRequired(false);
+      for (const choice of PERIOD_CHOICES) option.addChoices(choice);
+      return option;
+    }),
 );
 commandBuilder.addSubcommand((subcommand) =>
   subcommand
@@ -80,7 +86,12 @@ commandBuilder.addSubcommand((subcommand) =>
         .setDescription('Registered club to stop logging')
         .setAutocomplete(true)
         .setRequired(true),
-    ),
+    )
+    .addStringOption((option) => {
+      option.setName('period').setDescription('Remove only this period (default: all periods)').setRequired(false);
+      for (const choice of PERIOD_CHOICES) option.addChoices(choice);
+      return option;
+    }),
 );
 commandBuilder.addSubcommand((subcommand) =>
   subcommand.setName('list').setDescription('Show this server’s club log configuration'),
@@ -113,6 +124,11 @@ function requireGuildId(interaction: { guildId: string | null }): string {
     throw new AdminServiceError('invalid_guild', NO_GUILD_MESSAGE);
   }
   return interaction.guildId;
+}
+
+function selectedPeriod(interaction: ChatInputCommandInteraction): ClubLogPeriod | null {
+  const raw = interaction.options.getString('period', false);
+  return raw !== null && isClubLogPeriod(raw) ? raw : null;
 }
 
 async function permissionContext(
@@ -155,13 +171,14 @@ export async function handleClubLogs(interaction: ChatInputCommandInteraction): 
     if (subcommand === 'add') {
       const clubId = interaction.options.getString('club', true);
       const channel = interaction.options.getChannel('channel', true);
-      const logs = await addClubLog({ actor, guildId, clubId, channelId: channel.id });
+      const period = selectedPeriod(interaction) ?? 'today';
+      const logs = await addClubLog({ actor, guildId, clubId, channelId: channel.id, period });
       await interaction.editReply({
         embeds: [
           buildClubLogsConfigEmbed({
             guildId,
             logs,
-            notice: `Club log configured for <#${channel.id}>.`,
+            notice: `Club log configured for <#${channel.id}> (${CLUB_LOG_PERIOD_LABELS[period]}).`,
           }),
         ],
         allowedMentions: { parse: [] },
@@ -171,9 +188,19 @@ export async function handleClubLogs(interaction: ChatInputCommandInteraction): 
 
     if (subcommand === 'remove') {
       const clubId = interaction.options.getString('club', true);
-      const logs = await removeClubLog({ actor, guildId, clubId });
+      const period = selectedPeriod(interaction);
+      const logs = await removeClubLog({ actor, guildId, clubId, period });
       await interaction.editReply({
-        embeds: [buildClubLogsConfigEmbed({ guildId, logs, notice: 'Club log removed.' })],
+        embeds: [
+          buildClubLogsConfigEmbed({
+            guildId,
+            logs,
+            notice:
+              period === null
+                ? 'Club logs removed.'
+                : `${CLUB_LOG_PERIOD_LABELS[period]} club log removed.`,
+          }),
+        ],
         allowedMentions: { parse: [] },
       });
       return;

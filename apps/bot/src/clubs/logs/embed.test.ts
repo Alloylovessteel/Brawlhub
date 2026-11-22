@@ -10,6 +10,7 @@ const LOG: ClubLogConfig = {
   clubTag: 'ALPHA',
   clubName: 'Alpha',
   channelId: '111111111111111222',
+  periods: ['today'],
 };
 
 function event(overrides: Partial<ClubLogEvent> = {}): ClubLogEvent {
@@ -43,7 +44,17 @@ describe('buildClubLogsConfigEmbed', () => {
   it('lists this guild’s logs with club tags and channel mentions', () => {
     const embed = buildClubLogsConfigEmbed({
       guildId: GUILD_ID,
-      logs: [LOG, { ...LOG, id: 'log-2', clubTag: 'BRAVO', clubName: 'Bravo', channelId: '333' }],
+      logs: [
+        LOG,
+        {
+          ...LOG,
+          id: 'log-2',
+          clubTag: 'BRAVO',
+          clubName: 'Bravo',
+          channelId: '333',
+          periods: ['week', 'season'],
+        },
+      ],
       notice: 'Club log configured.',
     });
     const json = embed.toJSON();
@@ -51,8 +62,8 @@ describe('buildClubLogsConfigEmbed', () => {
     expect(json.description).toContain(GUILD_ID);
     expect(json.fields?.map((field) => field.value)).toEqual([
       'Club log configured.',
-      '<#111111111111111222>',
-      '<#333>',
+      '<#111111111111111222> • Today',
+      '<#333> • This Week, This Season',
     ]);
     expect(json.fields?.map((field) => field.name)).toEqual([
       'Update',

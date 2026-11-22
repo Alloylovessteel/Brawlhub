@@ -47,7 +47,7 @@ import { runClubLogsPost, startClubLogsSchedule } from './poster';
 import type { ClubLogGroup } from './types';
 import type { ClubLogView } from '../types';
 
-function group(): ClubLogGroup {
+function group(periods: ClubLogGroup['log']['periods'] = ['today']): ClubLogGroup {
   return {
     log: {
       id: LOG_ID,
@@ -56,6 +56,7 @@ function group(): ClubLogGroup {
       clubTag: 'ALPHA',
       clubName: 'Alpha',
       channelId: CHANNEL_ID,
+      periods,
     },
     events: [
       {
@@ -127,7 +128,7 @@ describe('runClubLogsPost', () => {
     expect(mocks.post).not.toHaveBeenCalled();
   });
 
-  it('posts one public PNG per log and records deliveries only after success', async () => {
+  it('posts one public PNG per subscribed period and records deliveries only after success', async () => {
     await runClubLogsPost();
 
     expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
@@ -146,7 +147,7 @@ describe('runClubLogsPost', () => {
     expect(attachments).toHaveLength(1);
     expect(attachments[0]?.['id']).toBe('0');
     const filename = attachments[0]?.['filename'] as string;
-    expect(filename).toMatch(/^club-log-alpha-\d+\.png$/);
+    expect(filename).toMatch(/^club-log-alpha-today-\d+\.png$/);
     const files = request['files'] as Array<Record<string, unknown>>;
     expect(files).toEqual([
       {
@@ -162,19 +163,42 @@ describe('runClubLogsPost', () => {
     expect(mocks.logger.warn).not.toHaveBeenCalled();
   });
 
-  it('honours a valid configured period', async () => {
-    process.env.CLUB_LOGS_PERIOD = 'week';
+  it('posts every period stored on the subscription in order', async () => {
+    mocks.service.loadUndeliveredClubLogEvents.mockResolvedValue([
+      group(['today', 'week', 'season']),
+    ]);
 
     await runClubLogsPost();
 
-    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
-      guildId: GUILD_ID,
-      tag: 'ALPHA',
-      period: 'week',
+    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledTimes(3);
+    expect(mocks.pageView.loadClubLogView.mock.calls.map((call) => call[0])).toEqual([
+      { guildId: GUILD_ID, tag: 'ALPHA', period: 'today' },
+      { guildId: GUILD_ID, tag: 'ALPHA', period: 'week' },
+      { guildId: GUILD_ID, tag: 'ALPHA', period: 'season' },
+    ]);
+    expect(mocks.post).toHaveBeenCalledTimes(3);
+    const contents = mocks.post.mock.calls.map((call) => {
+      const request = call[1] as Record<string, unknown>;
+      const body = request['body'] as Record<string, unknown>;
+      return body['content'];
     });
-    const request = mocks.post.mock.calls[0]?.[1] as Record<string, unknown>;
-    const body = request['body'] as Record<string, unknown>;
-    expect(body['content']).toContain('This Week');
+    expect(contents).toEqual([
+      'Alpha • Club Logs / Trophy Progression / Today',
+      'Alpha • Club Logs / Trophy Progression / This Week',
+      'Alpha • Club Logs / Trophy Progression / This Season',
+    ]);
+    const filenames = mocks.post.mock.calls.map((call) => {
+      const request = call[1] as Record<string, unknown>;
+      const body = request['body'] as Record<string, unknown>;
+      const attachments = body['attachments'] as Array<Record<string, unknown>>;
+      return attachments[0]?.['filename'];
+    });
+    expect(filenames[0]).toMatch(/^club-log-alpha-today-\d+\.png$/);
+    expect(filenames[1]).toMatch(/^club-log-alpha-week-\d+\.png$/);
+    expect(filenames[2]).toMatch(/^club-log-alpha-season-\d+\.png$/);
+    expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledWith(GUILD_ID, [
+      { logId: LOG_ID, kind: 'role', eventId: 'r1' },
+    ]);
   });
 
   it('leaves events undelivered and redacts the token when posting fails', async () => {
