@@ -23,6 +23,14 @@ import {
 } from './single-instance.js';
 import { startBattleRawRetentionSchedule } from './retention/schedule.js';
 import { refreshAllConfiguredClubRoles } from './club-roles/service.js';
+import {
+  reconcileAllConfiguredRoles,
+  setRoleAutomationClient,
+} from './role-automation/index.js';
+import {
+  startLiveBattleSchedule,
+  stopLiveBattleSchedule,
+} from './live/service.js';
 
 const logger = createLogger('bot');
 
@@ -58,16 +66,29 @@ function readSyncIntervalMinutes(): number {
   return Math.min(1440, Math.max(1, Math.floor(parsed)));
 }
 
+/** Read the auto-role reconciliation cadence in minutes, defaulting to 15. */
+function readAutoRoleIntervalMinutes(): number {
+  const raw = process.env.AUTO_ROLE_INTERVAL_MINUTES;
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return 15;
+  }
+  return Math.min(1440, Math.max(1, Math.floor(parsed)));
+}
+
 const SYNC_INTERVAL_MS = readSyncIntervalMinutes() * 60_000;
+const AUTO_ROLE_INTERVAL_MS = readAutoRoleIntervalMinutes() * 60_000;
 const INITIAL_SYNC_DELAY_MS = 5_000;
 
 let initialSyncTimer: ReturnType<typeof setTimeout> | undefined;
+let autoRoleTimer: ReturnType<typeof setInterval> | undefined;
 let syncTimer: ReturnType<typeof setInterval> | undefined;
 let stopOverviewSchedule: (() => void) | undefined;
 let stopClubLogsSchedule: (() => void) | undefined;
 let stopReportsSchedule: (() => void) | undefined;
 let stopRetentionSchedule: (() => void) | undefined;
 let activeSync: Promise<void> | undefined;
+let activeRoleReconcile: Promise<void> | undefined;
 let instanceLock: SingleInstanceLock | undefined;
 
 const SHUTDOWN_SYNC_TIMEOUT_MS = 10_000;
@@ -97,6 +118,53 @@ async function refreshConfiguredClubRolesSafely(): Promise<void> {
     }
   } catch (error: unknown) {
     logger.warn('Club role refresh after sync failed', { error: safeError(error, token) });
+  }
+}
+
+/** Reconcile declarative auto roles without affecting the sync outcome. */
+async function refreshAutoRolesSafely(): Promise<void> {
+  try {
+    const result = await reconcileAllConfiguredRoles(client);
+    if (result.configuredGuilds > 0 || result.errorCount > 0) {
+      logger.info('Auto role reconciliation finished', {
+        configuredGuilds: result.configuredGuilds,
+        guilds: result.guilds,
+        rolesAdded: result.rolesAdded,
+        rolesRemoved: result.rolesRemoved,
+        rolesUnchanged: result.rolesUnchanged,
+        membersNotFound: result.membersNotFound,
+        errors: result.errorCount,
+      });
+    }
+  } catch (error) {
+    logger.warn('Auto role reconciliation failed', { error: safeError(error, token) });
+  }
+}
+
+/** Start a tracked auto-role reconciliation so shutdown can drain it. */
+function startTrackedRoleReconcile(): void {
+  const run = refreshAutoRolesSafely();
+  activeRoleReconcile = run;
+  const clear = (): void => {
+    if (activeRoleReconcile === run) activeRoleReconcile = undefined;
+  };
+  void run.then(clear, clear);
+}
+
+function startAutoRoleSchedule(): void {
+  setRoleAutomationClient(client);
+  autoRoleTimer = setInterval(() => {
+    startTrackedRoleReconcile();
+  }, AUTO_ROLE_INTERVAL_MS);
+  logger.info('Auto role reconciliation enabled', {
+    intervalMinutes: AUTO_ROLE_INTERVAL_MS / 60_000,
+  });
+}
+
+function stopAutoRoleSchedule(): void {
+  if (autoRoleTimer !== undefined) {
+    clearInterval(autoRoleTimer);
+    autoRoleTimer = undefined;
   }
 }
 
@@ -151,6 +219,7 @@ async function executeSync(): Promise<void> {
 
     if (outcome.results.some((result) => result.status === 'completed')) {
       await refreshConfiguredClubRolesSafely();
+      await refreshAutoRolesSafely();
     }
   } catch (error: unknown) {
     logger.error('Scheduled sync failed', { error: safeError(error, token) });
@@ -273,6 +342,8 @@ client.once('clientReady', async () => {
   stopClubLogsSchedule = startClubLogsSchedule();
   stopReportsSchedule = startReportsSchedule();
   stopRetentionSchedule = startBattleRawRetentionSchedule();
+  startLiveBattleSchedule(client);
+  startAutoRoleSchedule();
 });
 
 let shuttingDown = false;
@@ -286,6 +357,17 @@ async function shutdown(signal: string): Promise<void> {
   stopClubLogsSchedule?.();
   stopReportsSchedule?.();
   stopRetentionSchedule?.();
+  stopLiveBattleSchedule();
+  stopAutoRoleSchedule();
+
+  if (activeRoleReconcile !== undefined) {
+    const drained = await waitForInFlightWork(activeRoleReconcile, SHUTDOWN_SYNC_TIMEOUT_MS);
+    if (drained) {
+      logger.info('In-flight auto role reconciliation finished; shutting down');
+    } else {
+      logger.warn('In-flight auto role reconciliation did not finish in time; shutting down anyway');
+    }
+  }
 
   if (activeSync !== undefined) {
     logger.info('Waiting for in-flight sync before shutdown');

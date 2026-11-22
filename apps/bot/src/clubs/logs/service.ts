@@ -28,6 +28,7 @@ const MAX_LOGS_PER_GUILD = 25;
 const MAX_EVENTS_PER_LOG = 20;
 const CLUB_CAPACITY = 30;
 const EVENT_KINDS: readonly ClubLogEventKind[] = ['membership', 'role', 'capacity'];
+const INTEGER_FORMATTER = new Intl.NumberFormat('en-US');
 
 export interface ClubLogServiceOptions {
   readonly db?: DatabaseClient;
@@ -61,12 +62,17 @@ function detectedAt(value: unknown): string | null {
   return text;
 }
 
-function playerFrom(value: unknown): { readonly tag: string | null; readonly name: string | null } {
+function playerFrom(value: unknown): {
+  readonly tag: string | null;
+  readonly name: string | null;
+  readonly trophies: number | null;
+} {
   const player = relationRecord(value);
   const rawTag = asString(player?.['tag']);
   return {
     tag: rawTag === null ? null : cleanTag(rawTag),
     name: asString(player?.['name']),
+    trophies: asNumber(player?.['trophies']),
   };
 }
 
@@ -97,6 +103,33 @@ function roleLabel(value: unknown): string {
     .filter((word) => word.length > 0)
     .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
     .join(' ') || 'none';
+}
+
+const ROLE_RANKS: Readonly<Record<string, number>> = {
+  none: 0,
+  notmember: 0,
+  not_member: 0,
+  rookie: 1,
+  member: 2,
+  senior: 3,
+  vicepresident: 4,
+  vice_president: 4,
+  president: 5,
+};
+
+function roleRank(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  const text = asString(value);
+  if (text === null) return 0;
+  return ROLE_RANKS[text.toLowerCase()] ?? 2;
+}
+
+function roleMovement(fromRole: unknown, toRole: unknown): 'promoted' | 'demoted' | 'updated' {
+  const from = roleRank(fromRole);
+  const to = roleRank(toRole);
+  if (to > from) return 'promoted';
+  if (to < from) return 'demoted';
+  return 'updated';
 }
 
 function parseLogRows(
@@ -530,13 +563,19 @@ function parseRoleEvent(value: unknown, log: ClubLogRow): ClubLogEvent | null {
   const at = detectedAt(row['detected_at']);
   if (id === null || at === null) return null;
   const player = playerFrom(row['player']);
+  const name = player.name ?? (player.tag === null ? 'Unknown player' : `#${player.tag}`);
+  const label =
+    player.trophies === null
+      ? name
+      : `${name} (${INTEGER_FORMATTER.format(player.trophies)} 🏆)`;
+  const movement = roleMovement(row['from_role'], row['to_role']);
   return {
     kind: 'role',
     id,
     clubId: log.clubId,
     playerTag: player.tag,
     playerName: player.name,
-    description: `${playerLabel({ playerTag: player.tag, playerName: player.name })} role changed ${roleLabel(row['from_role'])} → ${roleLabel(row['to_role'])}`,
+    description: `${label} was ${movement} to ${roleLabel(row['to_role'])}.`,
     detectedAt: at,
   };
 }
@@ -583,7 +622,7 @@ async function loadEventsForLog(
     db
       .from('club_role_changes')
       .select(
-        'id, from_role, to_role, detected_at, player:players!club_role_changes_player_id_fkey(tag, name)',
+        'id, from_role, to_role, detected_at, player:players!club_role_changes_player_id_fkey(tag, name, trophies)',
       )
       .eq('club_id', log.clubId)
       .gte('detected_at', log.createdAt)

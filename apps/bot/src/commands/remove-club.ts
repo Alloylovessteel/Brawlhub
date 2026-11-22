@@ -4,11 +4,14 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
-import { respondToAutocomplete } from '../discord/errors.js';
+import {
+  respondToAutocomplete,
+  respondWithLookupUnavailableChoice,
+} from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { buildClubArchivedEmbed, buildClubArchivePreviewEmbed } from '../admin/embed';
 import { replyAdminError } from '../admin/errors';
-import { requireGlobalPermission } from '../admin/service';
+import { AdminServiceError, requireGlobalPermission } from '../admin/service';
 import type { AdminActor } from '../admin/types';
 import { archiveGuildClub } from '../clubs/archival';
 import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
@@ -29,7 +32,7 @@ interface PendingArchive {
   readonly clubTag: string;
 }
 
-const pendingArchives = new ConfirmationStore<PendingArchive>();
+const pendingArchives = new ConfirmationStore<PendingArchive>(undefined, undefined, COMMAND_NAME);
 
 /** Reset the ephemeral confirmation store (used by tests). */
 export function clearPendingClubArchives(): void {
@@ -80,12 +83,16 @@ export async function handleRemoveClub(interaction: ChatInputCommandInteraction)
       return;
     }
 
-    const nonce = pendingArchives.create(interaction.user.id, {
-      actor,
-      clubId: candidate.id,
-      clubName: candidate.name,
-      clubTag: candidate.tag,
-    });
+    const nonce = pendingArchives.create(
+      interaction.user.id,
+      {
+        actor,
+        clubId: candidate.id,
+        clubName: candidate.name,
+        clubTag: candidate.tag,
+      },
+      interaction.guildId,
+    );
     await interaction.editReply({
       embeds: [buildClubArchivePreviewEmbed(candidate.name, candidate.tag)],
       components: [buildConfirmationRow(COMMAND_NAME, nonce)],
@@ -104,7 +111,7 @@ export async function handleRemoveClubComponent(interaction: CommandComponentInt
     const guildId = interaction.guildId;
     if (guildId === null) return;
 
-    const pending = pendingArchives.take(action.nonce, interaction.user.id);
+    const pending = pendingArchives.take(action.nonce, interaction.user.id, guildId);
     if (action.kind === 'cancel') {
       await interaction.editReply({ content: CANCELLED_MESSAGE, embeds: [], components: [] });
       return;
@@ -161,7 +168,11 @@ export async function handleRemoveClubAutocomplete(interaction: AutocompleteInte
       value: club.id,
     }));
     await respondToAutocomplete(interaction, choices);
-  } catch {
-    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
+  } catch (error) {
+    if (error instanceof AdminServiceError && error.code === 'forbidden') {
+      await respondToAutocomplete(interaction, []);
+      return;
+    }
+    await respondWithLookupUnavailableChoice(interaction);
   }
 }

@@ -1,5 +1,5 @@
 import { createBrawlApiClient, type BrawlApiClient } from '@brawlhub/brawlapi';
-import { createBrawlStarsClient, type BrawlStarsClient } from '@brawlhub/brawl-stars';
+import { getSharedBrawlStarsClient, type BrawlStarsClient } from '@brawlhub/brawl-stars';
 
 export interface VerificationTargetIcon {
   readonly id: number;
@@ -161,7 +161,7 @@ export async function loadBrawlerVerificationIcons(): Promise<readonly Verificat
   }
 
   const brawlApi: BrawlApiClient = createBrawlApiClient();
-  const official: BrawlStarsClient = createBrawlStarsClient();
+  const official: BrawlStarsClient = getSharedBrawlStarsClient();
   try {
     const [iconsResponse, brawlers] = await Promise.all([
       brawlApi.getIconCatalog(),

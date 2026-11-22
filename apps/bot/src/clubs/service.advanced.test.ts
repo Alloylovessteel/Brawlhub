@@ -6,11 +6,20 @@ const mocks = vi.hoisted(() => ({
     getClubMembers: vi.fn(),
     getPlayer: vi.fn(),
   })),
+  getSharedBrawlStarsClient: vi.fn(() => ({
+    getClub: vi.fn(),
+    getClubMembers: vi.fn(),
+    getPlayer: vi.fn(),
+  })),
 }));
 
 vi.mock('@brawlhub/brawl-stars', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@brawlhub/brawl-stars')>();
-  return { ...actual, createBrawlStarsClient: mocks.createBrawlStarsClient };
+  return {
+    ...actual,
+    createBrawlStarsClient: mocks.createBrawlStarsClient,
+    getSharedBrawlStarsClient: mocks.getSharedBrawlStarsClient,
+  };
 });
 
 import {
@@ -362,6 +371,7 @@ const SEASON_START = '2026-11-01T00:00:00.000Z';
 
 beforeEach(() => {
   mocks.createBrawlStarsClient.mockClear();
+  mocks.getSharedBrawlStarsClient.mockClear();
 });
 
 describe('advanced club loaders', () => {
@@ -380,6 +390,7 @@ describe('advanced club loaders', () => {
     expect(result.value.rosterSource).toBe('none');
     expect(calls.some((call) => call.table === 'players')).toBe(false);
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
+    expect(mocks.getSharedBrawlStarsClient).not.toHaveBeenCalled();
   });
 
   it('sorts an incomplete roster safely and keeps missing player information nullable', async () => {
@@ -412,6 +423,7 @@ describe('advanced club loaders', () => {
       'Q8VR',
     ]);
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
+    expect(mocks.getSharedBrawlStarsClient).not.toHaveBeenCalled();
   });
 
   it('ranks leaderboard entries and adds stored player progression', async () => {
@@ -435,6 +447,7 @@ describe('advanced club loaders', () => {
     expect(result.value.entries[0]?.trophies).toBe(1000);
     expect(result.value.entries[0]?.progression).toEqual({ today: 100, week: 100, season: 200 });
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
+    expect(mocks.getSharedBrawlStarsClient).not.toHaveBeenCalled();
   });
 
   it('filters history to the selected period and calculates stored changes', async () => {
@@ -467,6 +480,7 @@ describe('advanced club loaders', () => {
       '2026-10-25T00:00:00.000Z',
     ]);
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
+    expect(mocks.getSharedBrawlStarsClient).not.toHaveBeenCalled();
   });
 
   it('handles clubs with no stored history and no membership events', async () => {
@@ -517,6 +531,7 @@ describe('advanced club loaders', () => {
     expect(result.value.first.latestSyncAt).toBe(RUN_2['finished_at']);
     expect(result.value.second.latestSyncAt).toBe(RUN_3['finished_at']);
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
+    expect(mocks.getSharedBrawlStarsClient).not.toHaveBeenCalled();
   });
 
   it('marks comparisons unaligned when only different completed snapshots exist', async () => {
@@ -566,6 +581,7 @@ describe('advanced club loaders', () => {
 
     expect(calls.every((call) => call.table === 'clubs')).toBe(true);
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
+    expect(mocks.getSharedBrawlStarsClient).not.toHaveBeenCalled();
   });
 
   it('uses the only registered guild club when no tag is supplied', async () => {
@@ -704,6 +720,7 @@ describe('advanced club loaders', () => {
       ),
     ).toBe(true);
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
+    expect(mocks.getSharedBrawlStarsClient).not.toHaveBeenCalled();
 
     const byName = await loadClubMemberDetails({ tag: '2C0Y', sort: 'name' }, { db });
     expect(byName.kind).toBe('ok');

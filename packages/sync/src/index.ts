@@ -1,6 +1,9 @@
 export { previewClubRegistration, registerClubFromPreview, registerClubs } from './registration';
 export type { ClubRegistrationPreview, RegistrationResult } from './registration';
 export {
+  battleKey,
+  buildBattleKey,
+  collectBattleLogs,
   guildSyncScope,
   isUniqueViolation,
   payloadHash,
@@ -13,6 +16,8 @@ export {
   withTimeout,
 } from './sync';
 export type {
+  CollectedBattleLog,
+  CollectBattleLogsOptions,
   SyncRecoveryResult,
   RunSyncOptions,
   SyncNotificationInput,

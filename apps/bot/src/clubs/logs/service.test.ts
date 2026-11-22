@@ -335,7 +335,7 @@ describe('loadUndeliveredClubLogEvents', () => {
             from_role: 'President',
             to_role: null,
             detected_at: '2026-11-20T12:55:00.000Z',
-            player: { tag: '#NEWROLE', name: 'New Role' },
+            player: { tag: '#NEWROLE', name: 'New Role', trophies: 48617 },
           },
         ],
       };
@@ -372,7 +372,7 @@ describe('loadUndeliveredClubLogEvents', () => {
       periods: ['today'],
     });
     expect(groups[0]?.events.map((event) => event.description)).toEqual([
-      '#NEWROLE role changed President → none',
+      'New Role (48,617 🏆) was demoted to none.',
       '#MOVER transferred from #ALPHA to another club',
       '#LEAVER left #ALPHA',
       'Club open (29/30)',

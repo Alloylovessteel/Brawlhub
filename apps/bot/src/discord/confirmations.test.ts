@@ -24,6 +24,13 @@ describe('ConfirmationStore', () => {
     expect(store.take(nonce, 'actor-1')).toEqual({ value: 'payload' });
   });
 
+  it('binds a confirmation to the guild supplied by the caller', () => {
+    const nonce = store.create('actor-1', { value: 'payload' }, 'guild-1');
+
+    expect(() => store.take(nonce, 'actor-1', 'guild-2')).toThrowError(/another user/);
+    expect(store.take(nonce, 'actor-1', 'guild-1')).toEqual({ value: 'payload' });
+  });
+
   it('rejects expired confirmations and removes them', () => {
     const nonce = store.create('actor-1', { value: 'payload' });
     now += 1001;

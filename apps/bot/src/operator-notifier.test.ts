@@ -35,9 +35,11 @@ vi.mock('@brawlhub/logging', () => ({ createLogger: () => mocks.logger }));
 
 import {
   buildSyncOperatorEmbed,
+  buildVerificationFailureOperatorEmbed,
   buildVerificationOperatorEmbed,
   notifySyncResult,
   notifyVerificationCompleted,
+  notifyVerificationFailed,
 } from './operator-notifier';
 
 function settings(overrides: Partial<GuildSettingsView> = {}): GuildSettingsView {
@@ -89,24 +91,37 @@ beforeEach(() => {
 });
 
 describe('operator embeds', () => {
-  it('reports partial member synchronization with the exact member count', () => {
+  it('reports partial member synchronization with BrawlTools-style detail lines', () => {
     const json = buildSyncOperatorEmbed(result()).toJSON();
 
-    expect(json.title).toBe('Member synchronization failed');
+    expect(json.title).toBe('❌ Member synchronization failed.');
     expect(json.color).toBe(EMBED_COLORS.warning);
-    expect(json.description?.replace(/\*\*/g, '')).toContain('Successfully synced Members: 601/603');
-    expect(json.fields?.map((field) => field.name)).toContain('Failed members');
+    expect(json.description).toContain('🏷️ Broken (`#BAD1`)');
+    expect(json.description).toContain('👥 @Broken');
+    expect(json.description).toContain('📝 API unavailable.');
+    expect(json.description).toContain('ℹ️ Verification will be deleted after 30 minutes.');
+    expect(json.description).toContain('✅ Sync completed.');
+    expect(json.description).toContain('Successfully synced Members: 601/603.');
+    expect(json.fields?.map((field) => field.name)).not.toContain('Failed members');
   });
 
-  it('reports a clean sync without failure fields', () => {
+  it('maps not-found reasons to the standard wording', () => {
+    const json = buildSyncOperatorEmbed(
+      result({ memberFailures: [{ tag: 'BAD1', name: 'Broken', reason: '404 Not Found' }] }),
+    ).toJSON();
+
+    expect(json.description).toContain('📝 Member not found.');
+  });
+
+  it('reports a clean sync without failure details', () => {
     const json = buildSyncOperatorEmbed(
       result({ memberFailures: [], membersSucceeded: 603 }),
     ).toJSON();
 
-    expect(json.title).toBe('Sync completed');
+    expect(json.title).toBe('✅ Sync completed.');
     expect(json.color).toBe(EMBED_COLORS.success);
-    expect(json.description?.replace(/\*\*/g, '')).toContain('Successfully synced Members: 603/603');
-    expect(json.fields?.map((field) => field.name)).not.toContain('Failed members');
+    expect(json.description).toContain('Successfully synced Members: 603/603.');
+    expect(json.description).not.toContain('Verification will be deleted');
   });
 
   it('redacts and truncates sync errors', () => {
@@ -114,7 +129,7 @@ describe('operator embeds', () => {
       result({ status: 'failed', error: `<@everyone> ${TOKEN} broke\nnext line` }),
     ).toJSON();
 
-    expect(json.title).toBe('Synchronization failed');
+    expect(json.title).toBe('❌ Synchronization failed.');
     expect(json.color).toBe(EMBED_COLORS.danger);
     expect(json.description).not.toContain('<@');
     expect(json.description).not.toContain(TOKEN);
@@ -128,14 +143,35 @@ describe('operator embeds', () => {
       playerName: '<@everyone> Kuromi',
       playerTag: '2ABC',
       discordUserId: '333333333333333333',
+      discordUsername: '@kuromi',
       method: 'icon-verified',
     }).toJSON();
 
-    expect(json.title).toBe('Verification completed');
+    expect(json.title).toBe('✅ Verification completed.');
     expect(json.color).toBe(EMBED_COLORS.success);
     expect(json.description).not.toContain('<@');
     expect(json.description).toContain('Kuromi');
+    expect(json.description).toContain('👥 @kuromi');
+    expect(json.description).toContain('📝 Icon-verified');
     expect(json.fields?.map((field) => field.value)).toContain('Icon-verified');
+  });
+
+  it('formats verification failures with the 30-minute deletion notice', () => {
+    const json = buildVerificationFailureOperatorEmbed({
+      guildId: GUILD_ID,
+      playerName: 'J_TitanRealm',
+      playerTag: 'ABC123',
+      discordUsername: '<@everyone> J_TitanRealm',
+      reason: '404 Not Found',
+    }).toJSON();
+
+    expect(json.title).toBe('❌ Verification failed.');
+    expect(json.color).toBe(EMBED_COLORS.danger);
+    expect(json.description).toContain('🏷️ J_TitanRealm (`#ABC123`)');
+    expect(json.description).toContain('👥 @J_TitanRealm');
+    expect(json.description).toContain('📝 Member not found.');
+    expect(json.description).toContain('ℹ️ Verification will be deleted after 30 minutes.');
+    expect(json.description).not.toContain('<@');
   });
 });
 
@@ -168,6 +204,25 @@ describe('operator posting', () => {
     );
 
     expect(mocks.post.mock.calls[0]?.[0]).toBe(`channels/${VERIFICATION_ID}/messages`);
+  });
+
+  it('posts verification failures to the verification channel with mentions disabled', async () => {
+    const loadSettings = vi.fn(async () => settings({ announcementChannelId: null }));
+    const messageId = await notifyVerificationFailed(
+      {
+        guildId: GUILD_ID,
+        playerName: 'J_TitanRealm',
+        playerTag: 'ABC123',
+        discordUsername: 'J_TitanRealm',
+        reason: 'Member not found.',
+      },
+      { loadSettings },
+    );
+
+    expect(messageId).toBe('message-1');
+    expect(mocks.post.mock.calls[0]?.[0]).toBe(`channels/${VERIFICATION_ID}/messages`);
+    const body = mocks.post.mock.calls[0]?.[1] as { body?: Record<string, unknown> };
+    expect(body['body']?.['allowed_mentions']).toEqual({ parse: [] });
   });
 
   it('ignores skipped, guild-less and invalid-guild results', async () => {

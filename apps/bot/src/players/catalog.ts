@@ -1,8 +1,5 @@
-import {
-  createBrawlStarsClient,
-  type BrawlerCatalogItem,
-  type BrawlStarsClient,
-} from '@brawlhub/brawl-stars';
+import type { BrawlerCatalogItem, BrawlStarsClient } from '@brawlhub/brawl-stars';
+import { getSharedBrawlStarsClient } from '../api/gateway.js';
 import type { OfficialBrawlerRef } from './types';
 
 const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
@@ -46,7 +43,7 @@ export async function loadBrawlerCatalog(
   }
 
   try {
-    const api = options.api ?? createBrawlStarsClient();
+    const api = options.api ?? getSharedBrawlStarsClient();
     const items = await api.getBrawlers();
     const refs = toRefs(items);
     if (useCache) cachedCatalog = { items: refs, expiresAt: now.getTime() + CATALOG_TTL_MS };

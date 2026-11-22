@@ -1,4 +1,4 @@
-import { mdBold, mdCode, mdKeyValue, mdList, mdParagraphs } from './discord/embed-format';
+import { mdBold, mdCode } from './discord/embed-format';
 import { EMBED_COLORS } from './discord/embed-style';
 import { createLogger } from '@brawlhub/logging';
 import type { SyncResult } from '@brawlhub/sync';
@@ -11,6 +11,7 @@ const logger = createLogger('bot/operator');
 const REDACTED = '[REDACTED]';
 const EMBED_COLOR = EMBED_COLORS.success;
 const SNOWFLAKE = /^\d{17,20}$/;
+const VERIFICATION_DELETION_NOTICE = 'ℹ️ Verification will be deleted after 30 minutes.';
 
 type NoticePurpose = 'sync' | 'verification';
 type SettingsLoader = (guildId: string) => Promise<GuildSettingsView>;
@@ -27,7 +28,16 @@ export interface OperatorVerificationNotice {
   readonly playerName: string | null;
   readonly playerTag: string;
   readonly discordUserId: string;
+  readonly discordUsername?: string | null;
   readonly method: 'icon-verified' | 'staff-linked';
+}
+
+export interface OperatorVerificationFailureNotice {
+  readonly guildId: string;
+  readonly playerName: string | null;
+  readonly playerTag: string;
+  readonly discordUsername: string;
+  readonly reason: string;
 }
 
 /** Strip mention/newline syntax from API or staff-provided text. */
@@ -51,6 +61,22 @@ function safeError(error: unknown, token: string): string {
 function discordUserId(value: string | null | undefined): string | undefined {
   const candidate = value?.trim();
   return candidate !== undefined && SNOWFLAKE.test(candidate) ? candidate : undefined;
+}
+
+function discordHandle(value: string | null | undefined, fallback = 'unknown'): string {
+  const handle = clean(value, 36, fallback).replace(/^@+/, '');
+  return `👥 @${handle}`;
+}
+
+function playerLabel(name: string | null | undefined, tag: string): string {
+  const player = clean(name, 60, clean(tag, 20, 'unknown'));
+  return `🏷️ ${player} (${mdCode(`#${clean(tag, 20, 'unknown')}`)})`;
+}
+
+function failureReason(reason: string): string {
+  const text = clean(reason, 120, 'Member not found.');
+  if (/not\s*found|\b404\b/i.test(text)) return 'Member not found.';
+  return text.endsWith('.') ? text : `${text}.`;
 }
 
 async function resolveChannelId(
@@ -84,12 +110,6 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
   const succeeded = result.membersSucceeded;
   const hasMemberFailures =
     failures.length > 0 || (expected !== undefined && succeeded !== undefined && succeeded < expected);
-  const title =
-    result.status === 'failed'
-      ? 'Synchronization failed'
-      : hasMemberFailures
-        ? 'Member synchronization failed'
-        : 'Sync completed';
 
   const color =
     result.status === 'failed'
@@ -97,7 +117,7 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
       : hasMemberFailures
         ? EMBED_COLORS.warning
         : EMBED_COLORS.success;
-  const embed = new EmbedBuilder().setColor(color).setTitle(title);
+  const embed = new EmbedBuilder().setColor(color);
 
   if (result.status === 'failed') {
     const token = getBotConfig().token;
@@ -105,21 +125,32 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
       token !== undefined && result.error !== undefined && result.error.includes(token)
         ? result.error.split(token).join(REDACTED)
         : result.error;
-    embed.setDescription(`${mdBold('Sync failed.')} ${clean(error, 900, 'No error details supplied.')}`);
-  } else if (expected !== undefined && succeeded !== undefined) {
-    embed.setDescription(
-      hasMemberFailures
-        ? mdParagraphs(
-            'Sync completed.',
-            mdKeyValue('Successfully synced Members', `${succeeded}/${expected}.`),
-          )
-        : mdParagraphs(
-            'Sync completed.',
-            mdKeyValue('Successfully synced Members', `${succeeded}/${expected}.`),
-          ),
-    );
+    embed
+      .setTitle('❌ Synchronization failed.')
+      .setDescription(`${mdBold('Sync failed.')} ${clean(error, 900, 'No error details supplied.')}`);
   } else {
-    embed.setDescription('Sync completed.');
+    const lines: string[] = [];
+    if (hasMemberFailures) {
+      embed.setTitle('❌ Member synchronization failed.');
+      for (const failure of failures.slice(0, 8)) {
+        lines.push(playerLabel(failure.name, failure.tag));
+        lines.push(discordHandle(failure.name));
+        lines.push(`📝 ${failureReason(failure.reason)}`);
+        lines.push(VERIFICATION_DELETION_NOTICE);
+      }
+      if (failures.length > 8) {
+        lines.push(`+${failures.length - 8} more member(s) failed.`);
+      }
+      if (expected !== undefined && succeeded !== undefined) {
+        lines.push('', '✅ Sync completed.', `Successfully synced Members: ${succeeded}/${expected}.`);
+      }
+    } else {
+      embed.setTitle('✅ Sync completed.');
+      if (expected !== undefined && succeeded !== undefined) {
+        lines.push(`Successfully synced Members: ${succeeded}/${expected}.`);
+      }
+    }
+    embed.setDescription(lines.join('\n') || '✅ Sync completed.');
   }
 
   embed.addFields(
@@ -130,37 +161,44 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
     { name: 'Notifications', value: String(result.notificationsSent), inline: true },
   );
 
-  if (hasMemberFailures) {
-    const lines = failures
-      .slice(0, 8)
-      .map((failure) => `${mdCode(`#${clean(failure.tag, 16)}`)} — ${clean(failure.reason, 90)}`);
-    if (failures.length > 8) {
-      lines.push(`+${failures.length - 8} more member(s) failed.`);
-    }
-    embed.addFields({
-      name: 'Failed members',
-      value: lines.length > 0 ? mdList(lines) : 'Member profile data was incomplete.',
-    });
-  }
-
   embed.setFooter({ text: 'Guild-scoped operator notice • official Brawl Stars sync data' });
   return embed;
 }
 
 export function buildVerificationOperatorEmbed(input: OperatorVerificationNotice): EmbedBuilder {
-  const player = `${clean(input.playerName, 60)} (${mdCode(`#${clean(input.playerTag, 20)}`)})`;
   const method = input.method === 'staff-linked' ? 'Staff-linked' : 'Icon-verified';
   return new EmbedBuilder()
     .setColor(EMBED_COLOR)
-    .setTitle('Verification completed')
+    .setTitle('✅ Verification completed.')
     .setDescription(
-      `${player} is now linked to Discord user ${mdCode(clean(input.discordUserId, 24))}.`,
+      [
+        playerLabel(input.playerName, input.playerTag),
+        discordHandle(input.discordUsername ?? input.discordUserId, 'discord-user'),
+        `📝 ${method}`,
+      ].join('\n'),
     )
     .addFields(
       { name: 'Method', value: method, inline: true },
       { name: 'Player tag', value: mdCode(clean(`#${input.playerTag}`, 20)), inline: true },
     )
     .setFooter({ text: 'Guild-scoped operator notice • ownership confirmed without pings' });
+}
+
+export function buildVerificationFailureOperatorEmbed(
+  input: OperatorVerificationFailureNotice,
+): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(EMBED_COLORS.danger)
+    .setTitle('❌ Verification failed.')
+    .setDescription(
+      [
+        playerLabel(input.playerName, input.playerTag),
+        discordHandle(input.discordUsername, 'discord-user'),
+        `📝 ${failureReason(input.reason)}`,
+        VERIFICATION_DELETION_NOTICE,
+      ].join('\n'),
+    )
+    .setFooter({ text: 'Guild-scoped operator notice • verification failed without pings' });
 }
 
 async function postOperatorEmbed(
@@ -219,4 +257,19 @@ export async function notifyVerificationCompleted(
   const guildId = discordUserId(input.guildId);
   if (guildId === undefined) return undefined;
   return postOperatorEmbed(guildId, 'verification', buildVerificationOperatorEmbed(input), options);
+}
+
+/** Post a guild-scoped, mention-safe verification failure notice. */
+export async function notifyVerificationFailed(
+  input: OperatorVerificationFailureNotice,
+  options: OperatorNotifierOptions = {},
+): Promise<string | undefined> {
+  const guildId = discordUserId(input.guildId);
+  if (guildId === undefined) return undefined;
+  return postOperatorEmbed(
+    guildId,
+    'verification',
+    buildVerificationFailureOperatorEmbed(input),
+    options,
+  );
 }

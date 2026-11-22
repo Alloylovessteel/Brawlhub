@@ -17,6 +17,15 @@ import {
 } from '../discord/pagination';
 import { resolveBrawlerPortraitUrl, resolvePlayerIconUrl } from '../metadata/assets.js';
 import {
+  createPersistentSession,
+  deletePersistentSession,
+  listPersistentReplays,
+  listPersistentSessions,
+  persistVoid,
+  recordPersistentReplay,
+  takePersistentSession,
+} from '../state/index.js';
+import {
   buildMeBrawlersEmbed,
   buildMeMoreEmbed,
   buildMeSummaryEmbed,
@@ -60,6 +69,10 @@ export interface MeSession {
 
 export type MeSessionInput = Omit<MeSession, 'expiresAt'>;
 
+const SESSION_COMMAND = 'me';
+const REPLAY_COMMAND = 'me';
+const SESSION_KIND = 'single-use';
+
 const sessions = new Map<string, MeSession>();
 
 interface ReplayEntry {
@@ -69,6 +82,46 @@ interface ReplayEntry {
 }
 
 const consumedClicks = new Map<string, ReplayEntry>();
+
+/** Hydrate the synchronous mirrors from Supabase when a service role is configured. */
+function hydrateMeMirrors(): void {
+  persistVoid(
+    listPersistentSessions({ command: SESSION_COMMAND })
+      .then((rows) => {
+        for (const row of rows) {
+          const session = row.payload as unknown as MeSession;
+          if (
+            typeof session.guildId === 'string' &&
+            typeof session.userId === 'string' &&
+            typeof session.tag === 'string' &&
+            typeof session.expiresAt === 'number' &&
+            session.expiresAt > Date.now()
+          ) {
+            sessions.set(row.nonce, session);
+          }
+        }
+      })
+      .catch(() => undefined),
+    'hydrate /me sessions',
+  );
+  persistVoid(
+    listPersistentReplays()
+      .then((rows) => {
+        for (const row of rows) {
+          if (row.guildId === '' || row.actionKey.length === 0) continue;
+          consumedClicks.set(`${row.nonce}:${row.actionKey}`, {
+            guildId: row.guildId,
+            userId: row.actorDiscordUserId,
+            expiresAt: row.expiresAt,
+          });
+        }
+      })
+      .catch(() => undefined),
+    'hydrate /me replays',
+  );
+}
+
+hydrateMeMirrors();
 
 function pruneExpiredSessions(now: number): void {
   for (const [nonce, session] of sessions) {
@@ -107,22 +160,52 @@ function rememberMeClick(
 ): void {
   if (interaction.guildId === null) return;
   pruneExpiredSessions(Date.now());
+  const expiresAt = Date.now() + REPLAY_WINDOW_MS;
   consumedClicks.set(replayKey(nonce, action), {
     guildId: interaction.guildId,
     userId: interaction.user.id,
-    expiresAt: Date.now() + REPLAY_WINDOW_MS,
+    expiresAt,
   });
+  persistVoid(
+    recordPersistentReplay({
+      guildId: interaction.guildId,
+      actorDiscordUserId: interaction.user.id,
+      nonce,
+      actionKey: action,
+      expiresAt,
+    }),
+    'remember /me click',
+  );
 }
 
 async function acknowledgeDuplicate(interaction: CommandComponentInteraction): Promise<void> {
   if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
+  await interaction.editReply({
+    content: 'That button was already handled. Run /me profile again for a fresh view.',
+    embeds: [],
+    components: [],
+    allowedMentions: { parse: [] },
+  });
 }
 
 /** Create a single-use, actor- and guild-bound `/me` component session. */
 export function createMeSession(input: MeSessionInput): string {
   pruneExpiredSessions(Date.now());
   const nonce = randomUUID().replace(/-/g, '').slice(0, 16);
-  sessions.set(nonce, { ...input, expiresAt: Date.now() + SESSION_TTL_MS });
+  const session: MeSession = { ...input, expiresAt: Date.now() + SESSION_TTL_MS };
+  sessions.set(nonce, session);
+  persistVoid(
+    createPersistentSession({
+      guildId: session.guildId,
+      command: SESSION_COMMAND,
+      kind: SESSION_KIND,
+      actorDiscordUserId: session.userId,
+      nonce,
+      payload: session as unknown as Record<string, unknown>,
+      expiresAt: session.expiresAt,
+    }),
+    'create /me session',
+  );
   return nonce;
 }
 
@@ -147,11 +230,31 @@ export function readMeSession(
   // Only the bound actor in the bound guild consumes the nonce. A stray click
   // from someone else must not invalidate a live view.
   sessions.delete(nonce);
+  persistVoid(
+    takePersistentSession({
+      guildId,
+      command: SESSION_COMMAND,
+      actorDiscordUserId: interaction.user.id,
+      nonce,
+    }),
+    'take /me session',
+  );
   return session;
 }
 
 export function deleteMeSession(nonce: string): void {
+  const session = sessions.get(nonce);
   sessions.delete(nonce);
+  if (session === undefined) return;
+  persistVoid(
+    deletePersistentSession({
+      guildId: session.guildId,
+      command: SESSION_COMMAND,
+      actorDiscordUserId: session.userId,
+      nonce,
+    }),
+    'delete /me session',
+  );
 }
 
 function parseSectionCustomId(customId: string): { section: MeSection; nonce: string } | null {

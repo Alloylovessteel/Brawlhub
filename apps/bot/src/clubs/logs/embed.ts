@@ -13,7 +13,7 @@ const STORED_HISTORY_NOTE = 'From stored BrawlHub sync history • not live';
 
 const KIND_LABELS: Readonly<Record<ClubLogEvent['kind'], string>> = {
   membership: 'Membership',
-  role: 'Role change',
+  role: 'Role updated',
   capacity: 'Capacity',
 };
 

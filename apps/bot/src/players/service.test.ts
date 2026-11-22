@@ -4,11 +4,18 @@ const mocks = vi.hoisted(() => ({
   createBrawlStarsClient: vi.fn(() => {
     throw new Error('Unexpected creation of a Brawl Stars API client');
   }),
+  getSharedBrawlStarsClient: vi.fn(() => {
+    throw new Error('Unexpected use of the shared Brawl Stars API client');
+  }),
 }));
 
 vi.mock('@brawlhub/brawl-stars', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@brawlhub/brawl-stars')>();
-  return { ...actual, createBrawlStarsClient: mocks.createBrawlStarsClient };
+  return {
+    ...actual,
+    createBrawlStarsClient: mocks.createBrawlStarsClient,
+    getSharedBrawlStarsClient: mocks.getSharedBrawlStarsClient,
+  };
 });
 
 import { BrawlStarsApiError } from '@brawlhub/brawl-stars';
@@ -231,6 +238,7 @@ function api(getPlayer: ReturnType<typeof vi.fn> = vi.fn(async () => ({
 beforeEach(() => {
   clearPlayerApiCache();
   mocks.createBrawlStarsClient.mockClear();
+  mocks.getSharedBrawlStarsClient.mockClear();
 });
 
 describe('player service', () => {
@@ -251,6 +259,7 @@ describe('player service', () => {
     expect(result.value.currentClub?.tag).toBe('8QCL');
     expect(client.getPlayer).not.toHaveBeenCalled();
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
+    expect(mocks.getSharedBrawlStarsClient).not.toHaveBeenCalled();
   });
 
   it('rejects invalid tags before any query or API call', async () => {

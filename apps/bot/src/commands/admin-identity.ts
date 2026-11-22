@@ -134,8 +134,8 @@ interface PendingUnverifyAll {
   readonly discordUserId: string;
 }
 
-const pendingOne = new ConfirmationStore<PendingUnverify>();
-const pendingAll = new ConfirmationStore<PendingUnverifyAll>();
+const pendingOne = new ConfirmationStore<PendingUnverify>(undefined, undefined, 'unverify-one');
+const pendingAll = new ConfirmationStore<PendingUnverifyAll>(undefined, undefined, 'unverify-all');
 
 function permissionContext(interaction: ChatInputCommandInteraction | CommandComponentInteraction) {
   return {
@@ -272,13 +272,17 @@ export async function handleUnverifyOne(interaction: ChatInputCommandInteraction
       });
       return;
     }
-    const nonce = pendingOne.create(interaction.user.id, {
-      actor,
-      guildId: interaction.guildId,
-      verificationId: match.verificationId,
-      discordUserId: match.discordUserId,
-      tag: match.tag,
-    });
+    const nonce = pendingOne.create(
+      interaction.user.id,
+      {
+        actor,
+        guildId: interaction.guildId,
+        verificationId: match.verificationId,
+        discordUserId: match.discordUserId,
+        tag: match.tag,
+      },
+      interaction.guildId,
+    );
     await interaction.editReply({
       content: `Revoke <@${match.discordUserId}>’s link to #${match.tag}? This cannot be undone.`,
       components: [buildConfirmationRow('unverify-one', nonce)],
@@ -294,7 +298,7 @@ export async function handleUnverifyOneComponent(interaction: CommandComponentIn
   if (action === null) return;
   await interaction.deferUpdate();
   try {
-    const pending = pendingOne.take(action.nonce, interaction.user.id);
+    const pending = pendingOne.take(action.nonce, interaction.user.id, interaction.guildId);
     await requireGlobalPermission(interaction.user.id, 'members:verify', permissionContext(interaction));
     if (action.kind === 'cancel') {
       await interaction.editReply({ content: 'Cancelled.', components: [], embeds: [] });
@@ -341,11 +345,15 @@ export async function handleUnverifyAll(interaction: ChatInputCommandInteraction
       });
       return;
     }
-    const nonce = pendingAll.create(interaction.user.id, {
-      actor,
-      guildId: interaction.guildId,
-      discordUserId: user.id,
-    });
+    const nonce = pendingAll.create(
+      interaction.user.id,
+      {
+        actor,
+        guildId: interaction.guildId,
+        discordUserId: user.id,
+      },
+      interaction.guildId,
+    );
     await interaction.editReply({
       content: `Revoke **all** verified account links for <@${user.id}>? This cannot be undone.`,
       components: [buildConfirmationRow('unverify-all', nonce)],
@@ -361,7 +369,7 @@ export async function handleUnverifyAllComponent(interaction: CommandComponentIn
   if (action === null) return;
   await interaction.deferUpdate();
   try {
-    const pending = pendingAll.take(action.nonce, interaction.user.id);
+    const pending = pendingAll.take(action.nonce, interaction.user.id, interaction.guildId);
     await requireGlobalPermission(interaction.user.id, 'members:verify', permissionContext(interaction));
     if (action.kind === 'cancel') {
       await interaction.editReply({ content: 'Cancelled.', components: [], embeds: [] });

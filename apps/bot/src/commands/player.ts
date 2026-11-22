@@ -11,8 +11,15 @@ import {
   type MeSessionInput,
 } from './me-components.js';
 import { handleMeImage } from './me-image.js';
+import { handleMeLive, handleMeLiveStop } from './me-live.js';
+import { handleMeChart } from './me-chart.js';
 import { meTagErrorMessage, resolveMeTag } from './me-utils.js';
-import { replyPlayerLookupFailure, respondWithPlayerChoices } from './player-utils';
+import { CHART_OPTIONS, isChartOption, type ChartOption } from '../images/chart-render.js';
+import {
+  PLAYER_PERIOD_CHOICES,
+  replyPlayerLookupFailure,
+  respondWithPlayerChoices,
+} from './player-utils';
 
 function addTagOption(subcommand: SlashCommandSubcommandBuilder): SlashCommandSubcommandBuilder {
   subcommand.addStringOption((option) =>
@@ -25,6 +32,12 @@ function addTagOption(subcommand: SlashCommandSubcommandBuilder): SlashCommandSu
   );
   return subcommand;
 }
+
+const CHART_CHOICES: ReadonlyArray<{ readonly name: string; readonly value: ChartOption }> =
+  CHART_OPTIONS.map((option) => ({
+    name: option.replaceAll('_', ' ').replace(/^./, (character) => character.toUpperCase()),
+    value: option,
+  }));
 
 export const meCommandData = new SlashCommandBuilder()
   .setName('me')
@@ -42,14 +55,58 @@ export const meCommandData = new SlashCommandBuilder()
         .setName('image')
         .setDescription('Post a Brawl Stars player profile card in this channel'),
     ),
-  );
+  )
+  .addSubcommand((subcommand) =>
+    addTagOption(
+      subcommand
+        .setName('live')
+        .setDescription('Opt in to live battle updates for a player in this channel'),
+    ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('live-stop')
+      .setDescription('Stop your live battle updates in this channel'),
+  )
+  .addSubcommand((subcommand) => {
+    subcommand.setName('chart').setDescription('Post a stored-data chart as a PNG');
+    subcommand.addStringOption((option) => {
+      option
+        .setName('option')
+        .setDescription('Which stored-data chart to render')
+        .setRequired(true);
+      for (const choice of CHART_CHOICES) option.addChoices(choice);
+      return option;
+    });
+    addTagOption(subcommand);
+    subcommand.addStringOption((option) => {
+      option.setName('period').setDescription('Stored history window').setRequired(false);
+      for (const choice of PLAYER_PERIOD_CHOICES) option.addChoices(choice);
+      return option;
+    });
+    return subcommand;
+  });
 
-/** Dispatch `/me profile` and `/me image` without registering a 19th anchor. */
+/** Dispatch all `/me` subcommands without registering a 19th anchor. */
 export async function handleMe(interaction: ChatInputCommandInteraction): Promise<void> {
   const subcommand = interaction.options.getSubcommand(false);
 
   if (subcommand === 'image') {
     await handleMeImage(interaction);
+    return;
+  }
+  if (subcommand === 'live') {
+    await handleMeLive(interaction);
+    return;
+  }
+  if (subcommand === 'live-stop') {
+    await handleMeLiveStop(interaction);
+    return;
+  }
+  if (subcommand === 'chart') {
+    const rawOption = interaction.options.getString('option', true);
+    const option = isChartOption(rawOption) ? rawOption : 'trophies';
+    await handleMeChart(interaction, option);
     return;
   }
   if (subcommand !== null && subcommand !== 'profile') {

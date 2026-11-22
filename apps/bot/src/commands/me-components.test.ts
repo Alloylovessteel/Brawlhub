@@ -175,7 +175,10 @@ describe('interactive /me', () => {
     const doubleClick = componentInteraction(customId);
     await handleMeComponent(doubleClick);
     expect(doubleClick.deferUpdate).toHaveBeenCalledOnce();
-    expect((doubleClick.editReply as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    expect(editPayload(doubleClick).content).toBe(
+      'That button was already handled. Run /me profile again for a fresh view.',
+    );
+    expect(editPayload(doubleClick).components).toEqual([]);
     expect(mocks.service.loadPlayerBrawlers).toHaveBeenCalledTimes(1);
   });
 
@@ -274,7 +277,9 @@ describe('interactive /me', () => {
     const duplicatePage = componentInteraction(nextPageId as string);
     await handleMeComponent(duplicatePage);
     expect(duplicatePage.deferUpdate).toHaveBeenCalledOnce();
-    expect((duplicatePage.editReply as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    expect(editPayload(duplicatePage).content).toBe(
+      'That button was already handled. Run /me profile again for a fresh view.',
+    );
     expect(mocks.service.loadPlayerBrawlers).toHaveBeenCalledTimes(2);
   });
 });

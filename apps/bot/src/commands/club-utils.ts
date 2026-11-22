@@ -10,8 +10,18 @@ import {
 import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
 import type { ClubLookupFailure } from '../clubs/types';
 import { cleanTag } from '../discord/format';
-import { respondToAutocomplete } from '../discord/errors.js';
+import {
+  respondToAutocomplete,
+  respondWithLookupUnavailableChoice,
+} from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
+import {
+  createPersistentSession,
+  deletePersistentSession,
+  listPersistentSessions,
+  persistVoid,
+  takePersistentSession,
+} from '../state/index.js';
 
 const logger = createLogger('bot');
 
@@ -27,7 +37,43 @@ interface ClubChooserSession<T = unknown> {
   readonly expiresAt: number;
 }
 
+const CHOOSER_COMMAND = 'club-chooser';
 const clubChooserSessions = new Map<string, ClubChooserSession>();
+
+function persistChooserKey(commandName: string, nonce: string, session: ClubChooserSession) {
+  return {
+    guildId: session.guildId,
+    command: CHOOSER_COMMAND,
+    actorDiscordUserId: session.userId,
+    nonce,
+  };
+}
+
+/** Hydrate the synchronous chooser mirror from Supabase when available. */
+function hydrateChooserSessions(): void {
+  persistVoid(
+    listPersistentSessions({ command: CHOOSER_COMMAND })
+      .then((rows) => {
+        for (const row of rows) {
+          const session = row.payload as unknown as ClubChooserSession;
+          if (
+            typeof session.commandName !== 'string' ||
+            typeof session.guildId !== 'string' ||
+            typeof session.userId !== 'string' ||
+            typeof session.expiresAt !== 'number' ||
+            session.expiresAt <= Date.now()
+          ) {
+            continue;
+          }
+          clubChooserSessions.set(chooserSessionKey(session.commandName, row.nonce), session);
+        }
+      })
+      .catch(() => undefined),
+    'hydrate club chooser sessions',
+  );
+}
+
+hydrateChooserSessions();
 
 export const INVALID_CLUB_TAG_MESSAGE =
   'That club tag is not valid. Brawl Stars tags use 3–10 characters from 0, 2, 8, 9, C, G, J, L, P, Q, R, U, V and Y.';
@@ -101,13 +147,23 @@ export function createClubChooserSession<T>(input: {
 }): string {
   pruneExpiredChooserSessions(Date.now());
   const nonce = randomUUID().replace(/-/g, '').slice(0, 16);
-  clubChooserSessions.set(chooserSessionKey(input.commandName, nonce), {
+  const session: ClubChooserSession = {
     commandName: input.commandName,
     guildId: input.guildId,
     userId: input.userId,
     state: input.state,
     expiresAt: Date.now() + CLUB_CHOOSER_TTL_MS,
-  });
+  };
+  clubChooserSessions.set(chooserSessionKey(input.commandName, nonce), session);
+  persistVoid(
+    createPersistentSession({
+      ...persistChooserKey(input.commandName, nonce, session),
+      kind: input.commandName,
+      payload: session as unknown as Record<string, unknown>,
+      expiresAt: session.expiresAt,
+    }),
+    'create club chooser session',
+  );
   return nonce;
 }
 
@@ -137,8 +193,13 @@ export function readClubChooserSelection<T>(
 
   const key = chooserSessionKey(commandName, nonce);
   const session = clubChooserSessions.get(key) as ClubChooserSession<T> | undefined;
-  if (session === undefined || session.expiresAt <= Date.now()) {
+  if (session === undefined) return { kind: 'expired' };
+  if (session.expiresAt <= Date.now()) {
     clubChooserSessions.delete(key);
+    persistVoid(
+      deletePersistentSession(persistChooserKey(commandName, nonce, session)),
+      'delete expired club chooser session',
+    );
     return { kind: 'expired' };
   }
   if (
@@ -149,6 +210,10 @@ export function readClubChooserSelection<T>(
     return { kind: 'expired' };
   }
   clubChooserSessions.delete(key);
+  persistVoid(
+    takePersistentSession(persistChooserKey(commandName, nonce, session)),
+    'take club chooser session',
+  );
 
   const tag = interaction.values[0];
   return tag === undefined ? { kind: 'expired' } : { kind: 'selected', state: session.state, tag };
@@ -248,6 +313,6 @@ export async function respondWithClubChoices(
     logger.warn('Club autocomplete could not read registered clubs', {
       error: error instanceof Error ? error.message : 'unknown error',
     });
-    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
+    await respondWithLookupUnavailableChoice(interaction);
   }
 }

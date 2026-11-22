@@ -1,4 +1,6 @@
 export interface VerificationChallenge {
+  /** Discord guild that owns the challenge (or `dm` outside a guild). */
+  readonly guildId: string;
   readonly discordUserId: string;
   readonly profileId: string;
   readonly playerTag: string;

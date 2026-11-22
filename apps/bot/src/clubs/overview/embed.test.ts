@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { BotConfig } from '../../config';
 import type { ClubRecord, ClubSummary } from '../types';
 import {
+  OVERVIEW_ALL_CLUBS_LIMIT,
+  OVERVIEW_FIELDS_PER_EMBED,
   OVERVIEW_MAX_CLUBS,
+  OVERVIEW_MAX_EMBEDS,
   OVERVIEW_MAX_SELECTIONS,
   buildClubOverviewCustomId,
   buildClubOverviewEmbed,
+  buildClubOverviewEmbeds,
   buildClubOverviewSelect,
   parseClubOverviewCustomId,
   sortOverviewSummaries,
@@ -88,19 +92,24 @@ describe('club overview embed', () => {
     expect(data.footer?.text).toContain('not exposed by the Brawl Stars API');
   });
 
-  it('caps fields and select options at 25 and reports the remainder', () => {
+  it('shows every club across multiple embeds while select options stay capped at 25', () => {
     const summaries = Array.from({ length: 30 }, (_, index) => summary(index, 1000 + index));
-    const embed = buildClubOverviewEmbed({
+    const embeds = buildClubOverviewEmbeds({
       summaries,
       guildLabel: null,
       now: NOW,
       config: CONFIG,
     });
-    const data = embed.toJSON();
+    const data = embeds.map((embed) => embed.toJSON());
 
     expect(sortOverviewSummaries(summaries)[0]?.club.name).toBe('Club 29');
-    expect(data.fields).toHaveLength(OVERVIEW_MAX_CLUBS);
-    expect(data.footer?.text).toContain('Showing top 25 of 30 clubs');
+    expect(embeds).toHaveLength(2);
+    expect(data[0]?.fields).toHaveLength(OVERVIEW_FIELDS_PER_EMBED);
+    expect(data[1]?.fields).toHaveLength(5);
+    expect(data[0]?.title).toContain('(1/2)');
+    expect(data[1]?.title).toContain('(2/2)');
+    expect(data[0]?.footer?.text).not.toContain('Showing top');
+    expect(data.flatMap((item) => (item.fields ?? []).map((field) => field.name))).toHaveLength(30);
 
     const select = buildClubOverviewSelect(summaries, GUILD_ID);
     expect(select?.components).toHaveLength(1);
@@ -116,6 +125,27 @@ describe('club overview embed', () => {
     expect(menu.min_values).toBe(1);
     expect(menu.max_values).toBe(OVERVIEW_MAX_SELECTIONS);
     expect(menu.placeholder).toBe(`Choose 1-${OVERVIEW_MAX_SELECTIONS} Clubs`);
+  });
+
+  it('caps at Discord message limits and reports clubs beyond that', () => {
+    const total = OVERVIEW_ALL_CLUBS_LIMIT + 5;
+    const summaries = Array.from({ length: total }, (_, index) => summary(index, 1000 + index));
+    const embeds = buildClubOverviewEmbeds({
+      summaries,
+      guildLabel: null,
+      now: NOW,
+      config: CONFIG,
+    });
+    const fields = embeds.reduce(
+      (count, embed) => count + (embed.toJSON().fields?.length ?? 0),
+      0,
+    );
+
+    expect(embeds).toHaveLength(OVERVIEW_MAX_EMBEDS);
+    expect(fields).toBe(OVERVIEW_ALL_CLUBS_LIMIT);
+    expect(embeds[0]?.toJSON().footer?.text).toContain(
+      `Showing first ${OVERVIEW_ALL_CLUBS_LIMIT} of ${total} clubs`,
+    );
   });
 
   it('lets members select several clubs when fewer than the cap are shown', () => {

@@ -9,6 +9,30 @@ import {
   type CommandRegistrationRest,
 } from './index';
 
+interface JsonOption {
+  readonly name: string;
+  readonly type?: number;
+  readonly required?: boolean;
+  readonly options?: readonly JsonOption[];
+}
+
+function requiredOptionOrderIssues(
+  options: readonly JsonOption[] | undefined,
+  path: string,
+): string[] {
+  const issues: string[] = [];
+  let seenOptional = false;
+  for (const option of options ?? []) {
+    const isContainer = option.type === 1 || option.type === 2;
+    if (!isContainer) {
+      if (option.required === true && seenOptional) issues.push(`${path}${option.name}`);
+      if (option.required !== true) seenOptional = true;
+    }
+    issues.push(...requiredOptionOrderIssues(option.options, `${path}${option.name}.`));
+  }
+  return issues;
+}
+
 function command(name: string, overrides: Partial<CommandDefinition> = {}): CommandDefinition {
   return {
     data: new SlashCommandBuilder().setName(name).setDescription(name),
@@ -78,6 +102,17 @@ describe('command registry', () => {
       'update',
       'club-roles',
     ]);
+  });
+
+  it('places required options before optional options in every registered command', () => {
+    const issues = [...commands, ...pendingCommands].flatMap((definition) =>
+      requiredOptionOrderIssues(
+        definition.data.toJSON().options as readonly JsonOption[] | undefined,
+        `${definition.data.name}.`,
+      ),
+    );
+
+    expect(issues).toEqual([]);
   });
 
   it('keeps schema-dependent moderation commands unregistered', () => {

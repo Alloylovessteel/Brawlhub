@@ -46,6 +46,21 @@ export async function respondToAutocomplete(
   }
 }
 
+/** Visible autocomplete choice used when a lookup fails instead of showing no choices. */
+export const LOOKUP_UNAVAILABLE_AUTOCOMPLETE_CHOICE = {
+  name: 'Lookup unavailable — try again shortly',
+  value: '__lookup_unavailable__',
+} as const;
+
+/** Respond with one explicit choice so a failed autocomplete lookup is not silent. */
+export async function respondWithLookupUnavailableChoice(
+  interaction: AutocompleteInteraction,
+): Promise<void> {
+  await respondToAutocomplete(interaction, [LOOKUP_UNAVAILABLE_AUTOCOMPLETE_CHOICE], {
+    swallowUnexpectedErrors: true,
+  });
+}
+
 /** Sanitise an error for logs, redacting known secrets from the message. */
 export function safeErrorMessage(error: unknown, secrets: readonly string[] = []): string {
   let message = error instanceof Error ? error.message : String(error);
@@ -74,6 +89,58 @@ export async function replyWithSafeError(interaction: RepliableInteraction): Pro
     if (isIgnorableInteractionError(error)) return;
     throw error;
   }
+}
+
+/** Standard message for a component whose prefix has no live handler. */
+export const UNKNOWN_COMPONENT_MESSAGE =
+  'That button or menu is no longer available. Run the command again.';
+
+/**
+ * Send explicit, ephemeral feedback from a component interaction. Works both
+ * before acknowledgement and after `deferReply`/`deferUpdate`; components that
+ * cannot be answered (for example a stripped-down test double) are ignored.
+ */
+async function replyComponentFeedback(
+  interaction: RepliableInteraction,
+  content: string,
+): Promise<void> {
+  const candidate = interaction as RepliableInteraction & {
+    reply?: unknown;
+    followUp?: unknown;
+  };
+  if (typeof candidate.reply !== 'function' && typeof candidate.followUp !== 'function') return;
+
+  const payload = {
+    content,
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  } as const;
+  try {
+    if (interaction.replied || interaction.deferred) {
+      if (typeof candidate.followUp === 'function') {
+        await candidate.followUp(payload);
+      }
+      return;
+    }
+    if (typeof candidate.reply === 'function') {
+      await candidate.reply(payload);
+    }
+  } catch {
+    // Feedback is best-effort: never mask the original handler flow.
+  }
+}
+
+/** Tell the user that an embedded command state (guild/channel/session) expired. */
+export async function replyExpiredComponent(
+  interaction: RepliableInteraction,
+  message: string,
+): Promise<void> {
+  await replyComponentFeedback(interaction, message);
+}
+
+/** Tell the user that a custom-ID prefix has no live handler instead of silently returning. */
+export async function replyUnknownComponent(interaction: RepliableInteraction): Promise<void> {
+  await replyComponentFeedback(interaction, UNKNOWN_COMPONENT_MESSAGE);
 }
 
 /** Autocomplete cannot send ephemeral messages; failures are logged only. */

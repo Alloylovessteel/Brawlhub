@@ -1,4 +1,5 @@
 import type { CommandComponentInteraction } from '../../discord/interactions.js';
+import { replyUnknownComponent } from '../../discord/errors.js';
 import { handleClubComponent } from '../club.js';
 import { handleClubsComponent } from '../clubs.js';
 import { handleClubMembersComponent } from '../club-members.js';
@@ -125,6 +126,9 @@ export function createCompositeComponentHandler(
     const [prefix] = interaction.customId.split(':');
     const handler = prefix === undefined ? undefined : handlers[prefix];
     if (handler === undefined) {
+      // Unknown/retired prefixes used to disappear silently; give explicit,
+      // ephemeral feedback when the interaction can still be answered.
+      await replyUnknownComponent(interaction);
       return;
     }
     await handler(interaction);

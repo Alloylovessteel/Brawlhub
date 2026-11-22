@@ -1,6 +1,16 @@
-import { DiscordAPIError, type AutocompleteInteraction } from 'discord.js';
+import {
+  DiscordAPIError,
+  MessageFlags,
+  type AutocompleteInteraction,
+  type ButtonInteraction,
+} from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
-import { respondToAutocomplete } from './errors';
+import {
+  replyExpiredComponent,
+  replyUnknownComponent,
+  respondToAutocomplete,
+  UNKNOWN_COMPONENT_MESSAGE,
+} from './errors';
 
 function autocomplete(respond: ReturnType<typeof vi.fn>, responded = false): AutocompleteInteraction {
   return { responded, respond } as unknown as AutocompleteInteraction;
@@ -60,6 +70,50 @@ describe('respondToAutocomplete', () => {
 
     await expect(
       respondToAutocomplete(autocomplete(respond), [], { swallowUnexpectedErrors: true }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('component feedback helpers', () => {
+  function button(replied = false, deferred = false) {
+    return {
+      replied,
+      deferred,
+      reply: vi.fn(async () => undefined),
+      followUp: vi.fn(async () => undefined),
+    } as unknown as ButtonInteraction & {
+      reply: ReturnType<typeof vi.fn>;
+      followUp: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  it('replies ephemerally before acknowledgement', async () => {
+    const interaction = button();
+    await replyExpiredComponent(interaction, 'That button expired.');
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: 'That button expired.',
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    expect(interaction.followUp).not.toHaveBeenCalled();
+  });
+
+  it('uses followUp after a defer', async () => {
+    const interaction = button(false, true);
+    await replyUnknownComponent(interaction);
+
+    expect(interaction.reply).not.toHaveBeenCalled();
+    expect(interaction.followUp).toHaveBeenCalledWith({
+      content: UNKNOWN_COMPONENT_MESSAGE,
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+  });
+
+  it('never throws when the interaction cannot be answered', async () => {
+    await expect(
+      replyUnknownComponent({ customId: 'unknown:page:2' } as unknown as ButtonInteraction),
     ).resolves.toBeUndefined();
   });
 });

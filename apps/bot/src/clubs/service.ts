@@ -1,9 +1,10 @@
 import {
   BrawlStarsApiError,
-  createBrawlStarsClient,
+  getSharedBrawlStarsClient,
   type BrawlStarsClient,
 } from '@brawlhub/brawl-stars';
 import { createTrustedClient } from '@brawlhub/database';
+import { readOfficialCachePolicy } from '../api/gateway.js';
 import { brawlTagSchema } from '@brawlhub/shared';
 import {
   calculateAverage,
@@ -69,7 +70,6 @@ interface LiveClubFetchResult {
   readonly issue: ApiIssue | null;
 }
 
-const LIVE_CLUB_CACHE_MS = 30_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const liveClubCache = new Map<string, { expiresAt: number; result: LiveClubFetchResult }>();
 
@@ -601,21 +601,27 @@ export function classifyApiError(error: unknown): ApiIssue {
   return 'error';
 }
 
-/** Fetch live club data once per tag for a short TTL, including failures. */
+/**
+ * Fetch live club data with an explicit cache policy: successes use the success
+ * TTL, failures (including 401/403/429) use the much shorter negative TTL.
+ */
 async function fetchLiveClub(
   tag: string,
-  api: BrawlStarsClient,
+  api: BrawlStarsClient | undefined,
   now: Date,
   useCache: boolean,
+  guildId?: string | null,
 ): Promise<LiveClubFetchResult> {
-  const cached = useCache ? liveClubCache.get(tag) : undefined;
+  const client = api ?? getSharedBrawlStarsClient();
+  const cacheKey = `${guildId ?? ''}|${tag}`;
+  const cached = useCache ? liveClubCache.get(cacheKey) : undefined;
   if (cached !== undefined && cached.expiresAt > now.getTime()) {
     return cached.result;
   }
 
   let result: LiveClubFetchResult;
   try {
-    const liveClub = await api.getClub(tag);
+    const liveClub = await client.getClub(tag);
     const returnedTag = brawlTagSchema.safeParse(liveClub.tag);
     if (!returnedTag.success || returnedTag.data !== tag) {
       throw new BrawlStarsApiError('Official API returned a mismatched club tag', 0);
@@ -623,7 +629,7 @@ async function fetchLiveClub(
 
     let roster = parseApiMembers(liveClub.members);
     if (roster.length === 0) {
-      roster = parseApiMembers(await api.getClubMembers(tag));
+      roster = parseApiMembers(await client.getClubMembers(tag));
     }
 
     result = {
@@ -644,7 +650,9 @@ async function fetchLiveClub(
   }
 
   if (useCache) {
-    liveClubCache.set(tag, { expiresAt: now.getTime() + LIVE_CLUB_CACHE_MS, result });
+    const policy = readOfficialCachePolicy();
+    const ttlMs = result.issue === null ? policy.successTtlMs : policy.negativeTtlMs;
+    liveClubCache.set(cacheKey, { expiresAt: now.getTime() + ttlMs, result });
   }
   return result;
 }
@@ -777,7 +785,7 @@ export async function loadClubView(
   options: ClubServiceOptions = {},
 ): Promise<LoadClubResult> {
   const db = options.db ?? createTrustedClient();
-  const api = options.api ?? createBrawlStarsClient();
+  const api = options.api ?? getSharedBrawlStarsClient();
   const now = input.now ?? new Date();
 
   const normalized = normalizeLookupTag(input.tag);
@@ -809,7 +817,13 @@ export async function loadClubView(
   let badgeId = latestSnapshot === null ? null : readRawBadgeId(latestSnapshot.raw);
   let liveStatus: ClubView['liveStatus'] = 'sync-only';
 
-  const live = await fetchLiveClub(club.tag, api, now, options.useCache ?? true);
+  const live = await fetchLiveClub(
+    club.tag,
+    api,
+    now,
+    options.useCache ?? true,
+    input.guildId,
+  );
   if (live.data !== null) {
     if (live.data.roster.length > 0) {
       roster = live.data.roster;

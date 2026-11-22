@@ -326,6 +326,7 @@ describe('/members accounts verify command', () => {
     expect((interaction.deferReply as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ flags: 64 });
     expect(mocks.verificationService.startVerification).toHaveBeenCalledWith({
       discordUserId: ACTOR_DISCORD_ID,
+      guildId: 'guild-1',
       tagInput: '#2c0y',
       discordUsername: null,
     });

@@ -1,7 +1,7 @@
 import {
   BrawlStarsApiError,
-  createBrawlStarsClient,
   clubSchema,
+  getSharedBrawlStarsClient,
   type BrawlStarsClient,
   type Club,
 } from '@brawlhub/brawl-stars';
@@ -99,7 +99,7 @@ export async function previewClubRegistration(
     throw new Error(`Club ${tag} is already registered for this server`);
   }
 
-  const client = options.client ?? createBrawlStarsClient();
+  const client = options.client ?? getSharedBrawlStarsClient();
   const timeoutMs = readPositiveTimeout();
 
   let club: Club;

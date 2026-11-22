@@ -1,5 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
-import { BrawlStarsApiError, createBrawlStarsClient } from './client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  BrawlStarsApiError,
+  createBrawlStarsClient,
+  getSharedBrawlStarsClient,
+  readBrawlStarsTimeoutMs,
+  resetSharedBrawlStarsClientForTests,
+} from './client';
 
 const API_KEY = 'super-secret-bs-key-987654321';
 const BASE_URL = 'https://api.example.test/v1';
@@ -220,5 +226,106 @@ describe('createBrawlStarsClient', () => {
     expect(rotation).toHaveLength(1);
     expect(rotation[0]?.event?.map).toBe('Pinhole Punt');
     expect(requested).toEqual([`${BASE_URL}/events/rotation`]);
+  });
+
+  it('aborts a stalled request with a safe status-0 timeout error', async () => {
+    const signals: AbortSignal[] = [];
+    const fetchFn = vi.fn<typeof fetch>((_input, init) => {
+      const signal = init?.signal;
+      if (signal === undefined || signal === null) {
+        throw new Error('fetch was not given an abort signal');
+      }
+      signals.push(signal);
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error(`aborted ${API_KEY}`)));
+      });
+    });
+    const client = createBrawlStarsClient({
+      apiKey: API_KEY,
+      baseUrl: BASE_URL,
+      fetchFn,
+      timeoutMs: 10,
+      minIntervalMs: 0,
+    });
+
+    await expect(client.getClub('#G2P9')).rejects.toMatchObject({
+      name: 'BrawlStarsApiError',
+      status: 0,
+    });
+    await expect(client.getClub('#G2P9')).rejects.toThrow(/timed out/i);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[1]?.aborted).toBe(true);
+  });
+
+  it('never includes the API key in a timeout message', async () => {
+    const fetchFn = vi.fn<typeof fetch>((_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(new Error(`request failed with ${API_KEY}`)),
+        );
+      }),
+    );
+    const client = createBrawlStarsClient({
+      apiKey: API_KEY,
+      baseUrl: BASE_URL,
+      fetchFn,
+      timeoutMs: 5,
+      minIntervalMs: 0,
+    });
+
+    try {
+      await client.getClub('#G2P9');
+      throw new Error('expected a timeout');
+    } catch (error) {
+      expect(error).toBeInstanceOf(BrawlStarsApiError);
+      expect((error as BrawlStarsApiError).message).not.toContain(API_KEY);
+    }
+  });
+});
+
+describe('timeout configuration', () => {
+  const original = process.env.BRAWL_STARS_TIMEOUT_MS;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.BRAWL_STARS_TIMEOUT_MS;
+    else process.env.BRAWL_STARS_TIMEOUT_MS = original;
+  });
+
+  it('defaults to 30s, parses the environment and clamps invalid values', () => {
+    delete process.env.BRAWL_STARS_TIMEOUT_MS;
+    expect(readBrawlStarsTimeoutMs()).toBe(30_000);
+
+    process.env.BRAWL_STARS_TIMEOUT_MS = ' 2500 ';
+    expect(readBrawlStarsTimeoutMs()).toBe(2_500);
+
+    process.env.BRAWL_STARS_TIMEOUT_MS = 'not-a-number';
+    expect(readBrawlStarsTimeoutMs()).toBe(30_000);
+
+    process.env.BRAWL_STARS_TIMEOUT_MS = '-10';
+    expect(readBrawlStarsTimeoutMs()).toBe(30_000);
+
+    expect(readBrawlStarsTimeoutMs(999_999_999)).toBe(300_000);
+    expect(readBrawlStarsTimeoutMs(0)).toBe(30_000);
+  });
+});
+
+describe('getSharedBrawlStarsClient', () => {
+  afterEach(() => {
+    resetSharedBrawlStarsClientForTests();
+  });
+
+  it('returns a module-level singleton until reset', () => {
+    resetSharedBrawlStarsClientForTests();
+    const first = getSharedBrawlStarsClient({
+      apiKey: API_KEY,
+      baseUrl: BASE_URL,
+      fetchFn: vi.fn<typeof fetch>(),
+    });
+    expect(getSharedBrawlStarsClient()).toBe(first);
+    expect(getSharedBrawlStarsClient({ apiKey: 'ignored' })).toBe(first);
+
+    resetSharedBrawlStarsClientForTests();
+    expect(getSharedBrawlStarsClient()).not.toBe(first);
   });
 });

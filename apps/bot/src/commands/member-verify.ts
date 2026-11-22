@@ -11,7 +11,11 @@ import {
   startVerification,
 } from '../verification/index.js';
 import { checkBotRateLimit } from '../discord/rate-limit.js';
-import { notifyVerificationCompleted } from '../operator-notifier.js';
+import {
+  notifyVerificationCompleted,
+  notifyVerificationFailed,
+} from '../operator-notifier.js';
+import { reconcileGuildRolesForPlayer } from '../role-automation/index.js';
 
 const COMMAND_NAME = 'member-verify';
 const CHECK_RATE_LIMIT = 1;
@@ -42,6 +46,52 @@ async function postVerificationOperatorNotice(
     });
   } catch {
     // Operator notices are best-effort.
+  }
+}
+
+async function postVerificationFailureNotice(
+  interaction: ChatInputCommandInteraction,
+  input: { readonly playerName: string | null; readonly playerTag: string; readonly reason: string },
+): Promise<void> {
+  if (interaction.guildId === null) return;
+  try {
+    await notifyVerificationFailed({
+      guildId: interaction.guildId,
+      playerName: input.playerName,
+      playerTag: input.playerTag,
+      discordUsername: interaction.user.globalName ?? interaction.user.username ?? 'unknown',
+      reason: input.reason,
+    });
+  } catch {
+    // Operator notices are best-effort.
+  }
+}
+
+async function reconcileRolesAfterVerification(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  if (interaction.guildId === null) return;
+  try {
+    const result = await reconcileGuildRolesForPlayer(
+      interaction.guildId,
+      interaction.user.id,
+      { client: interaction.client },
+    );
+    if (result.kind === 'ok' && (result.rolesAdded > 0 || result.rolesRemoved > 0)) {
+      logger.info('Post-verification auto roles reconciled', {
+        guildId: interaction.guildId,
+        discordUserId: interaction.user.id,
+        rolesAdded: result.rolesAdded,
+        rolesRemoved: result.rolesRemoved,
+      });
+    }
+  } catch (error) {
+    // Role reconciliation must never make a successful verification look failed.
+    logger.warn('Post-verification auto role reconciliation failed', {
+      guildId: interaction.guildId,
+      discordUserId: interaction.user.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -92,6 +142,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   const tag = interaction.options.getString('tag', true);
   const result = await startVerification({
     discordUserId: interaction.user.id,
+    guildId: interaction.guildId,
     tagInput: tag,
     discordUsername:
       interaction.user.globalName ?? interaction.user.username ?? null,
@@ -129,6 +180,11 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
       return;
     }
     await interaction.editReply({ content: result.message });
+    await postVerificationFailureNotice(interaction, {
+      playerName: null,
+      playerTag: tag,
+      reason: result.message,
+    });
     return;
   }
 
@@ -155,7 +211,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
 async function handleCheck(interaction: ChatInputCommandInteraction): Promise<void> {
   const rateLimit = checkBotRateLimit(
-    `member-verify-check:${interaction.user.id}`,
+    `member-verify-check:${interaction.guildId ?? 'dm'}:${interaction.user.id}`,
     CHECK_RATE_LIMIT,
     CHECK_RATE_WINDOW_MS,
   );
@@ -166,7 +222,10 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
-  const result = await checkVerification({ discordUserId: interaction.user.id });
+  const result = await checkVerification({
+    discordUserId: interaction.user.id,
+    guildId: interaction.guildId,
+  });
   logger.info('Verification check handled', {
     guildId: interaction.guildId,
     discordUserId: interaction.user.id,
@@ -178,6 +237,17 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
 
   if (!result.ok) {
     await interaction.editReply({ content: result.message });
+    if (result.code !== 'no-challenge') {
+      const challenge = getVerificationChallenge({
+        discordUserId: interaction.user.id,
+        guildId: interaction.guildId,
+      });
+      await postVerificationFailureNotice(interaction, {
+        playerName: challenge?.playerName ?? null,
+        playerTag: challenge?.playerTag ?? 'unknown',
+        reason: result.message,
+      });
+    }
     return;
   }
 
@@ -211,10 +281,14 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
       `Required icon **${icon.name}** (ID \`${icon.id}\`) was confirmed via the official Brawl Stars API (starting icon \`${result.startingIconId}\`, current \`${result.currentIconId}\`).`,
   });
   await postVerificationOperatorNotice(interaction, result);
+  await reconcileRolesAfterVerification(interaction);
 }
 
 async function handleCancel(interaction: ChatInputCommandInteraction): Promise<void> {
-  const result = cancelVerification({ discordUserId: interaction.user.id });
+  const result = cancelVerification({
+    discordUserId: interaction.user.id,
+    guildId: interaction.guildId,
+  });
   logger.info('Verification cancel handled', {
     guildId: interaction.guildId,
     discordUserId: interaction.user.id,
@@ -232,7 +306,10 @@ async function handleCancel(interaction: ChatInputCommandInteraction): Promise<v
 }
 
 async function handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
-  const challenge = getVerificationChallenge({ discordUserId: interaction.user.id });
+  const challenge = getVerificationChallenge({
+    discordUserId: interaction.user.id,
+    guildId: interaction.guildId,
+  });
   if (challenge === null) {
     await interaction.editReply({
       content: 'No active verification challenge. Run `/members accounts verify tag:<player-tag>` to begin.',

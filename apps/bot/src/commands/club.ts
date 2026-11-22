@@ -36,6 +36,7 @@ import {
   parsePaginationCustomIdWithState,
 } from '../discord/pagination';
 import { replyWithSafeError } from '../discord/errors';
+import { cleanTag } from '../discord/format';
 import { resolveClubBadgeUrl } from '../metadata/assets.js';
 import {
   DEFAULT_PAGINATION_STATE,
@@ -255,6 +256,7 @@ function failureReply(failure: ClubLookupFailure): ClubSectionReply {
 }
 
 const CLUB_SECTION_PREFIX = 'club:section:';
+const CLUB_CHART_PREFIX = 'clubs:chart:';
 const SECTION_BUTTONS: ReadonlyArray<{ readonly label: string; readonly section: ClubSection }> = [
   { label: 'Overview', section: 'overview' },
   { label: 'Staff', section: 'staff' },
@@ -287,6 +289,26 @@ export function buildClubSectionRow(tag: string | undefined): ActionRowBuilder<B
         .setLabel(label)
         .setStyle(ButtonStyle.Secondary),
     ),
+  );
+}
+
+/** Compact chart action on a second row; the section row keeps its original five buttons. */
+export function buildClubChartCustomId(tag: string | undefined): string {
+  return `${CLUB_CHART_PREFIX}${cleanTag(tag ?? '')}`;
+}
+
+export function parseClubChartCustomId(customId: string): string | null {
+  if (!customId.startsWith(CLUB_CHART_PREFIX)) return null;
+  const tag = cleanTag(customId.slice(CLUB_CHART_PREFIX.length));
+  return tag === '' ? null : tag;
+}
+
+export function buildClubChartRow(tag: string | undefined): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildClubChartCustomId(tag))
+      .setLabel('Chart')
+      .setStyle(ButtonStyle.Secondary),
   );
 }
 
@@ -382,7 +404,7 @@ export async function buildClubMenuReply(
   return {
     ...(reply.content === undefined ? {} : { content: reply.content }),
     embeds: reply.embeds,
-    components: [buildClubSectionRow(tag), ...reply.components],
+    components: [buildClubSectionRow(tag), buildClubChartRow(tag), ...reply.components],
   };
 }
 
@@ -463,7 +485,7 @@ export async function handleClubComponent(interaction: CommandComponentInteracti
       await interaction.editReply({
         ...(reply.content === undefined ? {} : { content: reply.content }),
         embeds: reply.embeds,
-        components: [buildClubSectionRow(state.tag), ...reply.components],
+        components: [buildClubSectionRow(state.tag), buildClubChartRow(state.tag), ...reply.components],
         allowedMentions: { parse: [] },
       });
     } catch (error) {

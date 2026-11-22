@@ -19,6 +19,13 @@ import {
   parsePaginationCustomIdWithState,
 } from '../discord/pagination';
 import { resolveBrawlerPortraitUrl } from '../metadata/assets.js';
+import {
+  createPersistentSession,
+  deletePersistentSession,
+  listPersistentSessions,
+  persistVoid,
+  updatePersistentSession,
+} from '../state/index.js';
 import { loadBrawlerCatalog } from '../players/catalog.js';
 import {
   BRAWLER_FILTER_LABELS,
@@ -62,7 +69,43 @@ interface BrawlersSession {
   readonly expiresAt: number;
 }
 
+const SESSION_COMMAND = 'brawlers';
+const SESSION_KIND = 'refreshable';
+
 const sessions = new Map<string, BrawlersSession>();
+
+function persistSessionKey(nonce: string, session: BrawlersSession) {
+  return {
+    guildId: session.guildId ?? 'dm',
+    command: SESSION_COMMAND,
+    actorDiscordUserId: session.userId,
+    nonce,
+  };
+}
+
+/** Hydrate the synchronous mirror from Supabase when a service role is configured. */
+function hydrateBrawlersSessions(): void {
+  persistVoid(
+    listPersistentSessions({ command: SESSION_COMMAND })
+      .then((rows) => {
+        for (const row of rows) {
+          const session = row.payload as unknown as BrawlersSession;
+          if (
+            typeof session.userId === 'string' &&
+            typeof session.tag === 'string' &&
+            typeof session.expiresAt === 'number' &&
+            session.expiresAt > Date.now()
+          ) {
+            sessions.set(row.nonce, session);
+          }
+        }
+      })
+      .catch(() => undefined),
+    'hydrate brawler sessions',
+  );
+}
+
+hydrateBrawlersSessions();
 
 export const brawlersCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
@@ -119,7 +162,17 @@ function pruneExpiredSessions(now: number): void {
 function createSession(input: Omit<BrawlersSession, 'expiresAt'>): string {
   pruneExpiredSessions(Date.now());
   const nonce = randomUUID().replace(/-/g, '').slice(0, 16);
-  sessions.set(nonce, { ...input, expiresAt: Date.now() + SESSION_TTL_MS });
+  const session: BrawlersSession = { ...input, expiresAt: Date.now() + SESSION_TTL_MS };
+  sessions.set(nonce, session);
+  persistVoid(
+    createPersistentSession({
+      ...persistSessionKey(nonce, session),
+      kind: SESSION_KIND,
+      payload: session as unknown as Record<string, unknown>,
+      expiresAt: session.expiresAt,
+    }),
+    'create brawler session',
+  );
   return nonce;
 }
 
@@ -129,8 +182,13 @@ function readSession(
 ): BrawlersSession | null {
   if (nonce === null) return null;
   const session = sessions.get(nonce);
-  if (session === undefined || session.expiresAt <= Date.now()) {
+  if (session === undefined) return null;
+  if (session.expiresAt <= Date.now()) {
     sessions.delete(nonce);
+    persistVoid(
+      deletePersistentSession(persistSessionKey(nonce, session)),
+      'delete expired brawler session',
+    );
     return null;
   }
   if (session.guildId !== interaction.guildId || session.userId !== interaction.user.id) {
@@ -142,6 +200,13 @@ function readSession(
 function refreshSession(nonce: string, session: BrawlersSession): BrawlersSession {
   const updated: BrawlersSession = { ...session, expiresAt: Date.now() + SESSION_TTL_MS };
   sessions.set(nonce, updated);
+  persistVoid(
+    updatePersistentSession(persistSessionKey(nonce, updated), {
+      payload: updated as unknown as Record<string, unknown>,
+      expiresAt: updated.expiresAt,
+    }),
+    'refresh brawler session',
+  );
   return updated;
 }
 

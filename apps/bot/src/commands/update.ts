@@ -12,6 +12,7 @@ import {
 import { replyAdminError } from '../admin/errors.js';
 import { requireGlobalPermission } from '../admin/service.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
+import { replyExpiredComponent } from '../discord/errors.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import { refreshGuildRankedRoles } from '../ranked-roles/service.js';
 
@@ -77,7 +78,13 @@ export async function handleUpdate(interaction: ChatInputCommandInteraction): Pr
 export async function handleUpdateComponent(interaction: CommandComponentInteraction): Promise<void> {
   const [, action, embeddedGuildId] = interaction.customId.split(':');
   if (action !== 'run') return;
-  if (interaction.guild === null || interaction.guildId !== embeddedGuildId) return;
+  if (interaction.guild === null || interaction.guildId !== embeddedGuildId) {
+    await replyExpiredComponent(
+      interaction,
+      'That refresh button belongs to another server. Run `/update` here.',
+    );
+    return;
+  }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   try {

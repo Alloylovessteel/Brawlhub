@@ -20,10 +20,14 @@ import {
 import type { ClubSummary } from '../types';
 import { hasOverviewField, normalizeOverviewFields } from './fields';
 
-/** Discord limits an embed to 25 fields and a select menu to 25 options. */
+/** Discord limits a select menu to 25 options. */
 export const OVERVIEW_MAX_CLUBS = 25;
-/** Discord allows at most 10 embeds in one reply, so cap multi-club detail views. */
+/** Discord allows at most 10 embeds in one message. */
 export const OVERVIEW_MAX_SELECTIONS = 10;
+/** Discord allows at most 25 fields per embed and 10 embeds per message. */
+export const OVERVIEW_FIELDS_PER_EMBED = 25;
+export const OVERVIEW_MAX_EMBEDS = 10;
+export const OVERVIEW_ALL_CLUBS_LIMIT = OVERVIEW_FIELDS_PER_EMBED * OVERVIEW_MAX_EMBEDS;
 export const OVERVIEW_CUSTOM_ID_PREFIX = 'clubs:overview:';
 const EMBED_COLOR = EMBED_COLORS.neutral;
 const CAVEAT =
@@ -74,107 +78,129 @@ export function sortOverviewSummaries(
   );
 }
 
-/** Build the single, compact, auto-updating club stats embed. */
-export function buildClubOverviewEmbed(input: ClubOverviewEmbedInput): EmbedBuilder {
+/**
+ * Build the permanent, self-editing overview page. Every registered club is
+ * included; clubs are chunked into Discord's 25-field / 10-embed limits.
+ */
+export function buildClubOverviewEmbeds(input: ClubOverviewEmbedInput): EmbedBuilder[] {
   const fields = normalizeOverviewFields(input.fields);
   const sorted = sortOverviewSummaries(input.summaries, fields);
-  const visible = sorted.slice(0, OVERVIEW_MAX_CLUBS);
+  const visible = sorted.slice(0, OVERVIEW_ALL_CLUBS_LIMIT);
   const emoji = clubEmojis(input.config);
   const label = input.guildLabel === null ? 'Club Stats' : `Overview from ${input.guildLabel}`;
-
-  const embed = new EmbedBuilder()
-    .setColor(EMBED_COLOR)
-    .setTitle(truncate(`${label} | Club Stats`, 256))
-    .setDescription('Stored official Brawl Stars data • refreshed automatically.')
-    .setTimestamp(input.now);
-
-  if (hasOverviewField(fields, 'serverIcon') && input.guildIconUrl !== null && input.guildIconUrl !== undefined) {
-    embed.setThumbnail(input.guildIconUrl);
-  }
-
   const postedAt = `<t:${Math.floor(input.now.getTime() / 1000)}:t>`;
   const showing = sorted.length > visible.length
-    ? `Showing top ${visible.length} of ${sorted.length} clubs • `
+    ? `Showing first ${visible.length} of ${sorted.length} clubs • `
     : '';
-  embed.setFooter({
-    text: truncate(
-      `${showing}Updating every 30 minutes • Posted at ${postedAt} • ${CAVEAT}`,
-      2048,
-    ),
-  });
+  const footerText = truncate(
+    `${showing}Updating every 30 minutes • Posted at ${postedAt} • ${CAVEAT}`,
+    2048,
+  );
 
-  visible.forEach((summary) => {
-    const lines: string[] = [];
+  const chunks: ClubSummary[][] = [];
+  for (let index = 0; index < visible.length; index += OVERVIEW_FIELDS_PER_EMBED) {
+    chunks.push([...visible.slice(index, index + OVERVIEW_FIELDS_PER_EMBED)]);
+  }
+  if (chunks.length === 0) chunks.push([]);
 
-    if (hasOverviewField(fields, 'staff')) {
-      const leader = summary.leader;
-      lines.push(
-        leader === null
-          ? `${emoji.crown} No stored president`
-          : `${emoji.crown} ${formatPlayerLink(leader.name, leader.tag, input.config.playerProfileUrlTemplate)}`,
-      );
+  return chunks.map((chunk, chunkIndex) => {
+    const page = chunks.length > 1 ? ` (${chunkIndex + 1}/${chunks.length})` : '';
+    const embed = new EmbedBuilder()
+      .setColor(EMBED_COLOR)
+      .setTitle(truncate(`${label} | Club Stats${page}`, 256))
+      .setDescription('Stored official Brawl Stars data • refreshed automatically.')
+      .setTimestamp(input.now)
+      .setFooter({ text: footerText });
+
+    if (
+      chunkIndex === 0 &&
+      hasOverviewField(fields, 'serverIcon') &&
+      input.guildIconUrl !== null &&
+      input.guildIconUrl !== undefined
+    ) {
+      embed.setThumbnail(input.guildIconUrl);
     }
 
-    if (hasOverviewField(fields, 'clubTrophies')) {
-      lines.push(`${emoji.trophies}${formatInteger(summary.totalTrophies) ?? '—'}`);
-    }
+    chunk.forEach((summary) => {
+      const lines: string[] = [];
 
-    if (hasOverviewField(fields, 'trophyRange') && summary.trophyRange !== null) {
-      const low = formatCompact(summary.trophyRange.low);
-      const high = formatCompact(summary.trophyRange.high);
-      if (low !== null && high !== null) lines.push(`${emoji.trophyRange}${low}-${high}`);
-    }
-
-    if (hasOverviewField(fields, 'rankedRange') && summary.rankedRange !== null) {
-      const { low, high } = summary.rankedRange;
-      lines.push(
-        low === high
-          ? `${emoji.rankFor(low)}${mdCode(low)}`
-          : `${emoji.rankFor(low)}${mdCode(low)}-${emoji.rankFor(high)}${mdCode(high)}`,
-      );
-    }
-
-    if (hasOverviewField(fields, 'megaPigEstimate') && summary.megaPigEstimate !== null) {
-      const mega = summary.megaPigEstimate;
-      if (mega.sampleSize > 0) {
-        lines.push(`${emoji.megaPig}${emoji.wins}${mega.wins}/${mega.matches} (est.)`);
-      } else {
-        lines.push(`${emoji.megaPig}No stored Mega Pig data`);
+      if (hasOverviewField(fields, 'staff')) {
+        const leader = summary.leader;
+        lines.push(
+          leader === null
+            ? `${emoji.crown} No stored president`
+            : `${emoji.crown} ${formatPlayerLink(leader.name, leader.tag, input.config.playerProfileUrlTemplate)}`,
+        );
       }
-    }
 
-    const required = formatInteger(summary.club.requiredTrophies);
-    if (hasOverviewField(fields, 'requiredTrophies') && required !== null) {
-      lines.push(`${emoji.required}${mdKeyValue('Req', required)}`);
-    }
-
-    if (hasOverviewField(fields, 'members')) {
-      const members = formatInteger(summary.memberCount) ?? '—';
-      const memberLine = `${emoji.members}${members}/${CLUB_MEMBER_CAPACITY}`;
-      const active = summary.activeMembers24h;
-      if (hasOverviewField(fields, 'active24h') && active !== null) {
-        lines.push(`${memberLine} • ${emoji.online}${active} active 24h`);
-      } else {
-        lines.push(memberLine);
+      if (hasOverviewField(fields, 'clubTrophies')) {
+        lines.push(`${emoji.trophies}${formatInteger(summary.totalTrophies) ?? '—'}`);
       }
-    } else if (hasOverviewField(fields, 'active24h') && summary.activeMembers24h !== null) {
-      lines.push(`${emoji.online}${summary.activeMembers24h} active 24h`);
-    }
 
-    const syncedAt = formatSyncTime(summary.latestSyncAt);
-    if (syncedAt !== null) lines.push(`🕒${mdBold('Synced')} ${syncedAt}`);
+      if (hasOverviewField(fields, 'trophyRange') && summary.trophyRange !== null) {
+        const low = formatCompact(summary.trophyRange.low);
+        const high = formatCompact(summary.trophyRange.high);
+        if (low !== null && high !== null) lines.push(`${emoji.trophyRange}${low}-${high}`);
+      }
 
-    embed.addFields({
-      name: truncate(
-        `${formatClubLink(summary.club.name, summary.club.tag, input.config.clubProfileUrlTemplate)} • ${displayTag(summary.club.tag)}`,
-        256,
-      ),
-      value: truncate(lines.length === 0 ? '—' : mdList(lines), 1024),
-      inline: true,
+      if (hasOverviewField(fields, 'rankedRange') && summary.rankedRange !== null) {
+        const { low, high } = summary.rankedRange;
+        lines.push(
+          low === high
+            ? `${emoji.rankFor(low)}${mdCode(low)}`
+            : `${emoji.rankFor(low)}${mdCode(low)}-${emoji.rankFor(high)}${mdCode(high)}`,
+        );
+      }
+
+      if (hasOverviewField(fields, 'megaPigEstimate') && summary.megaPigEstimate !== null) {
+        const mega = summary.megaPigEstimate;
+        if (mega.sampleSize > 0) {
+          lines.push(`${emoji.megaPig}${emoji.wins}${mega.wins}/${mega.matches} (est.)`);
+        } else {
+          lines.push(`${emoji.megaPig}No stored Mega Pig data`);
+        }
+      }
+
+      const required = formatInteger(summary.club.requiredTrophies);
+      if (hasOverviewField(fields, 'requiredTrophies') && required !== null) {
+        lines.push(`${emoji.required}${mdKeyValue('Req', required)}`);
+      }
+
+      if (hasOverviewField(fields, 'members')) {
+        const members = formatInteger(summary.memberCount) ?? '—';
+        const memberLine = `${emoji.members}${members}/${CLUB_MEMBER_CAPACITY}`;
+        const active = summary.activeMembers24h;
+        if (hasOverviewField(fields, 'active24h') && active !== null) {
+          lines.push(`${memberLine} • ${emoji.online}${active} active 24h`);
+        } else {
+          lines.push(memberLine);
+        }
+      } else if (hasOverviewField(fields, 'active24h') && summary.activeMembers24h !== null) {
+        lines.push(`${emoji.online}${summary.activeMembers24h} active 24h`);
+      }
+
+      const syncedAt = formatSyncTime(summary.latestSyncAt);
+      if (syncedAt !== null) lines.push(`🕒${mdBold('Synced')} ${syncedAt}`);
+
+      embed.addFields({
+        name: truncate(
+          `${formatClubLink(summary.club.name, summary.club.tag, input.config.clubProfileUrlTemplate)} • ${displayTag(summary.club.tag)}`,
+          256,
+        ),
+        value: truncate(lines.length === 0 ? '—' : mdList(lines), 1024),
+        inline: true,
+      });
     });
-  });
 
-  return fitEmbedToDiscordLimits(embed);
+    return fitEmbedToDiscordLimits(embed);
+  });
+}
+
+/** Build only the first embed of the overview page. */
+export function buildClubOverviewEmbed(input: ClubOverviewEmbedInput): EmbedBuilder {
+  const [first] = buildClubOverviewEmbeds(input);
+  if (first === undefined) throw new Error('Club overview must contain at least one embed');
+  return first;
 }
 
 /** Aggregate figures for the tracked-club overview, from stored official data only. */

@@ -97,6 +97,7 @@ vi.mock('@brawlhub/brawl-stars', async (importOriginal) => {
   return {
     ...actual,
     createBrawlStarsClient: () => ({ getPlayer: mocks.getPlayer }),
+    getSharedBrawlStarsClient: () => ({ getPlayer: mocks.getPlayer }),
   };
 });
 
@@ -104,6 +105,7 @@ vi.mock('./icons.js', () => ({
   pickRandomVerificationIconAsync: mocks.pickIcon,
 }));
 
+import { readVerificationChallenge } from '../state/index.js';
 import {
   checkVerification,
   clearVerificationChallengesForTests,
@@ -191,6 +193,31 @@ describe('startVerification active challenge handling', () => {
     expect(getVerificationChallenge({ discordUserId: DISCORD_USER_ID })?.targetIconId).toBe(
       TARGET_ICON.id,
     );
+  });
+
+  it('scopes an active challenge to its guild', async () => {
+    const first = await startVerification({
+      discordUserId: DISCORD_USER_ID,
+      tagInput: `#${TAG}`,
+      guildId: 'guild-1',
+    });
+    expect(first.ok).toBe(true);
+
+    const stored = await readVerificationChallenge({
+      guildId: 'guild-1',
+      discordUserId: DISCORD_USER_ID,
+    });
+    expect(stored?.targetTag).toBe(TAG);
+    expect(stored?.challengeIconId).toBe(28000003);
+    expect(stored?.details.targetIconId).toBe(TARGET_ICON.id);
+
+    expect(await checkVerification({ discordUserId: DISCORD_USER_ID, guildId: 'guild-2' })).toMatchObject({
+      ok: false,
+      code: 'no-challenge',
+    });
+    expect(getVerificationChallenge({ discordUserId: DISCORD_USER_ID, guildId: 'guild-2' })).toBeNull();
+    expect(getVerificationChallenge({ discordUserId: DISCORD_USER_ID, guildId: 'guild-1' })?.targetIconId)
+      .toBe(TARGET_ICON.id);
   });
 
   it('keeps the required icon long enough for official API propagation', async () => {

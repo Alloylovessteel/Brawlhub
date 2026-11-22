@@ -166,14 +166,16 @@ vi.mock('@brawlhub/database', () => {
 
 vi.mock('@brawlhub/brawl-stars', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@brawlhub/brawl-stars')>();
+  const getFakeClient = () => {
+    if (fake.api.current === undefined) {
+      throw new Error('Fake Brawl Stars client was not configured');
+    }
+    return fake.api.current;
+  };
   return {
     ...actual,
-    createBrawlStarsClient: () => {
-      if (fake.api.current === undefined) {
-        throw new Error('Fake Brawl Stars client was not configured');
-      }
-      return fake.api.current;
-    },
+    createBrawlStarsClient: getFakeClient,
+    getSharedBrawlStarsClient: getFakeClient,
   };
 });
 

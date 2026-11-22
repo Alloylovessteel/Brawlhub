@@ -1,5 +1,5 @@
 import {
-  createBrawlStarsClient,
+  getSharedBrawlStarsClient,
   type BrawlStarsClient,
   type EventRotationSlot,
 } from '@brawlhub/brawl-stars';
@@ -53,7 +53,7 @@ async function loadRotation(options: LoadEventViewOptions): Promise<readonly Eve
   if (cached !== null && Date.now() - cached.at < ROTATION_CACHE_TTL_MS) {
     return cached.slots;
   }
-  const slots = await createBrawlStarsClient().getEventRotation();
+  const slots = await getSharedBrawlStarsClient().getEventRotation();
   rotationCache = { slots, at: Date.now() };
   return slots;
 }

@@ -1,6 +1,7 @@
 import { createLogger } from '@brawlhub/logging';
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   MessageFlags,
@@ -18,10 +19,12 @@ import { cleanTag } from '../discord/format';
 import {
   buildClubDetailsReply,
   buildClubMenuReply,
+  parseClubChartCustomId,
   type ClubDetailsReply,
 } from './club';
 import { mapClubLookupFailureMessage } from './club-utils';
 import { replyWithSafeError } from '../discord/errors';
+import { chartFailureMessage, loadOrRenderChart } from '../images/chart-service.js';
 import {
   buildPaginationRow,
   isPaginationButton,
@@ -123,8 +126,56 @@ async function handleOverviewSelect(
   }
 }
 
-/** Handle Previous/Next buttons and the overview select menu. */
+/** Post a public, stored-data club chart from the second-row Chart button. */
+export async function handleClubChart(
+  interaction: CommandComponentInteraction,
+  tag: string,
+): Promise<void> {
+  try {
+    await interaction.deferReply();
+    if (interaction.guildId === null) {
+      await interaction.editReply({
+        content: 'Club charts are only available in a server.',
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+    const result = await loadOrRenderChart({
+      guildId: interaction.guildId,
+      kind: 'club',
+      tag,
+      option: 'trophies',
+      period: '90d',
+    });
+    if (result.kind === 'failure') {
+      await interaction.editReply({
+        content: chartFailureMessage(result.failure),
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+    await interaction.editReply({
+      content: `Stored trophy history for club \`#${tag}\``,
+      files: [new AttachmentBuilder(result.image.png, { name: result.image.fileName })],
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    logger.error('Club chart button failed', {
+      error: error instanceof Error ? error.message : 'unknown error',
+    });
+    await replyWithSafeError(interaction);
+  }
+}
+
+/** Handle Previous/Next buttons, Chart and the overview select menu. */
 export async function handleClubsComponent(interaction: CommandComponentInteraction): Promise<void> {
+  const chartTag = parseClubChartCustomId(interaction.customId);
+  if (chartTag !== null) {
+    await handleClubChart(interaction, chartTag);
+    return;
+  }
+
   const overviewGuildId = parseClubOverviewCustomId(interaction.customId);
   if (overviewGuildId !== null) {
     // Guard the type check so lightweight button mocks in tests do not need the full interaction API.

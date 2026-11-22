@@ -14,6 +14,7 @@ import {
   logAutocompleteError,
   replyWithSafeError,
   respondToAutocomplete,
+  respondWithLookupUnavailableChoice,
   safeErrorMessage,
 } from '../discord/errors';
 import {
@@ -479,6 +480,6 @@ export async function handleCompetitionAutocomplete(interaction: AutocompleteInt
   } catch (error) {
     const { token } = getBotConfig();
     logAutocompleteError(logger, COMMAND_NAME, error, token === undefined ? [] : [token]);
-    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
+    await respondWithLookupUnavailableChoice(interaction);
   }
 }

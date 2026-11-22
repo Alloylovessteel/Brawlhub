@@ -94,7 +94,7 @@ describe('buildClubLogEventEmbed', () => {
         event({
           kind: 'role',
           id: 'e2',
-          description: '#PLAYER role changed President → Member',
+          description: 'Player (64,809 🏆) was demoted to Member.',
           detectedAt: '2026-11-20T12:05:00.000Z',
         }),
         event({
@@ -114,10 +114,10 @@ describe('buildClubLogEventEmbed', () => {
     expect(json.fields).toHaveLength(3);
     expect(json.fields?.map((field) => field.name)).toEqual([
       expect.stringContaining('Membership'),
-      expect.stringContaining('Role change'),
+      expect.stringContaining('Role updated'),
       expect.stringContaining('Capacity'),
     ]);
-    expect(json.fields?.[1]?.value).toContain('#PLAYER role changed President → Member');
+    expect(json.fields?.[1]?.value).toContain('Player (64,809 🏆) was demoted to Member.');
     const expectedTimestamp = `<t:${Math.floor(Date.parse('2026-11-20T12:05:00.000Z') / 1000)}:f>`;
     expect(json.fields?.[1]?.value).toContain(expectedTimestamp);
   });

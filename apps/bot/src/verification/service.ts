@@ -1,8 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { createTrustedClient } from '@brawlhub/database';
-import { BrawlStarsApiError, createBrawlStarsClient, type BrawlStarsClient } from '@brawlhub/brawl-stars';
+import { BrawlStarsApiError, type BrawlStarsClient } from '@brawlhub/brawl-stars';
+import { getSharedBrawlStarsClient } from '../api/gateway.js';
 import { brawlTagSchema } from '@brawlhub/shared';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  cancelVerificationChallenge,
+  clearStateCachesForTests,
+  consumeVerificationChallenge,
+  createVerificationChallenge,
+  expireVerificationChallenge,
+  listVerificationChallenges,
+  persistVoid,
+  readVerificationChallenge,
+  type VerificationChallengeRecord,
+} from '../state/index.js';
 import { pickRandomVerificationIconAsync } from './icons.js';
 import type {
   CancelVerificationResult,
@@ -14,7 +26,14 @@ import type {
 // The official API can lag an in-game icon change. Keep the required icon
 // stable long enough for players to wait for propagation and retry `check`.
 const CHALLENGE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Synchronous mirror for the legacy `getVerificationChallenge` / `cancel`
+ * surface. Supabase remains authoritative for async start/check; the mirror is
+ * hydrated lazily and updated on every read so restarts reuse live challenges.
+ */
 const challenges = new Map<string, VerificationChallenge>();
+let mirrorHydrationStarted = false;
 
 function nowMs(): number {
   return Date.now();
@@ -369,7 +388,7 @@ export async function linkPlayerManually(
   const links = await readActiveLinks(profileId, db);
   if (links.some((link) => link.tag === tag)) return { kind: 'already-linked-self' };
 
-  const api = deps?.api ?? createBrawlStarsClient();
+  const api = deps?.api ?? getSharedBrawlStarsClient();
   let player;
   try {
     player = await api.getPlayer(formatTag(tag));
@@ -699,14 +718,129 @@ async function ensurePlayerRecord(input: {
   return { id, tag, name };
 }
 
-function getChallenge(discordUserId: string): VerificationChallenge | null {
-  const challenge = challenges.get(discordUserId);
+function normalizeGuildId(guildId: string | null | undefined): string {
+  const trimmed = guildId?.trim() ?? '';
+  return trimmed === '' ? 'dm' : trimmed;
+}
+
+function mirrorKey(guildId: string, discordUserId: string): string {
+  return JSON.stringify([guildId, discordUserId]);
+}
+
+function ensureChallengeMirrorHydrated(): void {
+  if (mirrorHydrationStarted) return;
+  mirrorHydrationStarted = true;
+  persistVoid(
+    listVerificationChallenges()
+      .then((records) => {
+        for (const record of records) {
+          if (record.expiresAt > nowMs()) {
+            challenges.set(mirrorKey(record.guildId, record.discordUserId), challengeFromRecord(record));
+          }
+        }
+      })
+      .catch(() => undefined),
+    'hydrate verification challenges',
+  );
+}
+
+ensureChallengeMirrorHydrated();
+
+function getChallenge(guildId: string, discordUserId: string): VerificationChallenge | null {
+  ensureChallengeMirrorHydrated();
+  const key = mirrorKey(guildId, discordUserId);
+  const challenge = challenges.get(key);
   if (challenge === undefined) return null;
   if (challenge.expiresAt <= nowMs()) {
-    challenges.delete(discordUserId);
+    challenges.delete(key);
     return null;
   }
   return challenge;
+}
+
+function challengeFromRecord(record: VerificationChallengeRecord): VerificationChallenge {
+  return {
+    guildId: record.guildId,
+    discordUserId: record.discordUserId,
+    profileId: record.details.profileId,
+    playerTag: record.targetTag,
+    playerDbId: record.targetPlayerId,
+    playerName: record.details.playerName,
+    startingIconId: record.details.startingIconId,
+    targetIconId: record.details.targetIconId,
+    targetIconName: record.details.targetIconName,
+    targetIconUrl: record.details.targetIconUrl,
+    createdAt: record.createdAt,
+    expiresAt: record.expiresAt,
+  };
+}
+
+function recordFromChallenge(
+  challenge: VerificationChallenge,
+): VerificationChallengeRecord {
+  return {
+    guildId: challenge.guildId,
+    discordUserId: challenge.discordUserId,
+    targetPlayerId: challenge.playerDbId,
+    targetTag: challenge.playerTag,
+    challengeIconId: challenge.startingIconId,
+    status: 'active',
+    expiresAt: challenge.expiresAt,
+    createdAt: challenge.createdAt,
+    updatedAt: nowMs(),
+    details: {
+      profileId: challenge.profileId,
+      playerName: challenge.playerName,
+      startingIconId: challenge.startingIconId,
+      targetIconId: challenge.targetIconId,
+      targetIconName: challenge.targetIconName,
+      targetIconUrl: challenge.targetIconUrl,
+    },
+  };
+}
+
+type ActiveChallengeLookup =
+  | { readonly kind: 'active'; readonly challenge: VerificationChallenge; readonly record: VerificationChallengeRecord }
+  | { readonly kind: 'expired'; readonly challenge: VerificationChallenge }
+  | { readonly kind: 'none' };
+
+async function findActiveChallenge(
+  guildId: string,
+  discordUserId: string,
+): Promise<ActiveChallengeLookup> {
+  const record = await readVerificationChallenge({ guildId, discordUserId });
+  if (record === null) {
+    challenges.delete(mirrorKey(guildId, discordUserId));
+    return { kind: 'none' };
+  }
+  const challenge = challengeFromRecord(record);
+  if (challenge.expiresAt <= nowMs()) {
+    challenges.delete(mirrorKey(guildId, discordUserId));
+    persistVoid(
+      expireVerificationChallenge({
+        guildId,
+        discordUserId,
+        targetTag: challenge.playerTag,
+      }),
+      'expire verification challenge',
+    );
+    return { kind: 'expired', challenge };
+  }
+  challenges.set(mirrorKey(guildId, discordUserId), challenge);
+  return { kind: 'active', challenge, record };
+}
+
+async function finishChallenge(challenge: VerificationChallenge): Promise<void> {
+  challenges.delete(mirrorKey(challenge.guildId, challenge.discordUserId));
+  try {
+    await consumeVerificationChallenge({
+      guildId: challenge.guildId,
+      discordUserId: challenge.discordUserId,
+      targetTag: challenge.playerTag,
+    });
+  } catch {
+    // The in-process view is already gone; a retry of `check` re-reads Supabase.
+  }
 }
 
 function formatTag(tag: string): string {
@@ -718,6 +852,7 @@ export async function startVerification(
     readonly discordUserId: string;
     readonly tagInput: string;
     readonly discordUsername?: string | null;
+    readonly guildId?: string | null;
   },
   deps?: { readonly api?: BrawlStarsClient },
 ): Promise<StartVerificationResult> {
@@ -726,11 +861,13 @@ export async function startVerification(
     return { ok: false, code: 'invalid-tag', message: invalidTagMessage() };
   }
   const normalizedTag = parsed.data;
+  const guildId = normalizeGuildId(input.guildId);
 
   // Re-running `start` must never rotate the required icon out from under a
   // player who already changed their in-game icon and is waiting on the API.
-  const active = getChallenge(input.discordUserId);
-  if (active !== null) {
+  const activeLookup = await findActiveChallenge(guildId, input.discordUserId);
+  if (activeLookup.kind === 'active') {
+    const active = activeLookup.challenge;
     if (active.playerTag === normalizedTag) {
       return { ok: true, challenge: active, reused: true };
     }
@@ -756,7 +893,7 @@ export async function startVerification(
     };
   }
 
-  const api = deps?.api ?? createBrawlStarsClient();
+  const api = deps?.api ?? getSharedBrawlStarsClient();
   let player;
   try {
     player = await api.getPlayer(formatTag(normalizedTag));
@@ -805,6 +942,7 @@ export async function startVerification(
   const targetIcon = await pickRandomVerificationIconAsync(iconId);
   const createdAt = nowMs();
   const challenge: VerificationChallenge = {
+    guildId,
     discordUserId: input.discordUserId,
     profileId,
     playerTag: normalizedTag,
@@ -817,7 +955,30 @@ export async function startVerification(
     createdAt,
     expiresAt: createdAt + CHALLENGE_TTL_MS,
   };
-  challenges.set(input.discordUserId, challenge);
+  try {
+    await createVerificationChallenge(recordFromChallenge(challenge));
+  } catch {
+    // A concurrent `start` may have won the one-active-challenge slot. Re-read
+    // it so the player sees the existing icon instead of an opaque error.
+    const raced = await findActiveChallenge(guildId, input.discordUserId);
+    if (raced.kind === 'active') {
+      return {
+        ok: false,
+        code: 'active-challenge',
+        message:
+          `You already have an active verification challenge for ${formatTag(raced.challenge.playerTag)} ` +
+          `with required icon **${raced.challenge.targetIconName}**. Run \`/members accounts check\` ` +
+          `to finish it, or \`/members accounts cancel\` before verifying a different player tag.`,
+        challenge: raced.challenge,
+      };
+    }
+    return {
+      ok: false,
+      code: 'api-unavailable',
+      message: 'BrawlHub could not save your verification challenge right now. Please try again later.',
+    };
+  }
+  challenges.set(mirrorKey(guildId, input.discordUserId), challenge);
 
   return { ok: true, challenge, reused: false };
 }
@@ -837,23 +998,23 @@ async function findActiveVerificationForPlayer(playerDbId: string): Promise<{ pr
 }
 
 export async function checkVerification(
-  input: { readonly discordUserId: string },
+  input: { readonly discordUserId: string; readonly guildId?: string | null },
   deps?: { readonly api?: BrawlStarsClient },
 ): Promise<CheckVerificationResult> {
-  const challenge = getChallenge(input.discordUserId);
-  if (challenge === null) {
-    const expired = challenges.has(input.discordUserId);
-    if (expired) challenges.delete(input.discordUserId);
+  const guildId = normalizeGuildId(input.guildId);
+  const lookup = await findActiveChallenge(guildId, input.discordUserId);
+  if (lookup.kind !== 'active') {
     return {
       ok: false,
-      code: expired ? 'expired' : 'no-challenge',
-      message: expired
+      code: lookup.kind === 'expired' ? 'expired' : 'no-challenge',
+      message: lookup.kind === 'expired'
         ? 'Your verification challenge expired. Run `/members accounts verify` again to begin a new one.'
         : 'No active verification challenge was found. Run `/members accounts verify tag:<player-tag>` first.',
     };
   }
+  const challenge = lookup.challenge;
 
-  const api = deps?.api ?? createBrawlStarsClient();
+  const api = deps?.api ?? getSharedBrawlStarsClient();
   let player;
   try {
     player = await api.getPlayer(formatTag(challenge.playerTag));
@@ -908,14 +1069,14 @@ export async function checkVerification(
     const active = await findActiveVerificationForPlayer(challenge.playerDbId);
     if (active !== null) {
       if (active.profileId === challenge.profileId) {
-        challenges.delete(input.discordUserId);
+        await finishChallenge(challenge);
         return {
           ok: false,
           code: 'already-verified-self',
           message: `${challenge.playerName} (${formatTag(challenge.playerTag)}) is already verified to your BrawlHub account.`,
         };
       }
-      challenges.delete(input.discordUserId);
+      await finishChallenge(challenge);
       return {
         ok: false,
         code: 'already-verified-other',
@@ -944,7 +1105,7 @@ export async function checkVerification(
     if (error) {
       if (isUniqueViolation(error)) {
         const existing = await findActiveVerificationForPlayer(challenge.playerDbId);
-        challenges.delete(input.discordUserId);
+        await finishChallenge(challenge);
         if (existing?.profileId === challenge.profileId) {
           return {
             ok: false,
@@ -972,7 +1133,7 @@ export async function checkVerification(
     };
   }
 
-  challenges.delete(input.discordUserId);
+  await finishChallenge(challenge);
   return {
     ok: true,
     status: 'verified',
@@ -986,17 +1147,34 @@ export async function checkVerification(
   };
 }
 
-export function cancelVerification(input: { readonly discordUserId: string }): CancelVerificationResult {
-  const hadChallenge = challenges.delete(input.discordUserId);
-  return { ok: true, hadChallenge };
+export function cancelVerification(input: {
+  readonly discordUserId: string;
+  readonly guildId?: string | null;
+}): CancelVerificationResult {
+  const guildId = normalizeGuildId(input.guildId);
+  const challenge = getChallenge(guildId, input.discordUserId);
+  if (challenge === null) return { ok: true, hadChallenge: false };
+  challenges.delete(mirrorKey(guildId, input.discordUserId));
+  persistVoid(
+    cancelVerificationChallenge({
+      guildId,
+      discordUserId: input.discordUserId,
+      targetTag: challenge.playerTag,
+    }),
+    'cancel verification challenge',
+  );
+  return { ok: true, hadChallenge: true };
 }
 
 export function getVerificationChallenge(input: {
   readonly discordUserId: string;
+  readonly guildId?: string | null;
 }): VerificationChallenge | null {
-  return getChallenge(input.discordUserId);
+  return getChallenge(normalizeGuildId(input.guildId), input.discordUserId);
 }
 
 export function clearVerificationChallengesForTests(): void {
   challenges.clear();
+  clearStateCachesForTests();
+  mirrorHydrationStarted = true;
 }

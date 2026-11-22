@@ -1,5 +1,6 @@
-import { createBrawlStarsClient, type BrawlStarsClient } from '@brawlhub/brawl-stars';
+import type { BrawlStarsClient } from '@brawlhub/brawl-stars';
 import { createTrustedClient, isSupabaseConfigured } from '@brawlhub/database';
+import { getSharedBrawlStarsClient } from '../api/gateway.js';
 import { withTimeout } from '@brawlhub/sync';
 import { loadSyncStatus } from '../admin/service';
 import type { SyncStatusView } from '../admin/types';
@@ -164,7 +165,7 @@ async function checkBrawlApi(
     return cached.check;
   }
 
-  const client = options.apiClient ?? createBrawlStarsClient();
+  const client = options.apiClient ?? getSharedBrawlStarsClient();
   const timeoutMs = options.apiTimeoutMs ?? DEFAULT_API_TIMEOUT_MS;
   let check: HealthCheck;
   try {

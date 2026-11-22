@@ -6,7 +6,7 @@ import {
   type ChatInputCommandInteraction,
 } from 'discord.js';
 import { replyAdminError } from '../admin/errors';
-import { requireGlobalPermission } from '../admin/service';
+import { AdminServiceError, requireGlobalPermission } from '../admin/service';
 import { filterRegisteredClubs, getRegisteredClubs } from '../clubs/service';
 import { buildViewTagsEmbed } from '../clubs/overview/embed';
 import { refreshOverviewNow } from '../clubs/overview/service';
@@ -17,7 +17,10 @@ import {
   removeViewTag,
 } from '../clubs/view-tags';
 import { getBotConfig } from '../config';
-import { respondToAutocomplete } from '../discord/errors.js';
+import {
+  respondToAutocomplete,
+  respondWithLookupUnavailableChoice,
+} from '../discord/errors.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 
 const logger = createLogger('bot');
@@ -213,7 +216,11 @@ export async function handleViewAutocomplete(interaction: AutocompleteInteractio
       value: club.id,
     }));
     await respondToAutocomplete(interaction, choices);
-  } catch {
-    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
+  } catch (error) {
+    if (error instanceof AdminServiceError && error.code === 'forbidden') {
+      await respondToAutocomplete(interaction, []);
+      return;
+    }
+    await respondWithLookupUnavailableChoice(interaction);
   }
 }

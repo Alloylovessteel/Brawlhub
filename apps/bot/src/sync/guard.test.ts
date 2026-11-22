@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SyncResult } from '@brawlhub/sync';
+import { clearStateCachesForTests, readRuntimeLease } from '../state/index.js';
 import { resetManagedSyncGuard, runManagedSync } from './guard';
 
 function result(status: SyncResult['status'] = 'completed'): SyncResult {
@@ -17,7 +18,10 @@ function result(status: SyncResult['status'] = 'completed'): SyncResult {
 }
 
 describe('runManagedSync', () => {
-  beforeEach(() => resetManagedSyncGuard());
+  beforeEach(() => {
+    resetManagedSyncGuard();
+    clearStateCachesForTests();
+  });
 
   it('runs the provided pipeline once', async () => {
     const run = vi.fn(async () => [result()]);
@@ -26,6 +30,14 @@ describe('runManagedSync', () => {
 
     expect(outcome).toEqual({ kind: 'ran', results: [result()] });
     expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('releases the DB runtime lease after a run', async () => {
+    await runManagedSync({ run: vi.fn(async () => [result()]) });
+
+    const lease = await readRuntimeLease({ leaseKind: 'managed-sync', scope: 'all-guilds' });
+    expect(lease).not.toBeNull();
+    expect(lease?.releasedAt).not.toBeNull();
   });
 
   it('refuses an overlapping in-process run', async () => {

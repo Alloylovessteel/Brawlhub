@@ -55,7 +55,11 @@ interface PendingSettingsChange {
   readonly label: string;
 }
 
-const pendingChanges = new ConfirmationStore<PendingSettingsChange>();
+const pendingChanges = new ConfirmationStore<PendingSettingsChange>(
+  undefined,
+  undefined,
+  'settings-change',
+);
 
 type SetupStep =
   | { kind: 'root' }
@@ -444,13 +448,17 @@ async function startChange(
   const actor = await requireGlobalPermission(interaction.user.id, 'clubs:write', await permissionContext(interaction));
   const settings = await loadGuildSettings(guildId);
 
-  const nonce = pendingChanges.create(interaction.user.id, {
-    actor,
+  const nonce = pendingChanges.create(
+    interaction.user.id,
+    {
+      actor,
+      guildId,
+      field,
+      value,
+      label: FIELD_LABELS[field],
+    },
     guildId,
-    field,
-    value,
-    label: FIELD_LABELS[field],
-  });
+  );
 
   const confirmation = new EmbedBuilder()
     .setColor(EMBED_COLORS.warning)
@@ -606,7 +614,7 @@ async function handleSettingsConfirmation(interaction: CommandComponentInteracti
   if (action === null) return false;
 
   await interaction.deferUpdate();
-  const pending = pendingChanges.take(action.nonce, interaction.user.id);
+  const pending = pendingChanges.take(action.nonce, interaction.user.id, interaction.guildId);
 
   if (action.kind === 'cancel') {
     await interaction.editReply({ content: 'Guild settings change cancelled.', embeds: [], components: [] });

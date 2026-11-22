@@ -13,6 +13,7 @@ import { replyAdminError } from '../admin/errors.js';
 import { requireGlobalPermission } from '../admin/service.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
+import { replyExpiredComponent } from '../discord/errors.js';
 import {
   loadGuildRankedRoleState,
   RANKED_TIERS,
@@ -180,7 +181,13 @@ export async function handleFn(interaction: ChatInputCommandInteraction): Promis
 export async function handleFnComponent(interaction: CommandComponentInteraction): Promise<void> {
   const [, action, embeddedGuildId] = interaction.customId.split(':');
   if (action !== 'me') return;
-  if (interaction.guild === null || interaction.guildId !== embeddedGuildId) return;
+  if (interaction.guild === null || interaction.guildId !== embeddedGuildId) {
+    await replyExpiredComponent(
+      interaction,
+      'That ranked-role button belongs to another server. Run `/fn list` here.',
+    );
+    return;
+  }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   try {

@@ -8,7 +8,11 @@ import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { deleteUserDataForDiscordUser } from '../verification/index.js';
 
 const COMMAND_NAME = 'delete-me';
-const pending = new ConfirmationStore<{ readonly discordUserId: string }>();
+const pending = new ConfirmationStore<{ readonly discordUserId: string }>(
+  undefined,
+  undefined,
+  COMMAND_NAME,
+);
 
 export const deleteMeCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
@@ -16,7 +20,11 @@ export const deleteMeCommandData = new SlashCommandBuilder()
 
 export async function handleDeleteMe(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: 64 });
-  const nonce = pending.create(interaction.user.id, { discordUserId: interaction.user.id });
+  const nonce = pending.create(
+    interaction.user.id,
+    { discordUserId: interaction.user.id },
+    interaction.guildId,
+  );
   await interaction.editReply({
     content: [
       'This will permanently delete your BrawlHub profile, Discord identity link and every verified account link.',
@@ -32,7 +40,7 @@ export async function handleDeleteMeComponent(interaction: CommandComponentInter
   const action = parseConfirmationCustomId(interaction.customId, COMMAND_NAME);
   if (action === null) return;
   await interaction.deferUpdate();
-  const payload = pending.take(action.nonce, interaction.user.id);
+  const payload = pending.take(action.nonce, interaction.user.id, interaction.guildId);
   if (action.kind === 'cancel') {
     await interaction.editReply({ content: 'Cancelled.', components: [], embeds: [] });
     return;

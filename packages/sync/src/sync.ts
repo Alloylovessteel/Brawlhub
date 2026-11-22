@@ -3,7 +3,7 @@ import {
   battleLogResponseSchema,
   clubMembersResponseSchema,
   clubSchema,
-  createBrawlStarsClient,
+  getSharedBrawlStarsClient,
   type BattleLogItem,
   type BrawlStarsClient,
   type Club,
@@ -61,7 +61,7 @@ function parseBattleTime(value: string): string | null {
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
 }
 
-function battleKey(item: BattleLogItem): string {
+export function battleKey(item: BattleLogItem): string {
   const parts = [
     item.battleTime,
     item.event?.id ?? '',
@@ -77,6 +77,11 @@ function battleKey(item: BattleLogItem): string {
     JSON.stringify(item.battle?.starPlayer ?? null),
   ];
   return createHash('sha256').update(parts.join('|')).digest('hex');
+}
+
+/** Named alias for the stable battle dedupe key used by the live battle worker. */
+export function buildBattleKey(item: BattleLogItem): string {
+  return battleKey(item);
 }
 
 const LAST_BATTLE_LOOKUP_CHUNK_SIZE = 100;
@@ -113,12 +118,42 @@ async function readLastBattleTimes(
   return lastBattleTimes;
 }
 
-async function collectBattleLogs(
+export interface CollectedBattleLog {
+  readonly playerId: string;
+  readonly key: string;
+  readonly battleTime: string;
+  readonly mode: string | null;
+  readonly map: string | null;
+  readonly battleType: string | null;
+  readonly result: string | null;
+  readonly trophyChange: number | null;
+  readonly raw: Record<string, unknown>;
+}
+
+export interface CollectBattleLogsOptions {
+  /** Called for every battle row accepted for storage, for live delivery readers. */
+  readonly onCollected?: (battle: CollectedBattleLog) => void;
+  /** Called when a fetch or battle write fails for one player. */
+  readonly onError?: (input: {
+    readonly playerId: string;
+    readonly tag: string;
+    readonly phase: 'fetch' | 'write';
+    readonly error: unknown;
+  }) => void;
+}
+
+/**
+ * Shared battle-log collector for scheduled sync and opted-in live tracking.
+ * It owns cutoff filtering, `player_battles` writes and `last_battle_at`
+ * advancement so both callers use identical dedupe semantics.
+ */
+export async function collectBattleLogs(
   db: SupabaseClient,
   client: BrawlStarsClient,
   states: ReadonlyArray<{ playerId: string; tag: string }>,
-  syncRunId: string,
+  syncRunId: string | null,
   timeoutMs: number,
+  options: CollectBattleLogsOptions = {},
 ): Promise<number> {
   const byPlayer = new Map<string, string>();
   for (const state of states) byPlayer.set(state.playerId, state.tag);
@@ -135,6 +170,7 @@ async function collectBattleLogs(
         syncRunId,
         reason: sanitizeError(error),
       });
+      options.onError?.({ playerId, tag, phase: 'fetch', error });
       continue;
     }
 
@@ -176,9 +212,24 @@ async function collectBattleLogs(
         syncRunId,
         reason: error.message,
       });
+      options.onError?.({ playerId, tag, phase: 'write', error });
       continue;
     }
     inserted += rows.length;
+
+    for (const row of rows) {
+      options.onCollected?.({
+        playerId: row.player_id,
+        key: row.battle_key,
+        battleTime: row.battle_time,
+        mode: row.mode,
+        map: row.map,
+        battleType: row.battle_type,
+        result: row.result,
+        trophyChange: row.trophy_change,
+        raw: row.raw,
+      });
+    }
 
     const latest = rows.reduce<string | null>((max, row) => {
       if (max === null) return row.battle_time;
@@ -1323,7 +1374,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     now = options?.now ?? new Date();
     nowIso = now.toISOString();
     db = createTrustedClient();
-    apiClient = options?.client ?? createBrawlStarsClient();
+    apiClient = options?.client ?? getSharedBrawlStarsClient();
   } catch (error) {
     // Configuration / invalid-input failures must also be reported, never thrown.
     const message = sanitizeError(error);

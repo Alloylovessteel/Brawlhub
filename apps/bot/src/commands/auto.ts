@@ -15,6 +15,8 @@ import {
   buildVerificationMessage,
   setupGuildAutomation,
 } from '../ranked-roles/service.js';
+import { setupGuildAutoRoles } from '../role-automation/service.js';
+import { ROLE_KINDS } from '../role-automation/tiers.js';
 
 const EMBED_COLOR = EMBED_COLORS.success;
 
@@ -24,7 +26,9 @@ export const autoCommandData = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand
       .setName('setup')
-      .setDescription('Create/reuse ranked roles and post the verification guide')
+      .setDescription(
+        'Auto roles: Verify, Trophy, Solo Win, Duo Win, 3vs3 Win, Brawler, Level, Ranked League, Club, Fame',
+      )
       .addChannelOption((option) =>
         option
           .setName('channel')
@@ -59,6 +63,8 @@ export async function handleAuto(interaction: ChatInputCommandInteraction): Prom
     );
     const channelId = interaction.options.getChannel('channel')?.id ?? interaction.channelId;
     const state = await setupGuildAutomation(interaction.guild, actor, channelId);
+    const roleSummary = await setupGuildAutoRoles(interaction.guild, actor, channelId);
+    const kinds = ROLE_KINDS.map((entry) => entry.label).join(', ');
 
     await interaction.editReply({
       embeds: [
@@ -69,7 +75,8 @@ export async function handleAuto(interaction: ChatInputCommandInteraction): Prom
             mdSection(
               'Summary',
               mdList([
-                'Ranked roles and the verified role were created or reused.',
+                `Managed roles were created or reused for ${roleSummary.kinds.length} kinds: ${kinds}.`,
+                `${roleSummary.configuredRoles} tier configurations were written to the managed-role ledger.`,
                 'The verification message was posted once and will be edited on future setup runs.',
               ]),
             ),
@@ -80,8 +87,12 @@ export async function handleAuto(interaction: ChatInputCommandInteraction): Prom
               value: `<#${state.verificationChannelId}> / ${mdCode(state.verificationMessageId ?? 'unknown')}`,
             },
             {
-              name: 'Ranked roles',
-              value: `${Object.keys(state.mapping).length} of 8 tiers configured`,
+              name: 'Supported role kinds',
+              value: kinds,
+            },
+            {
+              name: 'Auto roles',
+              value: `${roleSummary.configuredRoles} tiers configured; ${roleSummary.managedRoles} managed roles (${roleSummary.createdRoles} created, ${roleSummary.reusedRoles} reused).`,
               inline: true,
             },
             {
@@ -103,7 +114,13 @@ export async function handleAuto(interaction: ChatInputCommandInteraction): Prom
 export async function handleAutoComponent(interaction: CommandComponentInteraction): Promise<void> {
   const [, action, embeddedGuildId] = interaction.customId.split(':');
   if (action !== 'guide') return;
-  if (interaction.guildId !== embeddedGuildId) return;
+  if (interaction.guildId !== embeddedGuildId) {
+    await interaction.reply({
+      content: 'This verification guide belongs to a different server.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const message = buildVerificationMessage(interaction.guildId ?? embeddedGuildId ?? '');

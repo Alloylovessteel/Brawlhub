@@ -1,6 +1,6 @@
 import {
   BrawlStarsApiError,
-  createBrawlStarsClient,
+  getSharedBrawlStarsClient,
   playerBrawlerSchema,
   type BrawlStarsClient,
   type Player,
@@ -745,17 +745,18 @@ function emptyLiveResult(): LivePlayerFetchResult {
 /** Fetch current player data once per tag for a short TTL, caching successes only. */
 async function fetchLivePlayer(
   tag: string,
-  api: BrawlStarsClient,
+  api: BrawlStarsClient | undefined,
   now: Date,
   useCache: boolean,
 ): Promise<LivePlayerFetchResult> {
+  const client = api ?? getSharedBrawlStarsClient();
   const cached = useCache ? playerApiCache.get(tag) : undefined;
   if (cached !== undefined && cached.expiresAt > now.getTime()) {
     return { profile: cached.profile, issue: null, notFound: false };
   }
 
   try {
-    const profile = await api.getPlayer(tag);
+    const profile = await client.getPlayer(tag);
     const returnedTag = brawlTagSchema.safeParse(profile.tag);
     if (!returnedTag.success || returnedTag.data !== tag) {
       throw new BrawlStarsApiError('Official API returned a mismatched player tag', 0);
@@ -882,7 +883,7 @@ export async function loadPlayerProfile(
   if (!normalized.ok || normalized.tag === undefined) return { kind: 'invalid-tag' };
 
   const db = options.db ?? createTrustedClient();
-  const api = options.api ?? createBrawlStarsClient();
+  const api = options.api ?? getSharedBrawlStarsClient();
   const now = input.now ?? new Date();
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   const stored = await readPlayerByTag(normalized.tag, db);
@@ -992,7 +993,7 @@ export async function loadPlayerBrawlers(
   if (!normalized.ok || normalized.tag === undefined) return { kind: 'invalid-tag' };
 
   const db = options.db ?? createTrustedClient();
-  const api = options.api ?? createBrawlStarsClient();
+  const api = options.api ?? getSharedBrawlStarsClient();
   const now = input.now ?? new Date();
   const useCache = options.useCache ?? true;
 

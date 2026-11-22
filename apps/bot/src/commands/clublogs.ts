@@ -22,7 +22,11 @@ import {
   loadRecentClubLogEvents,
   removeClubLog,
 } from '../clubs/logs/service';
-import { isIgnorableInteractionError, respondToAutocomplete } from '../discord/errors.js';
+import {
+  isIgnorableInteractionError,
+  respondToAutocomplete,
+  respondWithLookupUnavailableChoice,
+} from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import type { ClubLogPeriod } from '../clubs/types';
@@ -295,8 +299,12 @@ export async function handleClubLogsAutocomplete(
       value: club.id,
     }));
     await respondToAutocomplete(interaction, choices);
-  } catch {
-    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
+  } catch (error) {
+    if (error instanceof AdminServiceError && error.code === 'forbidden') {
+      await respondToAutocomplete(interaction, []);
+      return;
+    }
+    await respondWithLookupUnavailableChoice(interaction);
   }
 }
 

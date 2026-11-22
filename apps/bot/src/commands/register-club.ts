@@ -35,7 +35,11 @@ interface PendingRegistration {
   readonly preview: ClubRegistrationPreview;
 }
 
-const pendingRegistrations = new ConfirmationStore<PendingRegistration>();
+const pendingRegistrations = new ConfirmationStore<PendingRegistration>(
+  undefined,
+  undefined,
+  COMMAND_NAME,
+);
 
 /** Reset the ephemeral confirmation store (used by tests). */
 export function clearPendingClubRegistrations(): void {
@@ -133,11 +137,15 @@ export async function handleRegisterClub(interaction: ChatInputCommandInteractio
     const rawTag = interaction.options.getString('tag', true);
     const preview = await previewClubRegistration(rawTag, interaction.guildId!);
 
-    const nonce = pendingRegistrations.create(interaction.user.id, {
-      actor,
-      tag: preview.tag,
-      preview,
-    });
+    const nonce = pendingRegistrations.create(
+      interaction.user.id,
+      {
+        actor,
+        tag: preview.tag,
+        preview,
+      },
+      interaction.guildId,
+    );
     await interaction.editReply({
       embeds: [buildClubRegistrationPreviewEmbed(preview)],
       components: [buildConfirmationRow(COMMAND_NAME, nonce)],
@@ -154,7 +162,7 @@ export async function handleRegisterClubComponent(interaction: CommandComponentI
 
   try {
     await interaction.deferUpdate();
-    const pending = pendingRegistrations.take(action.nonce, interaction.user.id);
+    const pending = pendingRegistrations.take(action.nonce, interaction.user.id, interaction.guildId);
 
     if (action.kind === 'cancel') {
       await interaction.editReply({ content: CANCELLED_MESSAGE, embeds: [], components: [] });

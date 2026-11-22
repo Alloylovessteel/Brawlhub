@@ -1,7 +1,11 @@
 import { createLogger } from '@brawlhub/logging';
 import type { AutocompleteInteraction, ChatInputCommandInteraction } from 'discord.js';
 import type { HistoryPeriod } from '../clubs/types';
-import { respondToAutocomplete } from '../discord/errors.js';
+import {
+  LOOKUP_UNAVAILABLE_AUTOCOMPLETE_CHOICE,
+  respondToAutocomplete,
+  respondWithLookupUnavailableChoice,
+} from '../discord/errors.js';
 import { searchPlayers } from '../players/service';
 import type { PlayerLookupFailure } from '../players/types';
 import {
@@ -25,6 +29,9 @@ export const PLAYER_PERIOD_CHOICES: ReadonlyArray<{
 ];
 
 export const DEFAULT_PLAYER_PERIOD: HistoryPeriod = '30d';
+
+/** Single explicit fallback shown when the player lookup service is unavailable. */
+export const LOOKUP_UNAVAILABLE_CHOICE = LOOKUP_UNAVAILABLE_AUTOCOMPLETE_CHOICE;
 
 export function isPlayerHistoryPeriod(value: string): value is HistoryPeriod {
   return PLAYER_PERIOD_CHOICES.some((choice) => choice.value === value);
@@ -94,6 +101,6 @@ export async function respondWithPlayerChoices(
     logger.warn('Player autocomplete could not read players', {
       error: error instanceof Error ? error.message : 'unknown error',
     });
-    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
+    await respondWithLookupUnavailableChoice(interaction);
   }
 }

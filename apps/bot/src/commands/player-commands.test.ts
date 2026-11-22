@@ -35,6 +35,13 @@ const mocks = vi.hoisted(() => ({
   verification: {
     findVerifiedPlayerForDiscordUser: vi.fn(),
   },
+  meLive: {
+    handleMeLive: vi.fn(),
+    handleMeLiveStop: vi.fn(),
+  },
+  meChart: {
+    handleMeChart: vi.fn(),
+  },
 }));
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
@@ -44,6 +51,8 @@ vi.mock('../metadata/assets', () => ({
   resolveBrawlerPortraitUrl: mocks.resolveBrawlerPortraitUrl,
 }));
 vi.mock('../verification/index', () => mocks.verification);
+vi.mock('./me-live.js', () => mocks.meLive);
+vi.mock('./me-chart.js', () => mocks.meChart);
 
 import { handleMe, handleMeAutocomplete, meCommandData } from './player';
 import {
@@ -248,17 +257,47 @@ beforeEach(() => {
   mocks.resolvePlayerIconUrl.mockReset().mockResolvedValue(null);
   mocks.resolveBrawlerPortraitUrl.mockReset().mockResolvedValue(null);
   mocks.verification.findVerifiedPlayerForDiscordUser.mockReset().mockResolvedValue(null);
+  mocks.meLive.handleMeLive.mockReset();
+  mocks.meLive.handleMeLiveStop.mockReset();
+  mocks.meChart.handleMeChart.mockReset();
 });
 
 describe('/me command', () => {
-  it('registers profile and image subcommands instead of a top-level tag option', () => {
+  it('registers all /me subcommands instead of a top-level tag option', () => {
     const json = meCommandData.toJSON() as any;
 
-    expect(json.options?.map((option: any) => option.name)).toEqual(['profile', 'image']);
-    for (const subcommand of json.options ?? []) {
-      expect(subcommand.options?.map((option: any) => option.name)).toEqual(['tag']);
-      expect(subcommand.options?.[0]?.autocomplete).toBe(true);
-    }
+    expect(json.options?.map((option: any) => option.name)).toEqual([
+      'profile',
+      'image',
+      'live',
+      'live-stop',
+      'chart',
+    ]);
+    const optionsBySubcommand = new Map(
+      (json.options ?? []).map((subcommand: any) => [
+        subcommand.name,
+        (subcommand.options ?? []).map((option: any) => option.name),
+      ]),
+    );
+    expect(optionsBySubcommand.get('profile')).toEqual(['tag']);
+    expect(optionsBySubcommand.get('image')).toEqual(['tag']);
+    expect(optionsBySubcommand.get('live')).toEqual(['tag']);
+    expect(optionsBySubcommand.get('live-stop')).toEqual([]);
+    expect(optionsBySubcommand.get('chart')).toEqual(['option', 'tag', 'period']);
+  });
+
+  it('dispatches live, live-stop and chart subcommands without new anchors', async () => {
+    const live = chatInteraction({ __subcommand: 'live' });
+    await handleMe(live);
+    expect(mocks.meLive.handleMeLive).toHaveBeenCalledWith(live);
+
+    const stop = chatInteraction({ __subcommand: 'live-stop' });
+    await handleMe(stop);
+    expect(mocks.meLive.handleMeLiveStop).toHaveBeenCalledWith(stop);
+
+    const chart = chatInteraction({ __subcommand: 'chart', option: 'activity' });
+    await handleMe(chart);
+    expect(mocks.meChart.handleMeChart).toHaveBeenCalledWith(chart, 'activity');
   });
 
   it('uses the caller\'s verified player when no tag is supplied', async () => {

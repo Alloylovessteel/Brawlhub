@@ -3,8 +3,8 @@ import { createLogger } from '@brawlhub/logging';
 import { REST, Routes } from 'discord.js';
 import { loadGuildSettings, setGuildOverviewMessageId } from '../../admin/service';
 import { getBotConfig } from '../../config';
-import { loadViewTagSummaries } from '../view-tags';
-import { buildClubOverviewEmbed, buildClubOverviewSelect } from './embed';
+import { loadClubSummaries } from '../service';
+import { buildClubOverviewEmbeds, buildClubOverviewSelect } from './embed';
 import { normalizeOverviewFields } from './fields';
 
 const logger = createLogger('bot');
@@ -68,8 +68,8 @@ export interface PostOverviewInput {
 /** Send the overview once (or edit the existing message), returning its message ID. */
 export async function postOverviewForGuild(input: PostOverviewInput): Promise<string | null> {
   const config = getBotConfig();
-  const summaries = await loadViewTagSummaries(input.guildId);
-  const embed = buildClubOverviewEmbed({
+  const summaries = await loadClubSummaries(input.guildId);
+  const embeds = buildClubOverviewEmbeds({
     summaries,
     guildLabel: input.guildLabel,
     now: new Date(),
@@ -79,7 +79,7 @@ export async function postOverviewForGuild(input: PostOverviewInput): Promise<st
   });
   const select = buildClubOverviewSelect(summaries, input.guildId, input.fields);
   const body = {
-    embeds: [embed.toJSON()],
+    embeds: embeds.map((embed) => embed.toJSON()),
     components: select === null ? [] : [select],
     allowed_mentions: { parse: [] },
     flags: 0,

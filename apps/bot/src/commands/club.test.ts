@@ -36,11 +36,16 @@ const mocks = vi.hoisted(() => ({
     filterRegisteredClubs: vi.fn(),
   },
   resolveClubBadgeUrl: vi.fn(async (): Promise<string | null> => null),
+  chartService: {
+    loadOrRenderChart: vi.fn(),
+    chartFailureMessage: vi.fn(() => 'chart unavailable'),
+  },
 }));
 
 vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
 vi.mock('../clubs/service', () => mocks.service);
 vi.mock('../metadata/assets', () => ({ resolveClubBadgeUrl: mocks.resolveClubBadgeUrl }));
+vi.mock('../images/chart-service.js', () => mocks.chartService);
 
 import {
   buildClubSectionCustomId,
@@ -189,6 +194,8 @@ beforeEach(() => {
   mocks.service.loadClubSummaries.mockReset();
   mocks.service.filterRegisteredClubs.mockReset();
   mocks.resolveClubBadgeUrl.mockReset().mockResolvedValue(null);
+  mocks.chartService.loadOrRenderChart.mockReset();
+  mocks.chartService.chartFailureMessage.mockReset().mockReturnValue('chart unavailable');
 });
 
 describe('/clubs details command', () => {
@@ -520,6 +527,39 @@ describe('/clubs command', () => {
     expect(payload.components[0].toJSON().components[0].custom_id).toMatch(
       /^club:section:overview\|trophies\|-\|-\|0\|2C0Y$/,
     );
+    expect(payload.components[1].toJSON().components).toHaveLength(1);
+    expect(payload.components[1].toJSON().components[0]).toMatchObject({
+      custom_id: 'clubs:chart:2C0Y',
+      label: 'Chart',
+    });
+  });
+
+  it('posts a public stored-data chart from the Chart button', async () => {
+    mocks.chartService.loadOrRenderChart.mockResolvedValue({
+      kind: 'ok',
+      image: {
+        png: Buffer.from('png'),
+        fileName: 'club.png',
+        width: 1200,
+        height: 700,
+      },
+    });
+    const interaction = buttonInteraction('clubs:chart:2C0Y');
+
+    await handleClubsComponent(interaction);
+
+    expect(mocks.chartService.loadOrRenderChart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: 'guild-1',
+        kind: 'club',
+        tag: '2C0Y',
+        option: 'trophies',
+      }),
+    );
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(payload.files).toHaveLength(1);
+    expect(payload.components).toEqual([]);
+    expect(payload.allowedMentions).toEqual({ parse: [] });
   });
 
   it('ignores pagination buttons belonging to another command', async () => {

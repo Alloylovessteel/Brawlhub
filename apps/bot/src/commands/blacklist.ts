@@ -8,7 +8,10 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from 'discord.js';
-import { respondToAutocomplete } from '../discord/errors.js';
+import {
+  respondToAutocomplete,
+  respondWithLookupUnavailableChoice,
+} from '../discord/errors.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import {
@@ -281,8 +284,12 @@ export async function handleBlacklistAutocomplete(interaction: AutocompleteInter
       value: entry.id,
     }));
     await respondToAutocomplete(interaction, choices);
-  } catch {
-    await respondToAutocomplete(interaction, [], { swallowUnexpectedErrors: true });
+  } catch (error) {
+    if (error instanceof ModerationServiceError && error.code === 'forbidden') {
+      await respondToAutocomplete(interaction, []);
+      return;
+    }
+    await respondWithLookupUnavailableChoice(interaction);
   }
 }
 

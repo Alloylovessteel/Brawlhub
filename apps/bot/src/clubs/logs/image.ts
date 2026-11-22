@@ -19,7 +19,7 @@ const MAX_INPUT_PIXELS = 24_000_000;
 
 const KIND_LABELS: Readonly<Record<ClubLogEvent['kind'], string>> = {
   membership: 'Membership',
-  role: 'Role change',
+  role: 'Role updated',
   capacity: 'Capacity',
 };
 

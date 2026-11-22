@@ -29,6 +29,12 @@ export interface BrawlStarsClientOptions {
   apiKey?: string;
   /** Defaults to BRAWL_STARS_BASE_URL, then https://api.brawlstars.com/v1. */
   baseUrl?: string;
+  /**
+   * Per-request timeout in milliseconds. Defaults to BRAWL_STARS_TIMEOUT_MS,
+   * then 30000. Invalid values fall back to the default; valid values are
+   * clamped to 1..300000.
+   */
+  timeoutMs?: number;
   /** Injectable fetch implementation (useful for tests). */
   fetchFn?: typeof fetch;
   /** Injectable wait between retries; tests can pass a no-op. */
@@ -55,6 +61,9 @@ const MAX_ATTEMPTS = 3;
 const BASE_RETRY_DELAY_MS = 200;
 const DEFAULT_MIN_INTERVAL_MS = 150;
 const MAX_MIN_INTERVAL_MS = 60_000;
+export const DEFAULT_BRAWL_STARS_TIMEOUT_MS = 30_000;
+const MIN_TIMEOUT_MS = 1;
+const MAX_TIMEOUT_MS = 300_000;
 const DEFAULT_BASE_URL = 'https://api.brawlstars.com/v1';
 const TAG_PATTERN = /^[0289CGJLPQRUVY]{3,10}$/;
 
@@ -105,6 +114,19 @@ function readMinInterval(value: number | undefined): number {
   return Math.min(MAX_MIN_INTERVAL_MS, Math.trunc(parsed));
 }
 
+/** Safely resolves the per-request timeout from an option or the environment. */
+export function readBrawlStarsTimeoutMs(value?: number | string): number {
+  const raw = value ?? readEnv('BRAWL_STARS_TIMEOUT_MS');
+  if (raw === undefined) {
+    return DEFAULT_BRAWL_STARS_TIMEOUT_MS;
+  }
+  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_BRAWL_STARS_TIMEOUT_MS;
+  }
+  return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Math.trunc(parsed)));
+}
+
 export function createBrawlStarsClient(options?: BrawlStarsClientOptions): BrawlStarsClient {
   const apiKey = options?.apiKey ?? readEnv('BRAWL_STARS_API_KEY');
   const baseUrl = (
@@ -113,6 +135,7 @@ export function createBrawlStarsClient(options?: BrawlStarsClientOptions): Brawl
   const fetchFn: typeof fetch = options?.fetchFn ?? ((input, init) => globalThis.fetch(input, init));
   const sleepFn = options?.sleepFn ?? defaultSleep;
   const minIntervalMs = readMinInterval(options?.minIntervalMs);
+  const timeoutMs = readBrawlStarsTimeoutMs(options?.timeoutMs);
   const throttleSleepFn = options?.throttleSleepFn ?? defaultSleep;
   let lastRequestStartedAt = 0;
   let throttleQueue: Promise<void> = Promise.resolve();
@@ -142,6 +165,13 @@ export function createBrawlStarsClient(options?: BrawlStarsClientOptions): Brawl
     const url = `${baseUrl}${path}`;
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+
       let response: Response;
       try {
         response = await fetchFn(url, {
@@ -150,27 +180,41 @@ export function createBrawlStarsClient(options?: BrawlStarsClientOptions): Brawl
             Authorization: `Bearer ${apiKey}`,
             Accept: 'application/json',
           },
+          signal: controller.signal,
         });
-      } catch {
+        if (timedOut) {
+          throw new BrawlStarsApiError('Brawl Stars API request timed out', 0);
+        }
+
+        if (response.ok) {
+          let payload: unknown;
+          try {
+            payload = await response.json();
+          } catch {
+            throw new BrawlStarsApiError('Brawl Stars API returned invalid JSON', response.status);
+          }
+
+          const parsed = schema.safeParse(payload);
+          if (!parsed.success) {
+            throw new BrawlStarsApiError(
+              'Brawl Stars API returned an unexpected response shape',
+              response.status,
+            );
+          }
+          return parsed.data;
+        }
+      } catch (error) {
+        if (timedOut || controller.signal.aborted) {
+          throw new BrawlStarsApiError('Brawl Stars API request timed out', 0);
+        }
+        if (error instanceof BrawlStarsApiError) {
+          throw error;
+        }
+        // Never surface the underlying error: fetch implementations may include
+        // request headers (and therefore the API key) in their messages.
         throw new BrawlStarsApiError('Network error while calling the Brawl Stars API', 0);
-      }
-
-      if (response.ok) {
-        let payload: unknown;
-        try {
-          payload = await response.json();
-        } catch {
-          throw new BrawlStarsApiError('Brawl Stars API returned invalid JSON', response.status);
-        }
-
-        const parsed = schema.safeParse(payload);
-        if (!parsed.success) {
-          throw new BrawlStarsApiError(
-            'Brawl Stars API returned an unexpected response shape',
-            response.status,
-          );
-        }
-        return parsed.data;
+      } finally {
+        clearTimeout(timer);
       }
 
       const retryable = response.status === 429 || response.status >= 500;
@@ -227,4 +271,23 @@ export function createBrawlStarsClient(options?: BrawlStarsClientOptions): Brawl
       return request('/events/rotation', eventRotationResponseSchema);
     },
   };
+}
+
+let sharedClient: BrawlStarsClient | null = null;
+
+/**
+ * Process-wide official API client. All callers should use this by default so
+ * request throttling, timeouts and retry behavior are shared.
+ * Options are only applied when the singleton has not been created yet.
+ */
+export function getSharedBrawlStarsClient(options?: BrawlStarsClientOptions): BrawlStarsClient {
+  if (sharedClient === null) {
+    sharedClient = createBrawlStarsClient(options);
+  }
+  return sharedClient;
+}
+
+/** Drops the module-level singleton. Intended for isolated tests only. */
+export function resetSharedBrawlStarsClientForTests(): void {
+  sharedClient = null;
 }
