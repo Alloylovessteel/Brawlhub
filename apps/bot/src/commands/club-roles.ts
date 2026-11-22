@@ -1,3 +1,5 @@
+import { mdCode, mdLabelLines, mdParagraphs } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import {
   EmbedBuilder,
   MessageFlags,
@@ -18,7 +20,8 @@ import {
 } from '../club-roles/service.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.neutral;
+const SUCCESS_COLOR = EMBED_COLORS.success;
 const NO_GUILD_MESSAGE = 'Club roles can only be managed from within a Discord server.';
 
 const commandBuilder = new SlashCommandBuilder()
@@ -101,7 +104,10 @@ function viewEmbed(
     .setTitle('Club-rank roles')
     .setDescription(
       notice ??
-        `Roles come from stored official Brawl Stars club ranks for verified main accounts in this guild. Server ID: \`${guildId}\`.`,
+        mdParagraphs(
+          'Roles come from stored official Brawl Stars club ranks for verified main accounts in this guild.',
+          mdLabelLines([`Server ID: ${mdCode(guildId)}.`]),
+        ),
     )
     .addFields(
       ...CLUB_ROLE_RANKS.map((rank) => ({
@@ -111,11 +117,17 @@ function viewEmbed(
       })),
       {
         name: 'Precedence',
-        value: 'President > Vice President > Senior. Each member receives at most one managed club role.',
+        value: mdParagraphs(
+          `${mdCode('President')} > ${mdCode('Vice President')} > ${mdCode('Senior')}.`,
+          'Each member receives at most one managed club role.',
+        ),
       },
       {
         name: 'Data source',
-        value: 'Stored `club_memberships.role` from clubs registered to this Discord server. No role is inferred from names or Discord profiles.',
+        value: mdParagraphs(
+          `Stored ${mdCode('club_memberships.role')} from clubs registered to this Discord server.`,
+          'No role is inferred from names or Discord profiles.',
+        ),
       },
     );
 }
@@ -166,7 +178,7 @@ export async function handleClubRoles(interaction: ChatInputCommandInteraction):
               ? 'You are not a member of this server.'
               : result.rank === null
                 ? 'Your verified main accounts have no President, Vice President or Senior role in this server’s clubs, so club roles were cleared.'
-                : `Your club role is now ${clubRoleLabel(result.rank)}.`;
+                : `Your club role is now ${mdCode(clubRoleLabel(result.rank))}.`;
       await interaction.editReply({ content: message, allowedMentions: { parse: [] } });
       return;
     }
@@ -190,7 +202,7 @@ export async function handleClubRoles(interaction: ChatInputCommandInteraction):
         embeds: [
           viewEmbed(guildId, saved.mapping, 'Club-rank roles are set up and were refreshed.'),
           new EmbedBuilder()
-            .setColor(EMBED_COLOR)
+            .setColor(SUCCESS_COLOR)
             .setTitle('Initial refresh')
             .addFields(...refreshFields(refreshed)),
         ],
@@ -221,10 +233,10 @@ export async function handleClubRoles(interaction: ChatInputCommandInteraction):
           viewEmbed(
             guildId,
             saved.mapping,
-            `${clubRoleLabel(rank)} now maps to <@&${role.id}>, and roles were refreshed.`,
+            `${mdCode(clubRoleLabel(rank))} now maps to <@&${role.id}>, and roles were refreshed.`,
           ),
           new EmbedBuilder()
-            .setColor(EMBED_COLOR)
+            .setColor(SUCCESS_COLOR)
             .setTitle('Role refresh')
             .addFields(...refreshFields(refreshed)),
         ],
@@ -248,10 +260,10 @@ export async function handleClubRoles(interaction: ChatInputCommandInteraction):
           viewEmbed(
             guildId,
             saved.mapping,
-            `${clubRoleLabel(rank)} is no longer managed by BrawlHub.`,
+            `${mdCode(clubRoleLabel(rank))} is no longer managed by BrawlHub.`,
           ),
           new EmbedBuilder()
-            .setColor(EMBED_COLOR)
+            .setColor(SUCCESS_COLOR)
             .setTitle('Role refresh')
             .addFields(...refreshFields(refreshed)),
         ],
@@ -271,7 +283,7 @@ export async function handleClubRoles(interaction: ChatInputCommandInteraction):
       await interaction.editReply({
         embeds: [
           new EmbedBuilder()
-            .setColor(EMBED_COLOR)
+            .setColor(SUCCESS_COLOR)
             .setTitle('Club roles refreshed')
             .addFields(...refreshFields(result)),
         ],
@@ -281,7 +293,7 @@ export async function handleClubRoles(interaction: ChatInputCommandInteraction):
     }
 
     await interaction.editReply({
-      content: 'Choose `/club-roles view`, `setup`, `set`, `clear`, `refresh` or `me`.',
+      content: `Choose ${mdCode('/club-roles view')}, ${mdCode('setup')}, ${mdCode('set')}, ${mdCode('clear')}, ${mdCode('refresh')} or ${mdCode('me')}.`,
     });
   } catch (error) {
     await replyAdminError(interaction, error);

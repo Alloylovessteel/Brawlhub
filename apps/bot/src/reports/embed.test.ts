@@ -47,7 +47,7 @@ describe('buildReportEmbed', () => {
     expect(json.footer?.text).toBe('Stored BrawlHub sync history • fixed UTC boundaries • not live');
     expect(json.fields?.[0]).toMatchObject({ name: 'Totals', inline: false });
     expect(json.fields?.[1]?.inline).toBe(true);
-    expect(json.fields?.[1]?.value).toContain('Joins: 0');
+    expect(json.fields?.[1]?.value).toContain('**Joins:** 0');
   });
 
   it('keeps long club lists inside Discord embed limits', () => {

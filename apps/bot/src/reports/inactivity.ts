@@ -1,3 +1,5 @@
+import { mdBold, mdCode, mdList, mdParagraphs, mdSection } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
@@ -203,30 +205,33 @@ export async function loadInactivityData(
 
 export function buildInactivityEmbed(data: InactivityData): EmbedBuilder {
   const embed = new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.report)
     .setTitle('Club inactivity report')
     .setDescription(
-      `Members with no stored battle for **${data.thresholdDays}+ day(s)** across ${data.clubs.length} registered club(s).`,
+      mdSection(
+        'Inactivity',
+        `Members with no stored battle for ${mdBold(`${data.thresholdDays}+ day(s)`)} across ${data.clubs.length} registered club(s).`,
+      ),
     )
     .addFields({
       name: 'Summary',
-      value: `${data.inactive.length} inactive of ${data.totalMembers} synced members`,
+      value: `${mdBold(String(data.inactive.length))} inactive of ${mdBold(String(data.totalMembers))} synced members`,
     });
 
   for (const club of data.clubs) {
-    const rows = data.inactive
-      .filter((member) => member.clubTag === club.tag)
+    const inactiveMembers = data.inactive.filter((member) => member.clubTag === club.tag);
+    const rows = inactiveMembers
       .slice(0, MAX_INACTIVE_PER_CLUB)
       .map((member) => {
-        const tag = `#${member.playerTag}`;
         const days = member.daysInactive === null ? 'never recorded' : `${member.daysInactive}d`;
-        return `• ${clean(member.playerName, 40)} (${tag}) — ${days}`;
+        return `${clean(member.playerName, 40)} (${mdCode(`#${member.playerTag}`)}) — ${days}`;
       });
-    const lines = [`${club.inactive}/${club.members} inactive`, ...rows];
-    if (data.inactive.filter((member) => member.clubTag === club.tag).length > MAX_INACTIVE_PER_CLUB) {
-      lines.push(`…and ${data.inactive.filter((member) => member.clubTag === club.tag).length - MAX_INACTIVE_PER_CLUB} more`);
-    }
-    embed.addFields({ name: `${club.name} (#${club.tag})`, value: lines.join('\n') });
+    const hidden = inactiveMembers.length - MAX_INACTIVE_PER_CLUB;
+    if (hidden > 0) rows.push(`…and ${hidden} more`);
+    embed.addFields({
+      name: `${club.name} (#${club.tag})`,
+      value: mdParagraphs(mdBold(`${club.inactive}/${club.members} inactive`), mdList(rows)),
+    });
   }
 
   const generatedAt = Date.parse(data.generatedAt);
@@ -245,13 +250,13 @@ export function buildInactivitySettingsEmbed(
   notice?: string | undefined,
 ): EmbedBuilder {
   const embed = new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.report)
     .setTitle('Inactivity report settings')
     .setDescription(notice ?? `Configuration for this Discord server. Server ID: \`${guildId}\`.`)
     .addFields(
       {
         name: 'Status',
-        value: settings.days === null ? 'Disabled' : 'Enabled',
+        value: mdBold(settings.days === null ? 'Disabled' : 'Enabled'),
         inline: true,
       },
       {
@@ -259,7 +264,7 @@ export function buildInactivitySettingsEmbed(
         value:
           settings.days === null
             ? 'No members are flagged until a threshold is set.'
-            : `Members with no stored battle for **${settings.days}+ day(s)** are flagged.`,
+            : `Members with no stored battle for ${mdBold(`${settings.days}+ day(s)`)} are flagged.`,
         inline: true,
       },
       {
@@ -272,11 +277,17 @@ export function buildInactivitySettingsEmbed(
       },
       {
         name: 'Schedule',
-        value: 'Auto-posts once daily at 00:00 UTC. No immediate or on-demand report posts.',
+        value: mdList([
+          'Auto-posts once daily at 00:00 UTC.',
+          'No immediate or on-demand report posts.',
+        ]),
       },
       {
         name: 'Data source',
-        value: 'Stored official Brawl Stars battle activity. No extra API calls are made.',
+        value: mdList([
+          'Stored official Brawl Stars battle activity.',
+          'No extra API calls are made.',
+        ]),
       },
     );
   return fitEmbedToDiscordLimits(embed);

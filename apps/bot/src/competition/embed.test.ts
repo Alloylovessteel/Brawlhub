@@ -145,8 +145,8 @@ describe('competition embeds', () => {
     const page = paginate(leaderboard.rows, 1, 10);
     const body = text(buildCompetitionLeaderboardEmbed(leaderboard, page, CONFIG, NOW));
 
-    expect(body).toContain('#1 [Alpha]');
-    expect(body).toContain('#1 [Bravo]');
+    expect(body).toContain('`#1` [Alpha]');
+    expect(body).toContain('`#1` [Bravo]');
     expect(body).toContain('-500');
     expect(body).toContain('baseline unavailable');
     expect(body).toContain('unverified user submission');

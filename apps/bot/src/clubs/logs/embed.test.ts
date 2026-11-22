@@ -26,6 +26,11 @@ function event(overrides: Partial<ClubLogEvent> = {}): ClubLogEvent {
   };
 }
 
+/** Compare the information in a value without depending on markdown wrappers. */
+function plain(value: string | undefined | null): string {
+  return (value ?? '').replace(/\*\*/g, '').replace(/`/g, '');
+}
+
 function contentLength(json: {
   title?: string;
   description?: string;
@@ -59,8 +64,8 @@ describe('buildClubLogsConfigEmbed', () => {
     });
     const json = embed.toJSON();
 
-    expect(json.description).toContain(GUILD_ID);
-    expect(json.fields?.map((field) => field.value)).toEqual([
+    expect(plain(json.description)).toContain(GUILD_ID);
+    expect(json.fields?.map((field) => plain(field.value))).toEqual([
       'Club log configured.',
       '<#111111111111111222> • Today',
       '<#333> • This Week, This Season',

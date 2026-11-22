@@ -1,3 +1,5 @@
+import { mdBold, mdCode, mdKeyValue, mdKeyValueList, mdList, mdSection } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import { EmbedBuilder } from 'discord.js';
 import type { BotConfig } from '../config';
 import { fitEmbedToDiscordLimits } from '../clubs/embed';
@@ -12,7 +14,7 @@ import type {
   CompetitionSubmitResult,
 } from './types';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.competition;
 
 type EmbedConfig = Pick<BotConfig, 'playerProfileUrlTemplate'>;
 
@@ -46,19 +48,22 @@ function periodLines(competition: CompetitionRecord): string {
   const start = formatCompetitionTimestamp(competition.startsAt, 'F');
   const end = formatCompetitionTimestamp(competition.endsAt, 'F');
   const relative = formatCompetitionTimestamp(competition.endsAt, 'R');
-  return `Start: ${start}\nEnd: ${end} (${relative})`;
+  return mdKeyValueList([
+    ['Start', start],
+    ['End', `${end} (${relative})`],
+  ]);
 }
 
 function scopeLine(competition: CompetitionRecord): string {
-  if (competition.club === null) return 'Club restriction: none';
-  return `Club restriction: ${escapeMarkdown(competition.club.name)} (#${competition.club.tag})`;
+  if (competition.club === null) return mdKeyValue('Club restriction', 'none');
+  return mdKeyValue(
+    'Club restriction',
+    `${escapeMarkdown(competition.club.name)} (${mdCode(`#${competition.club.tag}`)})`,
+  );
 }
 
 function rulesValue(competition: CompetitionRecord): string {
-  return truncate(
-    competition.description ?? 'No additional rules were provided.',
-    1024,
-  );
+  return truncate(mdList([competition.description ?? 'No additional rules were provided.']), 1024);
 }
 
 function playerLabel(player: PlayerIdentity, config: EmbedConfig): string {
@@ -109,7 +114,7 @@ export function buildCompetitionJoinedEmbed(
     new EmbedBuilder()
       .setColor(EMBED_COLOR)
       .setTitle(truncate(`Joined ${competition.name}`, 256))
-      .setDescription(`Entered with ${playerLabel(player, config)}.`)
+      .setDescription(mdSection('Entry', `Entered with ${playerLabel(player, config)}.`))
       .addFields(
         { name: 'Status', value: statusLabel(competition, now) },
         { name: 'Period', value: periodLines(competition) },
@@ -130,13 +135,13 @@ export function buildCompetitionSubmittedEmbed(
     new EmbedBuilder()
       .setColor(EMBED_COLOR)
       .setTitle(truncate(`Result recorded: ${competition.name}`, 256))
-      .setDescription(`Submitted by ${playerLabel(player, config)}.`)
+      .setDescription(mdSection('Submission', `Submitted by ${playerLabel(player, config)}.`))
       .addFields(
         { name: 'Trophies', value: integer(result.trophies) },
         { name: 'Recorded', value: formatCompetitionTimestamp(result.submittedAt, 'F') },
         {
           name: 'Verification',
-          value: 'Unverified user submission — not checked against the Brawl Stars API.',
+          value: `${mdBold('Unverified user submission')} — not checked against the Brawl Stars API.`,
         },
       )
       .setTimestamp(now),
@@ -187,7 +192,14 @@ export function buildCompetitionLeaderboardEmbed(
           : 'unverified user submission';
     const submitted =
       row.latestSubmissionAt === null ? '—' : formatCompetitionTimestamp(row.latestSubmissionAt, 'R');
-    return `${rank} ${player}\nTrophies: ${trophies} • Gain: ${gain}\n${verification} • ${submitted}`;
+    return [
+      `${mdCode(rank)} ${player}`,
+      mdKeyValueList([
+        ['Trophies', trophies],
+        ['Gain', gain],
+      ]),
+      mdList([verification, submitted]),
+    ].join('\n');
   });
 
   const description =
@@ -218,9 +230,15 @@ export function buildCompetitionListEmbed(
 ): EmbedBuilder {
   const lines = page.items.map((competition) => {
     const status = statusLabel(competition, now);
-    const club = competition.club === null ? 'Open to all clubs' : `#${competition.club.tag} ${escapeMarkdown(competition.club.name)}`;
+    const club =
+      competition.club === null
+        ? 'Open to all clubs'
+        : `${mdCode(`#${competition.club.tag}`)} ${escapeMarkdown(competition.club.name)}`;
     const period = `${formatCompetitionTimestamp(competition.startsAt, 'R')} → ${formatCompetitionTimestamp(competition.endsAt, 'R')}`;
-    return `**${escapeMarkdown(competition.name)}** — ${status}\n${club} • ${period} • ${integer(competition.entryCount)} entries`;
+    return [
+      `${mdBold(escapeMarkdown(competition.name))} — ${status}`,
+      mdList([club, period, `${integer(competition.entryCount)} entries`]),
+    ].join('\n');
   });
 
   const description =

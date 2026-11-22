@@ -1,3 +1,5 @@
+import { mdCode, mdKeyValue, mdKeyValueList, mdLabelLines, mdParagraphs } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 /** Discord embeds for the BrawlHub membership command group. */
 
 import { EmbedBuilder } from 'discord.js';
@@ -9,7 +11,7 @@ import { fitEmbedToDiscordLimits, formatAbsoluteTime } from '../clubs/embed';
 import { statusLabel } from '../players/embed';
 import type { MemberListView, MemberSearchView, TrackedMemberRecord } from './types';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.success;
 
 type MemberEmbedConfig = Pick<
   BotConfig,
@@ -21,8 +23,9 @@ function truncate(value: string, maximum: number): string {
 }
 
 function membershipValue(record: TrackedMemberRecord, config: MemberEmbedConfig): string {
+  const clubTag = mdCode(`#${cleanTag(record.club.tag)}`);
   const lines = [
-    `Club: ${formatClubLink(record.club.name, record.club.tag, config.clubProfileUrlTemplate)} (#${cleanTag(record.club.tag)})`,
+    `Club: ${formatClubLink(record.club.name, record.club.tag, config.clubProfileUrlTemplate)} (${clubTag})`,
     `Status: ${statusLabel(record.status)}`,
   ];
   const trophies = formatInteger(record.trophies);
@@ -34,7 +37,7 @@ function membershipValue(record: TrackedMemberRecord, config: MemberEmbedConfig)
   if (record.club.validTo !== null) {
     lines.push(`Left: ${formatAbsoluteTime(record.club.validTo) ?? record.club.validTo}`);
   }
-  return truncate(lines.join('\n'), 1024);
+  return truncate(mdLabelLines(lines), 1024);
 }
 
 /** Build the paginated `/members` embed. */
@@ -53,8 +56,13 @@ export function buildMembersPageEmbed(
 
   embed.setDescription(
     truncate(
-      `Current: ${view.currentCount} • Historical/unverified: ${view.historicalCount}\n` +
+      mdParagraphs(
+        mdKeyValueList([
+          ['Current', String(view.currentCount)],
+          ['Historical/unverified', String(view.historicalCount)],
+        ]),
         'Current means confirmed by a recent synchronisation. All other rows are shown as historical or incomplete.',
+      ),
       2048,
     ),
   );
@@ -96,8 +104,11 @@ export function buildMemberSearchPageEmbed(
   embed.setDescription(
     truncate(
       view.identityContext
-        ? `Discord ID: ${view.query}\nOnly stored, trusted identity links are shown. No ownership is inferred from names, tags or roles.`
-        : `Query: ${escapeMarkdown(view.query)}`,
+        ? mdParagraphs(
+            mdKeyValue('Discord ID', view.query),
+            'Only stored, trusted identity links are shown. No ownership is inferred from names, tags or roles.',
+          )
+        : mdKeyValue('Query', escapeMarkdown(view.query)),
       2048,
     ),
   );
@@ -116,14 +127,14 @@ export function buildMemberSearchPageEmbed(
       `Trophies: ${formatInteger(player.trophies) ?? '—'}`,
       club === null
         ? 'Current club: No stored current membership'
-        : `Current club: ${formatClubLink(club.name, club.tag, config.clubProfileUrlTemplate)} (#${cleanTag(club.tag)})`,
+        : `Current club: ${formatClubLink(club.name, club.tag, config.clubProfileUrlTemplate)} (${mdCode(`#${cleanTag(club.tag)}`)})`,
     ];
     embed.addFields({
       name: truncate(
         `${page.start + index}. ${formatPlayerLink(player.playerName, player.playerTag, config.playerProfileUrlTemplate)} (#${cleanTag(player.playerTag)})`,
         256,
       ),
-      value: truncate(lines.join('\n'), 1024),
+      value: truncate(mdLabelLines(lines), 1024),
     });
   });
 

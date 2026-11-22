@@ -1,10 +1,12 @@
+import { mdKeyValueList, mdLabelLines, mdList, mdParagraphs } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import { EmbedBuilder } from 'discord.js';
 import { fitEmbedToDiscordLimits } from '../clubs/embed';
 import { escapeMarkdown, formatInteger } from '../discord/format';
 import type { Page } from '../discord/pagination';
 import type { StaffListView, StaffMember, StaffRoleEntry } from './types';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.neutral;
 const MAX_FIELDS = 25;
 const PERMISSION_VALUE_LIMIT = 300;
 
@@ -44,7 +46,12 @@ function memberField(member: StaffMember): { readonly name: string; readonly val
   return {
     name: truncate(identity, 256),
     value: truncate(
-      `Identity: ${identity}\nScope: ${scopes}\nPermissions: ${permissions}\nStatus: Active role assignment`,
+      mdLabelLines([
+        `Identity: ${identity}`,
+        `Scope: ${scopes}`,
+        `Permissions: ${permissions}`,
+        'Status: Active role assignment',
+      ]),
       1024,
     ),
   };
@@ -56,8 +63,13 @@ export function buildStaffOverviewEmbed(now: Date = new Date()): EmbedBuilder {
     .setColor(EMBED_COLOR)
     .setTitle('Staff')
     .setDescription(
-      'Use `/staff list` to review registered staff. Access is restricted to global staff ' +
-        'with the `staff:manage` permission. The list shows both global and club role assignments.',
+      mdParagraphs(
+        'Use `/staff list` to review registered staff.',
+        mdList([
+          'Access is restricted to global staff with the `staff:manage` permission.',
+          'The list shows both global and club role assignments.',
+        ]),
+      ),
     )
     .setTimestamp(now)
     .setFooter({ text: 'Role presence is the active status; no separate status flag is stored.' });
@@ -69,11 +81,14 @@ export function buildStaffListEmbed(
   page: Page<StaffMember>,
   now: Date = new Date(),
 ): EmbedBuilder {
-  const summary = [
+  const summary = mdParagraphs(
     `Page ${page.page}/${page.pageCount} (${page.start}–${page.end} of ${page.total})`,
-    `Total staff entries: ${count(view.entries.length)}`,
-    `Global assignments: ${count(view.globalCount)} • Club assignments: ${count(view.clubCount)}`,
-  ].join('\n');
+    mdKeyValueList([
+      ['Total staff entries', count(view.entries.length)],
+      ['Global assignments', count(view.globalCount)],
+      ['Club assignments', count(view.clubCount)],
+    ]),
+  );
 
   const fields: { name: string; value: string }[] = [];
   const hasOverflow = page.items.length > MAX_FIELDS;

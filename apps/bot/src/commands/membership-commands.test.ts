@@ -256,8 +256,8 @@ describe('/members roster command', () => {
     expect(mocks.memberService.loadTrackedMembers).toHaveBeenCalledWith({ tag: '8QCL', guildId: 'guild-1' });
     const text = embedText(payload(interaction, 'editReply'));
     expect(text).toContain('Tracked Members');
-    expect(text).toContain('Current: 1');
-    expect(text).toContain('Historical/unverified: 1');
+    expect(text).toContain('**Current:** 1');
+    expect(text).toContain('**Historical/unverified:** 1');
     expect(text).toContain('Current (verified by latest sync)');
     expect(text).toContain('Confirmed previous membership');
   });

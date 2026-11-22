@@ -493,7 +493,7 @@ describe('/player compare command', () => {
     );
     const data = payload(interaction, 'editReply').embeds[0].toJSON();
     expect(data.description).toContain('different periods');
-    expect(JSON.stringify(data)).toContain('Leader: [Alpha](https://brawlify.com/player/2C0Y)');
+    expect(JSON.stringify(data)).toContain('**Leader:** [Alpha](https://brawlify.com/player/2C0Y)');
   });
 
   it('rejects self-comparison before rendering', async () => {

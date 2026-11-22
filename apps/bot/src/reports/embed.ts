@@ -1,10 +1,12 @@
+import { mdCode, mdKeyValueList, mdParagraphs, mdSection } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import { EmbedBuilder } from 'discord.js';
 import { displayTag, fitEmbedToDiscordLimits } from '../clubs/embed';
 import { escapeMarkdown } from '../discord/format';
 import type { ReportType } from './period';
 import type { ReportData } from './service';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.report;
 const REPORT_LABELS: Readonly<Record<ReportType, string>> = {
   daily: 'Daily',
   weekly: 'Weekly',
@@ -20,22 +22,26 @@ function truncate(value: string, maximum: number): string {
 
 function totalLine(data: ReportData): string {
   const totals = data.totals;
-  return [
-    `Clubs: ${totals.clubs}`,
-    `Joins: ${totals.joins}`,
-    `Leaves: ${totals.leaves}`,
-    `Transfers: ${totals.transfers}`,
-    `Role changes: ${totals.roleChanges}`,
-    `Capacity opens: ${totals.capacityOpens}`,
-    `Capacity closes: ${totals.capacityCloses}`,
-  ].join(' • ');
+  return mdKeyValueList([
+    ['Clubs', String(totals.clubs)],
+    ['Joins', String(totals.joins)],
+    ['Leaves', String(totals.leaves)],
+    ['Transfers', String(totals.transfers)],
+    ['Role changes', String(totals.roleChanges)],
+    ['Capacity opens', String(totals.capacityOpens)],
+    ['Capacity closes', String(totals.capacityCloses)],
+  ]);
 }
 
 function clubValue(summary: ReportData['clubSummaries'][number]): string {
-  return [
-    `Joins: ${summary.joins} • Leaves: ${summary.leaves} • Transfers: ${summary.transfers}`,
-    `Role changes: ${summary.roleChanges} • Capacity opens: ${summary.capacityOpens} • closes: ${summary.capacityCloses}`,
-  ].join('\n');
+  return mdKeyValueList([
+    ['Joins', String(summary.joins)],
+    ['Leaves', String(summary.leaves)],
+    ['Transfers', String(summary.transfers)],
+    ['Role changes', String(summary.roleChanges)],
+    ['Capacity opens', String(summary.capacityOpens)],
+    ['closes', String(summary.capacityCloses)],
+  ]);
 }
 
 /** Account for JSON field overhead as well as text length (Discord's 6,000-char cap). */
@@ -87,7 +93,16 @@ export function buildReportEmbed(input: {
     )
     .setDescription(
       truncate(
-        `Stored events from ${data.period.start.toISOString()} to ${data.period.end.toISOString()} (UTC, end exclusive)`,
+        mdSection(
+          'Stored events',
+          mdParagraphs(
+            mdKeyValueList([
+              ['From', mdCode(data.period.start.toISOString())],
+              ['To', mdCode(data.period.end.toISOString())],
+            ]),
+            'UTC, end exclusive',
+          ),
+        ),
         2048,
       ),
     )

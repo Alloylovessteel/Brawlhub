@@ -1,3 +1,5 @@
+import { mdCode, mdLabelLines } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -19,7 +21,8 @@ import {
   type RankedTier,
 } from '../ranked-roles/service.js';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.neutral;
+const SUCCESS_COLOR = EMBED_COLORS.success;
 
 export const fnCommandData = new SlashCommandBuilder()
   .setName('fn')
@@ -102,14 +105,16 @@ export async function handleFn(interaction: ChatInputCommandInteraction): Promis
       await interaction.editReply({
         embeds: [
           new EmbedBuilder()
-            .setColor(EMBED_COLOR)
+            .setColor(SUCCESS_COLOR)
             .setTitle('Ranked role updated')
             .addFields(
-              { name: 'Tier', value: tier, inline: true },
+              { name: 'Tier', value: mdCode(tier), inline: true },
               { name: 'Role', value: `<@&${role.id}>`, inline: true },
               {
                 name: 'Configured roles',
-                value: RANKED_TIERS.map((name) => `${name}: ${roleLabel(saved.mapping[name])}`).join('\n'),
+                value: mdLabelLines(
+                  RANKED_TIERS.map((name) => `${name}: ${roleLabel(saved.mapping[name])}`),
+                ),
               },
             ),
         ],
@@ -134,7 +139,7 @@ export async function handleFn(interaction: ChatInputCommandInteraction): Promis
         content:
           result.tier === null
             ? 'Your verified main account has no stored official ranked rank, so ranked roles were cleared.'
-            : `Your ranked role is now ${result.tier}.`,
+            : `Your ranked role is now ${mdCode(result.tier)}.`,
         allowedMentions: { parse: [] },
       });
       return;
@@ -185,7 +190,7 @@ export async function handleFnComponent(interaction: CommandComponentInteraction
         result.kind === 'ok'
           ? result.tier === null
             ? 'Ranked roles cleared: no stored official rank on your verified main account.'
-            : `Ranked role refreshed to ${result.tier}.`
+            : `Ranked role refreshed to ${mdCode(result.tier)}.`
           : result.kind === 'not-member'
             ? 'You are not a member of this server.'
             : 'No verified main account was found for you in this server.',

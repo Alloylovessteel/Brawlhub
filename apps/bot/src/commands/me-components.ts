@@ -33,6 +33,8 @@ import type { PlayerLookupFailure } from '../players/types';
 const logger = createLogger('bot');
 const PAGE_SIZE = 10;
 const SESSION_TTL_MS = 10 * 60 * 1000;
+/** Discord can deliver the same button press twice; ignore an identical replay. */
+const REPLAY_WINDOW_MS = 5 * 1000;
 
 export const ME_SECTIONS = ['summary', 'brawlers', 'more'] as const;
 export type MeSection = (typeof ME_SECTIONS)[number];
@@ -60,10 +62,60 @@ export type MeSessionInput = Omit<MeSession, 'expiresAt'>;
 
 const sessions = new Map<string, MeSession>();
 
+interface ReplayEntry {
+  readonly guildId: string;
+  readonly userId: string;
+  readonly expiresAt: number;
+}
+
+const consumedClicks = new Map<string, ReplayEntry>();
+
 function pruneExpiredSessions(now: number): void {
   for (const [nonce, session] of sessions) {
     if (session.expiresAt <= now) sessions.delete(nonce);
   }
+  for (const [key, entry] of consumedClicks) {
+    if (entry.expiresAt <= now) consumedClicks.delete(key);
+  }
+}
+
+function replayKey(nonce: string, action: string): string {
+  return `${nonce}:${action}`;
+}
+
+/** Only the same actor, guild and button may replay a just-consumed nonce. */
+function isDuplicateMeClick(
+  interaction: CommandComponentInteraction,
+  nonce: string | null,
+  action: string | null,
+): boolean {
+  if (nonce === null || action === null || interaction.guildId === null) return false;
+  const key = replayKey(nonce, action);
+  const entry = consumedClicks.get(key);
+  if (entry === undefined) return false;
+  if (entry.expiresAt <= Date.now()) {
+    consumedClicks.delete(key);
+    return false;
+  }
+  return entry.guildId === interaction.guildId && entry.userId === interaction.user.id;
+}
+
+function rememberMeClick(
+  interaction: CommandComponentInteraction,
+  nonce: string,
+  action: string,
+): void {
+  if (interaction.guildId === null) return;
+  pruneExpiredSessions(Date.now());
+  consumedClicks.set(replayKey(nonce, action), {
+    guildId: interaction.guildId,
+    userId: interaction.user.id,
+    expiresAt: Date.now() + REPLAY_WINDOW_MS,
+  });
+}
+
+async function acknowledgeDuplicate(interaction: CommandComponentInteraction): Promise<void> {
+  if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
 }
 
 /** Create a single-use, actor- and guild-bound `/me` component session. */
@@ -244,11 +296,19 @@ export async function handleMeComponent(
 
   if (isPaginationButtonWithState(interaction, 'me')) {
     const parsed = parsePaginationCustomIdWithState(interaction.customId, 'me');
-    const session = readMeSession(interaction, parsed?.state ?? null);
-    if (parsed === null || session === null) {
+    const nonce = parsed?.state ?? null;
+    const action = parsed === null ? null : `page:${parsed.page}`;
+    if (isDuplicateMeClick(interaction, nonce, action)) {
+      await acknowledgeDuplicate(interaction);
+      return;
+    }
+
+    const session = readMeSession(interaction, nonce);
+    if (parsed === null || session === null || nonce === null || action === null) {
       await replyExpired(interaction);
       return;
     }
+    rememberMeClick(interaction, nonce, action);
 
     try {
       await interaction.deferUpdate();
@@ -267,11 +327,19 @@ export async function handleMeComponent(
   }
 
   const action = parseSectionCustomId(interaction.customId);
-  const session = readMeSession(interaction, action?.nonce ?? null);
-  if (action === null || session === null) {
+  const nonce = action?.nonce ?? null;
+  const actionKey = action === null ? null : `section:${action.section}`;
+  if (isDuplicateMeClick(interaction, nonce, actionKey)) {
+    await acknowledgeDuplicate(interaction);
+    return;
+  }
+
+  const session = readMeSession(interaction, nonce);
+  if (action === null || session === null || nonce === null || actionKey === null) {
     await replyExpired(interaction);
     return;
   }
+  rememberMeClick(interaction, nonce, actionKey);
 
   try {
     await interaction.deferUpdate();

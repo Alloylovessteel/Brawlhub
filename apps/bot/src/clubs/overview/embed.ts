@@ -1,3 +1,5 @@
+import { EMBED_COLORS } from '../../discord/embed-style';
+import { mdBold, mdCode, mdKeyValue, mdList } from '../../discord/embed-format';
 import {
   ActionRowBuilder,
   EmbedBuilder,
@@ -23,7 +25,7 @@ export const OVERVIEW_MAX_CLUBS = 25;
 /** Discord allows at most 10 embeds in one reply, so cap multi-club detail views. */
 export const OVERVIEW_MAX_SELECTIONS = 10;
 export const OVERVIEW_CUSTOM_ID_PREFIX = 'clubs:overview:';
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.neutral;
 const CAVEAT =
   'Global/region rank and live online status are not exposed by the Brawl Stars API.';
 
@@ -127,8 +129,8 @@ export function buildClubOverviewEmbed(input: ClubOverviewEmbedInput): EmbedBuil
       const { low, high } = summary.rankedRange;
       lines.push(
         low === high
-          ? `${emoji.rankFor(low)}${low}`
-          : `${emoji.rankFor(low)}${low}-${emoji.rankFor(high)}${high}`,
+          ? `${emoji.rankFor(low)}${mdCode(low)}`
+          : `${emoji.rankFor(low)}${mdCode(low)}-${emoji.rankFor(high)}${mdCode(high)}`,
       );
     }
 
@@ -143,7 +145,7 @@ export function buildClubOverviewEmbed(input: ClubOverviewEmbedInput): EmbedBuil
 
     const required = formatInteger(summary.club.requiredTrophies);
     if (hasOverviewField(fields, 'requiredTrophies') && required !== null) {
-      lines.push(`${emoji.required}Req: ${required}`);
+      lines.push(`${emoji.required}${mdKeyValue('Req', required)}`);
     }
 
     if (hasOverviewField(fields, 'members')) {
@@ -160,14 +162,14 @@ export function buildClubOverviewEmbed(input: ClubOverviewEmbedInput): EmbedBuil
     }
 
     const syncedAt = formatSyncTime(summary.latestSyncAt);
-    if (syncedAt !== null) lines.push(`🕒Synced ${syncedAt}`);
+    if (syncedAt !== null) lines.push(`🕒${mdBold('Synced')} ${syncedAt}`);
 
     embed.addFields({
       name: truncate(
         `${formatClubLink(summary.club.name, summary.club.tag, input.config.clubProfileUrlTemplate)} • ${displayTag(summary.club.tag)}`,
         256,
       ),
-      value: truncate(lines.length === 0 ? '—' : lines.join('\n'), 1024),
+      value: truncate(lines.length === 0 ? '—' : mdList(lines), 1024),
       inline: true,
     });
   });
@@ -267,14 +269,14 @@ export function buildViewTagsEmbed(input: ViewTagsEmbedInput): EmbedBuilder {
     const club = summary.club;
     const clubTrophies = formatInteger(summary.totalTrophies) ?? '—';
     const clubMembers = formatInteger(summary.memberCount) ?? '—';
-    return `${formatClubLink(club.name, club.tag, input.config.clubProfileUrlTemplate)} • ${displayTag(club.tag)} — ${emoji.trophies}${clubTrophies} • ${emoji.members}${clubMembers}`;
+    return `${formatClubLink(club.name, club.tag, input.config.clubProfileUrlTemplate)} • ${mdCode(displayTag(club.tag))} — ${emoji.trophies}${clubTrophies} • ${emoji.members}${clubMembers}`;
   });
   embed.addFields({
     name: 'Clubs in this overview',
     value: truncate(
       lines.length === 0
         ? 'No clubs selected yet. Registered clubs are shown until you choose a subset.'
-        : lines.join('\n'),
+        : mdList(lines),
       1024,
     ),
   });

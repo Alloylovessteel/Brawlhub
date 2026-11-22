@@ -1,3 +1,5 @@
+import { mdBold, mdCode, mdParagraphs } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import {
   EmbedBuilder,
   SlashCommandBuilder,
@@ -8,7 +10,7 @@ import { respondToAutocomplete } from '../discord/errors.js';
 import { listLinkedAccounts, setMainVerification } from '../verification/index.js';
 
 const COMMAND_NAME = 'accounts';
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.player;
 
 export const accountsCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
@@ -43,13 +45,13 @@ function accountsEmbed(
   }>,
 ): EmbedBuilder {
   const lines = accounts.map((account, index) => {
-    const label = account.isMain ? '**MAIN**' : 'Alt';
+    const label = account.isMain ? mdBold('MAIN') : 'Alt';
     const name = account.name ?? 'Unknown player';
     const when = account.verifiedAt
       ? ` • linked <t:${Math.floor(Date.parse(account.verifiedAt) / 1000)}:R>`
       : '';
     const method = account.method === 'manual_staff' ? ' • staff-linked' : '';
-    return `${index + 1}. ${label} — ${name} (${formatTag(account.tag)})${when}${method}`;
+    return `${index + 1}. ${label} — ${name} (${mdCode(formatTag(account.tag))})${when}${method}`;
   });
   const mainCount = accounts.filter((account) => account.isMain).length;
   return new EmbedBuilder()
@@ -57,8 +59,11 @@ function accountsEmbed(
     .setTitle('Your linked Brawl Stars accounts')
     .setDescription(
       lines.length > 0
-        ? lines.join('\n')
-        : 'You have no verified accounts. Use `/members accounts verify tag:YOURTAG` to link one.',
+        ? mdParagraphs(...lines)
+        : mdParagraphs(
+            'You have no verified accounts.',
+            `Use ${mdCode('/members accounts verify tag:YOURTAG')} to link one.`,
+          ),
     )
     .setFooter({ text: `${accounts.length} linked • ${mainCount} main • the rest are alts` });
 }

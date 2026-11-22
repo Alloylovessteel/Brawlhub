@@ -1,3 +1,13 @@
+import { EMBED_COLORS } from '../discord/embed-style';
+import {
+  mdBold,
+  mdCode,
+  mdKeyValue,
+  mdLabelLines,
+  mdList,
+  mdParagraphs,
+  mdSection,
+} from '../discord/embed-format';
 import { EmbedBuilder } from 'discord.js';
 import type { BotConfig, BotEmojiConfig } from '../config';
 import {
@@ -35,7 +45,7 @@ import type {
 } from './types';
 
 export const CLUB_MEMBER_CAPACITY = 30;
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.neutral;
 
 const ROLE_LABELS: Readonly<Record<string, string>> = {
   notMember: 'Not a member',
@@ -208,7 +218,7 @@ function staffLines(roster: readonly RosterMember[], config: EmbedConfig): strin
       const link = formatPlayerLink(member.name, member.tag, config.playerProfileUrlTemplate);
       return `${link} (${formatInteger(member.trophies) ?? '—'})`;
     });
-    return [`${label}: ${names.join(', ')}`];
+    return [mdKeyValue(label, names.join(', '))];
   });
 }
 
@@ -287,7 +297,7 @@ export function buildClubEmbed(
   if (trophyParts.length > 0) {
     embed.addFields({
       name: 'Trophies',
-      value: truncate(trophyParts.join('  '), 1024),
+      value: truncate(mdList(trophyParts), 1024),
     });
   }
 
@@ -306,7 +316,7 @@ export function buildClubEmbed(
     embed.addFields({
       name: 'President',
       value: truncate(
-        `${emoji.crown} ${formatPlayerLink(leader.name, leader.tag, config.playerProfileUrlTemplate)} (${displayTag(leader.tag)})`,
+        `${emoji.crown} ${formatPlayerLink(leader.name, leader.tag, config.playerProfileUrlTemplate)} (${mdCode(displayTag(leader.tag))})`,
         1024,
       ),
     });
@@ -324,7 +334,7 @@ export function buildClubEmbed(
   if (type !== null) {
     embed.addFields({
       name: 'Type',
-      value: truncate(type, 1024),
+      value: truncate(mdCode(type), 1024),
     });
   }
 
@@ -332,9 +342,9 @@ export function buildClubEmbed(
     const lines = [`${emoji.members}${view.roster.length}/${CLUB_MEMBER_CAPACITY}`];
     const vicePresidents = countRole(view.roster, 'vicePresident');
     const seniors = countRole(view.roster, 'senior');
-    if (vicePresidents !== null) lines.push(`${emoji.members}Vice-Presidents ${vicePresidents}`);
-    if (seniors !== null) lines.push(`${emoji.members}Seniors ${seniors}`);
-    embed.addFields({ name: 'Members', value: truncate(lines.join('\n'), 1024) });
+    if (vicePresidents !== null) lines.push(`${emoji.members}${mdBold('Vice-Presidents')} ${vicePresidents}`);
+    if (seniors !== null) lines.push(`${emoji.members}${mdBold('Seniors')} ${seniors}`);
+    embed.addFields({ name: 'Members', value: truncate(mdList(lines), 1024) });
 
     const staff = staffLines(view.roster, config);
     if (staff.length > 0) {
@@ -353,7 +363,7 @@ export function buildClubEmbed(
       const matchesEmoji = formatEmoji(config.emojis.matches, 'matches');
       const lastBattle = formatSyncTime(activity.lastBattleAt);
       const lines = [`${matchesEmoji} ${summary}`.trim()];
-      if (lastBattle !== null) lines.push(`Last battle: ${lastBattle}`);
+      if (lastBattle !== null) lines.push(mdKeyValue('Last battle', lastBattle));
       embed.addFields({
         name: 'Average Matches Played',
         value: truncate(lines.join('\n'), 1024),
@@ -364,7 +374,7 @@ export function buildClubEmbed(
     if (lastBattle !== null) {
       embed.addFields({
         name: 'Last Activity',
-        value: truncate(`Last battle: ${lastBattle}`, 1024),
+        value: truncate(mdKeyValue('Last battle', lastBattle), 1024),
       });
     }
   }
@@ -380,13 +390,13 @@ export function buildClubEmbed(
   const megaPig = view.megaPigEstimate;
   if (megaPig !== null && megaPig.sampleSize > 0) {
     const lines = [
-      `${emoji.megaPig} Matches: ${formatInteger(megaPig.matches)}`,
-      `${emoji.wins} Wins: ${formatInteger(megaPig.wins)}`,
-      `Trophy Δ: ${formatDelta(megaPig.trophyChange)}`,
+      `${emoji.megaPig} ${mdKeyValue('Matches', formatInteger(megaPig.matches) ?? '—')}`,
+      `${emoji.wins} ${mdKeyValue('Wins', formatInteger(megaPig.wins) ?? '—')}`,
+      mdKeyValue('Trophy Δ', formatDelta(megaPig.trophyChange)),
     ];
     embed.addFields({
       name: 'Mega Pig (estimated)',
-      value: truncate(lines.join(' • '), 1024),
+      value: truncate(mdList(lines), 1024),
     });
   }
 
@@ -453,10 +463,12 @@ export function buildClubsPageEmbed(
     }
 
     if (rankedRange !== null) {
+      const low = mdCode(rankedRange.low);
+      const high = mdCode(rankedRange.high);
       const ranks =
         rankedRange.low === rankedRange.high
-          ? `${emoji.rankFor(rankedRange.low)}${rankedRange.low}`
-          : `${emoji.rankFor(rankedRange.low)}${rankedRange.low} - ${emoji.rankFor(rankedRange.high)}${rankedRange.high}`;
+          ? `${emoji.rankFor(rankedRange.low)}${low}`
+          : `${emoji.rankFor(rankedRange.low)}${low} - ${emoji.rankFor(rankedRange.high)}${high}`;
       lines.push(`${emoji.ranked} ${ranks}`);
     }
 
@@ -467,21 +479,21 @@ export function buildClubsPageEmbed(
     }
 
     const required = formatInteger(summary.club.requiredTrophies);
-    if (required !== null) lines.push(`${emoji.required} Req: ${required}`);
+    if (required !== null) lines.push(`${emoji.required} ${mdKeyValue('Req', required)}`);
 
     const members = formatInteger(summary.memberCount);
     const memberLine = `${emoji.members}${members ?? '—'}/${CLUB_MEMBER_CAPACITY}`;
     lines.push(active === null ? memberLine : `${memberLine} • ${emoji.online}${active} active 24h`);
 
     const syncedAt = formatSyncTime(summary.latestSyncAt);
-    if (syncedAt !== null) lines.push(`${emoji.sync} Synced ${syncedAt}`);
+    if (syncedAt !== null) lines.push(`${emoji.sync} ${mdBold('Synced')} ${syncedAt}`);
 
     embed.addFields({
       name: truncate(
         `${formatClubLink(summary.club.name, summary.club.tag, config?.clubProfileUrlTemplate)} • ${displayTag(summary.club.tag)}`,
         256,
       ),
-      value: truncate(lines.join('\n'), 1024),
+      value: truncate(mdList(lines), 1024),
     });
   });
 
@@ -513,7 +525,7 @@ function formatProgressionLines(
   if (progression.today !== null) lines.push(`${prefix}Today: ${formatDelta(progression.today)}`);
   if (progression.week !== null) lines.push(`${prefix}Week: ${formatDelta(progression.week)}`);
   if (progression.season !== null) lines.push(`${prefix}Season: ${formatDelta(progression.season)}`);
-  return lines;
+  return lines.map((line) => mdLabelLines([line]));
 }
 
 function memberName(member: RosterMember, config: EmbedConfig): string {
@@ -535,8 +547,12 @@ export function buildClubMembersPageEmbed(
   const sync = formatSyncTime(view.latestSnapshot?.capturedAt ?? view.latestSyncAt);
   embed.setDescription(
     truncate(
-      `Current roster: ${view.members.length} / ${CLUB_MEMBER_CAPACITY}` +
-        (sync === null ? '' : ` • Latest snapshot ${sync}`),
+      [
+        mdKeyValue('Current roster', `${view.members.length} / ${CLUB_MEMBER_CAPACITY}`),
+        sync === null ? null : `${mdBold('Latest snapshot')} ${sync}`,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(' • '),
       2048,
     ),
   );
@@ -552,13 +568,13 @@ export function buildClubMembersPageEmbed(
   }
 
   page.items.forEach((member, index) => {
-    const lines = [`Tag: ${displayTag(member.tag)}`];
+    const lines = [mdKeyValue('Tag', mdCode(displayTag(member.tag)))];
     const current = formatInteger(member.trophies);
     const highest = formatInteger(member.highestTrophies);
     const role = member.role === null ? null : ROLE_LABELS[member.role];
-    if (current !== null) lines.push(`Current trophies: ${current}`);
-    if (highest !== null) lines.push(`Highest trophies: ${highest}`);
-    if (role !== undefined) lines.push(`Role: ${role}`);
+    if (current !== null) lines.push(mdKeyValue('Current trophies', current));
+    if (highest !== null) lines.push(mdKeyValue('Highest trophies', highest));
+    if (role !== undefined) lines.push(mdKeyValue('Role', String(role)));
 
     embed.addFields({
       name: truncate(`${page.start + index}. ${memberName(member, config)}`, 256),
@@ -582,7 +598,7 @@ export function buildClubStaffEmbed(view: SyncedClubView, config: EmbedConfig): 
   embed.addFields({
     name: 'Staff',
     value: truncate(
-      lines.length === 0 ? 'No staff roles are stored for this club.' : lines.join('\n'),
+      lines.length === 0 ? 'No staff roles are stored for this club.' : mdList(lines),
       1024,
     ),
   });
@@ -625,8 +641,8 @@ export function buildClubMemberDetailsPageEmbed(
     truncate(
       [
         `${view.members.length} matching member${view.members.length === 1 ? '' : 's'}`,
-        view.search === null ? null : `Search: ${view.search}`,
-        sync === null ? null : `Snapshot ${sync}`,
+        view.search === null ? null : mdKeyValue('Search', view.search),
+        sync === null ? null : `${mdBold('Snapshot')} ${sync}`,
       ]
         .filter((line): line is string => line !== null)
         .join(' • '),
@@ -647,29 +663,34 @@ export function buildClubMemberDetailsPageEmbed(
 
   page.items.forEach((member, index) => {
     const lines = [
-      `Tag: ${displayTag(member.tag)}`,
-      `Trophies: ${formatInteger(member.trophies) ?? '—'} • Highest: ${formatInteger(member.highestTrophies) ?? '—'}`,
+      mdKeyValue('Tag', mdCode(displayTag(member.tag))),
+      `${mdKeyValue('Trophies', formatInteger(member.trophies) ?? '—')} • ${mdKeyValue('Highest', formatInteger(member.highestTrophies) ?? '—')}`,
     ];
     const role = member.role === null ? undefined : ROLE_LABELS[member.role];
-    if (role !== undefined) lines.push(`Role: ${role}`);
+    if (role !== undefined) lines.push(mdKeyValue('Role', role));
     if (member.rankedRankName !== null) {
-      lines.push(`Ranked: ${emoji.rankFor(member.rankedRankName)} ${member.rankedRankName}`);
+      lines.push(
+        mdKeyValue('Ranked', `${emoji.rankFor(member.rankedRankName)} ${mdCode(member.rankedRankName)}`),
+      );
     }
     if (member.highestAllTimeRankedRankName !== null) {
       lines.push(
-        `All-time: ${emoji.rankFor(member.highestAllTimeRankedRankName)} ${member.highestAllTimeRankedRankName}`,
+        mdKeyValue(
+          'All-time',
+          `${emoji.rankFor(member.highestAllTimeRankedRankName)} ${mdCode(member.highestAllTimeRankedRankName)}`,
+        ),
       );
     }
-    if (member.soloVictories !== null) lines.push(`Solo wins: ${formatInteger(member.soloVictories)}`);
-    if (member.duoVictories !== null) lines.push(`Duo wins: ${formatInteger(member.duoVictories)}`);
+    if (member.soloVictories !== null) lines.push(mdKeyValue('Solo wins', formatInteger(member.soloVictories) ?? '—'));
+    if (member.duoVictories !== null) lines.push(mdKeyValue('Duo wins', formatInteger(member.duoVictories) ?? '—'));
     if (member.threeVsThreeVictories !== null) {
-      lines.push(`3vs3 wins: ${formatInteger(member.threeVsThreeVictories)}`);
+      lines.push(mdKeyValue('3vs3 wins', formatInteger(member.threeVsThreeVictories) ?? '—'));
     }
     if (member.joinedAt !== null) {
-      lines.push(`Joined: ${formatSyncTime(member.joinedAt)}`);
+      lines.push(mdKeyValue('Joined', formatSyncTime(member.joinedAt) ?? 'null'));
     }
     if (member.lastBattleAt !== null) {
-      lines.push(`Last match: ${formatSyncTime(member.lastBattleAt)}`);
+      lines.push(mdKeyValue('Last match', formatSyncTime(member.lastBattleAt) ?? 'null'));
     }
     if (member.verified) lines.push('Verified account');
     lines.push(...formatProgressionLines(member.progression, 'Push '));
@@ -718,11 +739,11 @@ export function buildClubPreviousMembersEmbed(
   }
 
   view.previous.forEach((member, index) => {
-    const lines = [`Tag: ${displayTag(member.tag)}`];
-    if (member.trophies !== null) lines.push(`Trophies: ${formatInteger(member.trophies)}`);
-    if (member.role !== null) lines.push(`Role: ${ROLE_LABELS[member.role] ?? member.role}`);
+    const lines = [mdKeyValue('Tag', mdCode(displayTag(member.tag)))];
+    if (member.trophies !== null) lines.push(mdKeyValue('Trophies', formatInteger(member.trophies) ?? '—'));
+    if (member.role !== null) lines.push(mdKeyValue('Role', ROLE_LABELS[member.role] ?? member.role));
     if (member.leftAt !== null) {
-      lines.push(`Left: ${formatSyncTime(member.leftAt)}`);
+      lines.push(mdKeyValue('Left', formatSyncTime(member.leftAt) ?? 'null'));
     }
     const name = member.name === '' ? `#${cleanTag(member.tag)}` : member.name;
     embed.addFields({
@@ -753,8 +774,12 @@ export function buildLeaderboardPageEmbed(
   const snapshotAt = formatAbsoluteTime(view.latestSnapshot?.capturedAt);
   embed.setDescription(
     truncate(
-      `${view.entries.length} ranked member${view.entries.length === 1 ? '' : 's'}` +
-        (snapshotAt === null ? '' : ` • Snapshot ${snapshotAt}`),
+      [
+        `${view.entries.length} ranked member${view.entries.length === 1 ? '' : 's'}`,
+        snapshotAt === null ? null : `${mdBold('Snapshot')} ${snapshotAt}`,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(' • '),
       2048,
     ),
   );
@@ -768,7 +793,7 @@ export function buildLeaderboardPageEmbed(
   }
 
   page.items.forEach((entry) => {
-    const lines = [`Current trophies: ${formatInteger(entry.trophies) ?? '—'}`];
+    const lines = [mdKeyValue('Current trophies', formatInteger(entry.trophies) ?? '—')];
     lines.push(...formatProgressionLines(entry.progression, 'Historical '));
     embed.addFields({
       name: truncate(
@@ -787,9 +812,9 @@ function historyPointValue(point: HistoryPoint): string {
   const trophies = formatInteger(point.trophies);
   const average = formatInteger(point.averageTrophies);
   const members = formatInteger(point.memberCount);
-  if (trophies !== null) parts.push(`Trophies ${trophies}`);
-  if (average !== null) parts.push(`Average ${average}`);
-  if (members !== null) parts.push(`Members ${members}`);
+  if (trophies !== null) parts.push(`${mdBold('Trophies')} ${trophies}`);
+  if (average !== null) parts.push(`${mdBold('Average')} ${average}`);
+  if (members !== null) parts.push(`${mdBold('Members')} ${members}`);
   return parts.length === 0 ? 'Snapshot contains no stored values.' : parts.join(' • ');
 }
 
@@ -801,7 +826,7 @@ function addHistoryChangeField(
 ): void {
   const formatted = formatInteger(value);
   if (formatted !== null) {
-    embed.addFields({ name, value: `${suffix}: ${formatDelta(value ?? 0)}` });
+    embed.addFields({ name, value: mdKeyValue(suffix, formatDelta(value ?? 0)) });
   }
 }
 
@@ -819,7 +844,7 @@ export function buildHistoryPageEmbed(
     .setFooter({ text: truncate(paginationFooter(page, HISTORY_LABELS[view.period]), 2048) });
 
   const latest = formatAbsoluteTime(view.latestSnapshotAt);
-  embed.setDescription(truncate(`Latest stored snapshot: ${latest ?? 'none yet'}`, 2048));
+  embed.setDescription(truncate(mdKeyValue('Latest stored snapshot', latest ?? 'none yet'), 2048));
 
   const rangeStart = formatAbsoluteTime(view.rangeStart);
   const rangeEnd = formatAbsoluteTime(view.rangeEnd);
@@ -828,7 +853,10 @@ export function buildHistoryPageEmbed(
     value:
       rangeStart === null || rangeEnd === null
         ? 'No stored snapshots in this period yet.'
-        : `${view.points.length} stored snapshot${view.points.length === 1 ? '' : 's'}\nCoverage: ${rangeStart} → ${rangeEnd}`,
+        : mdParagraphs(
+            `${view.points.length} stored snapshot${view.points.length === 1 ? '' : 's'}`,
+            mdKeyValue('Coverage', `${rangeStart} → ${rangeEnd}`),
+          ),
   });
 
   const change = view.change;
@@ -869,16 +897,16 @@ export function buildHistoryPageEmbed(
     const lines = view.membershipChanges.slice(0, 5).map((change) => {
       const name =
         change.playerName === null
-          ? (change.playerTag === null ? 'A player' : displayTag(change.playerTag))
+          ? (change.playerTag === null ? 'A player' : mdCode(displayTag(change.playerTag)))
           : formatPlayerLink(change.playerName, change.playerTag ?? '', config.playerProfileUrlTemplate);
       const action =
         change.eventType === 'join' ? 'joined' : change.eventType === 'leave' ? 'left' : 'transferred';
       const detectedAt = formatSyncTime(change.detectedAt);
-      return `• ${name} ${action}${detectedAt === null ? '' : ` (detected ${detectedAt})`}`;
+      return `${name} ${action}${detectedAt === null ? '' : ` (detected ${detectedAt})`}`;
     });
     embed.addFields({
       name: 'Membership Changes',
-      value: truncate(lines.join('\n'), 1024),
+      value: truncate(mdList(lines), 1024),
     });
   }
 
@@ -886,7 +914,7 @@ export function buildHistoryPageEmbed(
 }
 
 function comparisonSideName(side: ComparisonSide): string {
-  return `${escapeMarkdown(side.club.name)} (#${cleanTag(side.club.tag)})`;
+  return `${escapeMarkdown(side.club.name)} (${mdCode(`#${cleanTag(side.club.tag)}`)})`;
 }
 
 function addComparisonMetric(
@@ -902,15 +930,15 @@ function addComparisonMetric(
   if (firstValue === null || secondValue === null) return;
 
   const lines = [
-    `${comparisonSideName(view.first)}: ${firstText}`,
-    `${comparisonSideName(view.second)}: ${secondText}`,
+    mdKeyValue(comparisonSideName(view.first), firstText),
+    mdKeyValue(comparisonSideName(view.second), secondText),
   ];
   if (firstValue > secondValue) {
-    lines.push(`Leader: ${comparisonSideName(view.first)}`);
+    lines.push(mdKeyValue('Leader', comparisonSideName(view.first)));
   } else if (secondValue > firstValue) {
-    lines.push(`Leader: ${comparisonSideName(view.second)}`);
+    lines.push(mdKeyValue('Leader', comparisonSideName(view.second)));
   } else {
-    lines.push('Leader: Tied');
+    lines.push(mdKeyValue('Leader', 'Tied'));
   }
 
   embed.addFields({ name, value: truncate(lines.join('\n'), 1024) });
@@ -950,8 +978,8 @@ export function buildCompareEmbed(view: ComparisonView, config: EmbedConfig): Em
   }
 
   const syncLines = [
-    `${comparisonSideName(view.first)}: ${formatSyncTime(view.first.latestSyncAt) ?? 'not yet synced'}`,
-    `${comparisonSideName(view.second)}: ${formatSyncTime(view.second.latestSyncAt) ?? 'not yet synced'}`,
+    mdKeyValue(comparisonSideName(view.first), formatSyncTime(view.first.latestSyncAt) ?? 'not yet synced'),
+    mdKeyValue(comparisonSideName(view.second), formatSyncTime(view.second.latestSyncAt) ?? 'not yet synced'),
   ];
   embed.addFields({
     name: 'Latest Successful Sync',
@@ -963,9 +991,11 @@ export function buildCompareEmbed(view: ComparisonView, config: EmbedConfig): Em
   embed.addFields({
     name: 'Snapshot Times',
     value: truncate(
-      `${comparisonSideName(view.first)}: ${firstSnapshot ?? 'club row only'}\n` +
-        `${comparisonSideName(view.second)}: ${secondSnapshot ?? 'club row only'}` +
-        (view.aligned ? '\nAligned to the same completed sync.' : '\nDifferent snapshot times.'),
+      [
+        mdKeyValue(comparisonSideName(view.first), firstSnapshot ?? 'club row only'),
+        mdKeyValue(comparisonSideName(view.second), secondSnapshot ?? 'club row only'),
+        view.aligned ? 'Aligned to the same completed sync.' : 'Different snapshot times.',
+      ].join('\n'),
       1024,
     ),
   });
@@ -1003,8 +1033,8 @@ export function buildClubLogPageEmbed(
   const snapshotAt = formatAbsoluteTime(view.latestSnapshotAt);
   const syncAt = formatSyncTime(view.latestSyncAt);
   const meta: string[] = [`Trophy Progression • ${periodLabel}`];
-  if (snapshotAt !== null) meta.push(`Snapshot ${snapshotAt}`);
-  if (syncAt !== null) meta.push(`Synced ${syncAt}`);
+  if (snapshotAt !== null) meta.push(`${mdBold('Snapshot')} ${snapshotAt}`);
+  if (syncAt !== null) meta.push(`${mdBold('Synced')} ${syncAt}`);
   if (view.unavailable > 0) {
     meta.push(
       `${view.unavailable} member${view.unavailable === 1 ? '' : 's'} without a stored baseline for this period`,
@@ -1017,7 +1047,13 @@ export function buildClubLogPageEmbed(
       name: 'Trophy Progression',
       value:
         view.rows.length === 0
-          ? 'No stored trophy progression is available for this period yet. At least one completed sync snapshot at or before the period boundary is required.'
+          ? mdSection(
+              'No stored progression',
+              mdParagraphs(
+                'No stored trophy progression is available for this period yet.',
+                'At least one completed sync snapshot at or before the period boundary is required.',
+              ),
+            )
           : 'No members on this page.',
     });
     return fitEmbedToDiscordLimits(embed);

@@ -1,6 +1,13 @@
-import { SlashCommandBuilder, type Interaction } from 'discord.js';
+import { Routes, SlashCommandBuilder, type Interaction } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
-import { commands, dispatchInteraction, pendingCommands, type CommandDefinition } from './index';
+import {
+  commands,
+  dispatchInteraction,
+  pendingCommands,
+  registerCommands,
+  type CommandDefinition,
+  type CommandRegistrationRest,
+} from './index';
 
 function command(name: string, overrides: Partial<CommandDefinition> = {}): CommandDefinition {
   return {
@@ -106,6 +113,60 @@ describe('command registry', () => {
         'function',
       );
     }
+  });
+});
+
+describe('registerCommands', () => {
+  const CLIENT_ID = '123456789012345678';
+  const PRIMARY_GUILD_ID = '1488531664962326571';
+  const JOINED_GUILD_ID = '1501888916024856659';
+
+  function registrar(
+    get: ReturnType<typeof vi.fn> = vi.fn(async () => [{ id: JOINED_GUILD_ID }, { id: 'bad' }]),
+  ): { rest: CommandRegistrationRest; get: ReturnType<typeof vi.fn>; put: ReturnType<typeof vi.fn> } {
+    const put = vi.fn(async () => ({}));
+    return { rest: { get, put } as unknown as CommandRegistrationRest, get, put };
+  }
+
+  it('registers globally and to every joined guild, not only the configured guild', async () => {
+    const { rest, get, put } = registrar();
+
+    await registerCommands({
+      rest,
+      token: 'test-token',
+      clientId: CLIENT_ID,
+      guildId: PRIMARY_GUILD_ID,
+    });
+
+    expect(get).toHaveBeenCalledWith(Routes.userGuilds());
+    expect(put).toHaveBeenCalledTimes(3);
+    expect(put.mock.calls.map(([route]) => route)).toEqual([
+      Routes.applicationCommands(CLIENT_ID),
+      Routes.applicationGuildCommands(CLIENT_ID, JOINED_GUILD_ID),
+      Routes.applicationGuildCommands(CLIENT_ID, PRIMARY_GUILD_ID),
+    ]);
+    for (const [, options] of put.mock.calls) {
+      expect(options.body).toHaveLength(commands.length);
+    }
+  });
+
+  it('still registers global and configured-guild commands when guild listing fails', async () => {
+    const get = vi.fn(async () => {
+      throw new Error('guild list unavailable');
+    });
+    const { rest, put } = registrar(get);
+
+    await registerCommands({
+      rest,
+      token: 'test-token',
+      clientId: CLIENT_ID,
+      guildId: PRIMARY_GUILD_ID,
+    });
+
+    expect(put.mock.calls.map(([route]) => route)).toEqual([
+      Routes.applicationCommands(CLIENT_ID),
+      Routes.applicationGuildCommands(CLIENT_ID, PRIMARY_GUILD_ID),
+    ]);
   });
 });
 

@@ -1,3 +1,5 @@
+import { EMBED_COLORS } from '../discord/embed-style';
+import { mdBold, mdCode, mdList } from '../discord/embed-format';
 import { EmbedBuilder } from 'discord.js';
 import type { Page } from '../discord/pagination';
 import { ABOUT_SECTIONS, type HelpCategory } from './catalog';
@@ -5,6 +7,17 @@ import type { StatusView } from '../status/service';
 
 const INLINE = true;
 const MAX_FIELD_LENGTH = 1000;
+const CATEGORY_ICONS: Readonly<Record<string, string>> = {
+  Club: '🏛️',
+  Player: '👤',
+  Leaderboard: '🏆',
+  'Game data': '🎮',
+  Competition: '⚔️',
+  Membership: '🤝',
+  'Staff and moderation': '🛡️',
+  Administration: '⚙️',
+  Information: 'ℹ️',
+};
 
 function safeText(value: string): string {
   return value.replace(/[`*_<>]/g, '').slice(0, MAX_FIELD_LENGTH);
@@ -42,33 +55,71 @@ function friendlyPermission(text: string): string {
     .replace('audit:read', 'audit access');
 }
 
+function clampField(value: string): string {
+  return value.length <= MAX_FIELD_LENGTH
+    ? value
+    : `${value.slice(0, MAX_FIELD_LENGTH - 1).trimEnd()}…`;
+}
+
+function formatUsages(usage: string): string {
+  return mdList(
+    usage.split(/\s+\|\s+/).map((part) => mdCode(part.trim())),
+  );
+}
+
+function permissionNote(permission: string | undefined): string {
+  if (permission === undefined) return '';
+  return `🔒 Requires ${friendlyPermission(permission)}.`;
+}
+
 function categoryValue(category: HelpCategory): string {
-  const lines = category.entries.map((entry) => {
-    const permission =
-      entry.permission === undefined ? '' : ` — requires ${friendlyPermission(entry.permission)}`;
-    return `\`${entry.usage}\` — ${entry.description}${permission}`;
-  });
-  return lines.join('\n').slice(0, MAX_FIELD_LENGTH);
+  const lines: string[] = [];
+
+  for (const entry of category.entries) {
+    lines.push(mdBold(entry.name), formatUsages(entry.usage));
+    lines.push(`   ${safeText(entry.description)}`);
+
+    const note = permissionNote(entry.permission);
+    if (note.length > 0) lines.push(`   ${note}`);
+  }
+
+  return clampField(lines.join('\n'));
 }
 
 export function buildHelpPageEmbed(page: Page<HelpCategory>): EmbedBuilder {
   const embed = new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.neutral)
     .setTitle('BrawlHub command directory')
     .setDescription(
-      `Page ${page.page} of ${page.pageCount}. Showing ${page.total} command categories. ` +
+      `**Page ${page.page} of ${page.pageCount}** · Showing ${page.total} command categories. ` +
         'Only commands available in this build are listed.',
     );
 
-  for (const category of page.items) {
-    embed.addFields({ name: category.name, value: categoryValue(category), inline: false });
+  if (page.page === 1) {
+    embed.addFields({
+      name: 'How to read this list',
+      value: mdList([
+        'Type a command exactly as shown.',
+        '`[brackets]` mark optional values.',
+        '🔒 marks commands that need permission.',
+        'Use `/help about` for project details or `/help status` for health.',
+      ]),
+      inline: false,
+    });
   }
+
+  for (const category of page.items) {
+    const icon = CATEGORY_ICONS[category.name] ?? '•';
+    embed.addFields({ name: `${icon} ${category.name}`, value: categoryValue(category), inline: false });
+  }
+
+  embed.setFooter({ text: 'BrawlHub · Commands are scoped to this server' });
   return embed;
 }
 
 export function buildAboutEmbed(): EmbedBuilder {
   const embed = new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.neutral)
     .setTitle('About BrawlHub')
     .setDescription(
       'BrawlHub is an independent community project. It is not affiliated with or endorsed by Supercell.',
@@ -82,7 +133,7 @@ export function buildAboutEmbed(): EmbedBuilder {
 
 export function buildStatusEmbed(view: StatusView): EmbedBuilder {
   const embed = new EmbedBuilder()
-    .setColor(view.overall === 'operational' ? 0x57f2_87 : 0xfaa_61a)
+    .setColor(view.overall === 'operational' ? EMBED_COLORS.success : EMBED_COLORS.warning)
     .setTitle(view.overall === 'operational' ? 'BrawlHub status: operational' : 'BrawlHub status: degraded')
     .setDescription('Safe public operational information. Raw errors and configuration are never shown.')
     .addFields(

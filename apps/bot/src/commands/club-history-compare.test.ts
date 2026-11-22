@@ -318,9 +318,10 @@ describe('/clubs compare command', () => {
     );
     const json = replyPayload(interaction, 'editReply').embeds[0].toJSON();
     expect(json.description).toContain('same completed sync');
-    expect(json.fields?.find((field: { name: string; value: string }) => field.name === 'Total Trophies')?.value).toContain(
-      'Leader: Alpha (#2C0Y)',
-    );
+    const totalTrophies = json.fields?.find(
+      (field: { name: string; value: string }) => field.name === 'Total Trophies',
+    )?.value ?? '';
+    expect(totalTrophies.replace(/\*\*|`/g, '')).toContain('Leader: Alpha (#2C0Y)');
   });
 
   it('warns when the two clubs have different snapshot times', async () => {

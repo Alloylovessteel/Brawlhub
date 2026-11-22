@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AutocompleteInteraction, ChatInputCommandInteraction } from 'discord.js';
+import { mdBold, mdCode } from '../discord/embed-format';
 
 const mocks = vi.hoisted(() => ({
   listLinkedAccounts: vi.fn(),
@@ -58,8 +59,10 @@ describe('/members accounts', () => {
 
     const payload = editPayload(mockInteraction);
     const description = payload.embeds[0].toJSON().description as string;
-    expect(description).toContain('**MAIN** — Alloylovessteel (#YQPQ0Q2CL)');
-    expect(description).toContain('Alt — Alt Player (#2UG9UGQJY)');
+    expect(description).toContain(
+      `${mdBold('MAIN')} — Alloylovessteel (${mdCode('#YQPQ0Q2CL')})`,
+    );
+    expect(description).toContain(`Alt — Alt Player (${mdCode('#2UG9UGQJY')})`);
     expect(mocks.listLinkedAccounts).toHaveBeenCalledWith('983248496884875286');
   });
 

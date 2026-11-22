@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { paginate } from '../discord/pagination';
 import {
+  buildBrawlerDetailEmbed,
   buildMeMoreEmbed,
   buildPlayerBattlesPageEmbed,
   buildPlayerBrawlersPageEmbed,
@@ -129,7 +130,45 @@ describe('player embeds', () => {
     expect(text).toContain('Online status is not exposed by the official API');
     expect(text).toContain('[Alpha Club](https://example.test/clubs/8QCL)');
     expect(text).toContain('Top Brawlers (Live API)');
-    expect(text).toContain('Snapshot:');
+    expect(text).toContain('**Snapshot:**');
+    expect(data.description).toContain('**Source:** live official API');
+    const topBrawlers = data.fields?.find((field) => field.name === 'Top Brawlers (Live API)')?.value ?? '';
+    expect(topBrawlers).toContain('**Brawlers:** 1');
+    expect(topBrawlers).toContain('• `Shelly`');
+  });
+
+  it('renders brawler detail values with bold labels and code spans', () => {
+    const brawler = {
+      id: 1,
+      name: 'Shelly',
+      trophies: 900,
+      highestTrophies: 1000,
+      power: 11,
+      rank: 1,
+      prestigeLevel: 0,
+      currentWinStreak: 2,
+      maxWinStreak: 5,
+      gadgets: [{ name: 'Clay Pigeon', id: 1, level: 1 }],
+      starPowers: [],
+      gears: [],
+      hyperCharges: [],
+    };
+    const view = {
+      ...profile(),
+      brawlers: [brawler],
+      catalog: [],
+      source: 'live',
+      apiIssue: null,
+      fetchedAt: null,
+    } as never;
+
+    const data = json(buildBrawlerDetailEmbed(view, brawler, config));
+    const fieldValue = (name: string) => data.fields?.find((field) => field.name === name)?.value ?? '';
+
+    expect(data.description).toContain('**Source:** live official player data');
+    expect(data.description).toContain('`#2C0Y`');
+    expect(fieldValue('Official Profile Stats')).toContain('**Trophies:** 900');
+    expect(fieldValue('Unlocks')).toContain('**Gadgets:** `Clay Pigeon`');
   });
 
   it('uses a resolved player icon as an optional thumbnail', () => {
@@ -306,7 +345,7 @@ describe('player embeds', () => {
 
     expect(text).toContain('At least two stored snapshots');
     expect(text).toContain('1 stored snapshot');
-    expect(text).toContain('Current trophies: 5,000');
+    expect(text).toContain('**Current trophies:** 5,000');
   });
 
   it('distinguishes confirmed, stale and incomplete membership records', () => {
@@ -347,7 +386,7 @@ describe('player embeds', () => {
     expect(text).toContain('Current (verified by latest sync)');
     expect(text).toContain('Confirmed previous membership');
     expect(text).toContain('Incomplete record');
-    expect(text).toContain('Duration: 31d');
+    expect(text).toContain('**Duration:** 31d');
   });
 
   it('labels comparison leaders only for comparable values and warns about different periods', () => {
@@ -377,11 +416,11 @@ describe('player embeds', () => {
     const field = (name: string) => fields.find((candidate) => candidate.name === name)?.value ?? '';
 
     expect(data.description).toContain('different periods');
-    expect(field('Current Trophies')).toContain('Leader: [Alpha](https://brawlify.com/player/2C0Y)');
+    expect(field('Current Trophies')).toContain('**Leader:** [Alpha](https://brawlify.com/player/2C0Y)');
     expect(fields.some((candidate) => candidate.name === 'Highest Trophies')).toBe(false);
     expect(fields.some((candidate) => candidate.name === 'Experience Level')).toBe(false);
-    expect(field('Trophy Progression · Today')).toContain('Leader: [Alpha]');
-    expect(field('Trophy Progression · Week')).toContain('Leader: [Bravo]');
+    expect(field('Trophy Progression · Today')).toContain('**Leader:** [Alpha]');
+    expect(field('Trophy Progression · Week')).toContain('**Leader:** [Bravo]');
     expect(JSON.stringify(data)).toContain('[Alpha](https://brawlify.com/player/2C0Y)');
   });
 

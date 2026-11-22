@@ -65,6 +65,14 @@ const CONFIG: Pick<
 
 const NOW = new Date('2026-11-18T12:00:00.000Z');
 
+/** Compare the information in a value without depending on markdown wrappers or bullets. */
+function plain(value: string | undefined | null): string {
+  return (value ?? '')
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .replace(/^• /gm, '');
+}
+
 function view(overrides: Partial<ClubView> = {}): ClubView {
   return {
     club: {
@@ -304,24 +312,24 @@ describe('club embeds', () => {
       'Description',
     ]);
     expect(json.title).toBe('Alpha • #2C0Y');
-    expect(json.fields?.[0]?.value).toContain('🏆1,300');
-    expect(json.fields?.[0]?.value).toContain('👑 Highest 900');
-    expect(json.fields?.[0]?.value).toContain('Avg 🏆733');
-    expect(json.fields?.[2]?.value).toBe(
+    expect(plain(json.fields?.[0]?.value)).toContain('🏆1,300');
+    expect(plain(json.fields?.[0]?.value)).toContain('👑 Highest 900');
+    expect(plain(json.fields?.[0]?.value)).toContain('Avg 🏆733');
+    expect(plain(json.fields?.[2]?.value)).toBe(
       '👑 [Leader](https://brawlify.com/player/G2P9) (#G2P9)',
     );
-    expect(json.fields?.[4]?.value).toContain(`👥3/${CLUB_MEMBER_CAPACITY}`);
-    expect(json.fields?.[4]?.value).toContain('Vice-Presidents 1');
-    expect(json.fields?.[4]?.value).toContain('Seniors 1');
-    expect(json.fields?.[5]?.value).toContain(
+    expect(plain(json.fields?.[4]?.value)).toContain(`👥3/${CLUB_MEMBER_CAPACITY}`);
+    expect(plain(json.fields?.[4]?.value)).toContain('Vice-Presidents 1');
+    expect(plain(json.fields?.[4]?.value)).toContain('Seniors 1');
+    expect(plain(json.fields?.[5]?.value)).toContain(
       'President: [Leader](https://brawlify.com/player/G2P9) (900)',
     );
-    expect(json.fields?.[5]?.value).toContain(
+    expect(plain(json.fields?.[5]?.value)).toContain(
       'Vice-Presidents: [Vice](https://brawlify.com/player/2C0Y) (600)',
     );
-    expect(json.fields?.[6]?.value).toContain('Today: +100');
-    expect(json.fields?.[6]?.value).toContain('Week: +200');
-    expect(json.fields?.[6]?.value).toContain('Season: +300');
+    expect(plain(json.fields?.[6]?.value)).toContain('Today: +100');
+    expect(plain(json.fields?.[6]?.value)).toContain('Week: +200');
+    expect(plain(json.fields?.[6]?.value)).toContain('Season: +300');
   });
 
   it('expands match activity periods and keeps the club footer short', () => {
@@ -406,17 +414,18 @@ describe('club embeds', () => {
     const json = buildClubsPageEmbed(summaries, page, CONFIG).toJSON();
     const value = json.fields?.[0]?.value ?? '';
 
+    const text = plain(value);
     expect(json.fields).toHaveLength(5);
     expect(json.fields?.[0]?.name).toBe('Club 6 • #TAG6');
-    expect(value).toContain('👑 [Leader 6](https://brawlify.com/player/L6)');
-    expect(value).toContain('🏆1,006');
-    expect(value).toContain('📈90k-120k');
-    expect(value).toContain('🎖️ 🔹Diamond I - 🔹Mythic II');
-    expect(value).toContain('🐷 ✅42/64 (est.)');
-    expect(value).toContain('🔒 Req: 100,000');
-    expect(value).toContain('👥20/30 • 🟢12 active 24h');
+    expect(text).toContain('👑 [Leader 6](https://brawlify.com/player/L6)');
+    expect(text).toContain('🏆1,006');
+    expect(text).toContain('📈90k-120k');
+    expect(text).toContain('🎖️ 🔹Diamond I - 🔹Mythic II');
+    expect(text).toContain('🐷 ✅42/64 (est.)');
+    expect(text).toContain('🔒 Req: 100,000');
+    expect(text).toContain('👥20/30 • 🟢12 active 24h');
     const syncSeconds = Math.floor(Date.parse('2026-11-17T10:00:00.000Z') / 1000);
-    expect(value).toContain(`🕒 Synced <t:${syncSeconds}:R>`);
+    expect(text).toContain(`🕒 Synced <t:${syncSeconds}:R>`);
     expect(json.footer?.text).toContain('Page 2 / 3');
     expect(json.footer?.text).toContain('not exposed by the Brawl Stars API');
   });
@@ -436,11 +445,11 @@ describe('club embeds', () => {
     const json = buildClubMembersPageEmbed(view, paginate(members, 2, 10), CONFIG).toJSON();
 
     expect(json.title).toContain('#2C0Y');
-    expect(json.description).toContain(`Current roster: 12 / ${CLUB_MEMBER_CAPACITY}`);
+    expect(plain(json.description)).toContain(`Current roster: 12 / ${CLUB_MEMBER_CAPACITY}`);
     expect(json.fields).toHaveLength(2);
     expect(json.fields?.[0]?.name).toContain('11.');
     expect(json.fields?.[0]?.name).toContain('https://brawlify.com/player/G2P10');
-    expect(json.fields?.[0]?.value).toContain('Highest trophies: 1,500');
+    expect(plain(json.fields?.[0]?.value)).toContain('Highest trophies: 1,500');
     expect(json.footer?.text).toContain('Page 2 / 2');
     expect(JSON.stringify(json).length).toBeLessThanOrEqual(6000);
   });
@@ -451,9 +460,9 @@ describe('club embeds', () => {
     const json = buildClubMembersPageEmbed(view, paginate(members, 1, 10), CONFIG).toJSON();
 
     expect(json.fields?.[0]?.name).toContain('https://brawlify.com/player/Q8VR');
-    expect(json.fields?.[0]?.value).toContain('Tag: #Q8VR');
-    expect(json.fields?.[0]?.value).toContain('Role: Senior');
-    expect(json.fields?.[0]?.value).not.toContain('Current trophies');
+    expect(plain(json.fields?.[0]?.value)).toContain('Tag: #Q8VR');
+    expect(plain(json.fields?.[0]?.value)).toContain('Role: Senior');
+    expect(plain(json.fields?.[0]?.value)).not.toContain('Current trophies');
     expect(JSON.stringify(json)).not.toContain('Unavailable');
   });
 
@@ -465,15 +474,15 @@ describe('club embeds', () => {
     const view: LeaderboardView = { ...synced(), entries };
     const json = buildLeaderboardPageEmbed(view, paginate(entries, 1, 10), CONFIG).toJSON();
 
-    expect(json.description).toContain('Snapshot');
+    expect(plain(json.description)).toContain('Snapshot');
     expect(json.fields).toHaveLength(2);
     expect(json.fields?.[0]?.name).toContain('#1');
     expect(json.fields?.[0]?.name).toContain('https://brawlify.com/player/G2P9');
-    expect(json.fields?.[0]?.value).toContain('Current trophies: 1,000');
-    expect(json.fields?.[0]?.value).toContain('Historical Today: +100');
-    expect(json.fields?.[0]?.value).toContain('Historical Week: +200');
-    expect(json.fields?.[0]?.value).not.toContain('Season');
-    expect(json.fields?.[1]?.value).not.toContain('Week');
+    expect(plain(json.fields?.[0]?.value)).toContain('Current trophies: 1,000');
+    expect(plain(json.fields?.[0]?.value)).toContain('Historical Today: +100');
+    expect(plain(json.fields?.[0]?.value)).toContain('Historical Week: +200');
+    expect(plain(json.fields?.[0]?.value)).not.toContain('Season');
+    expect(plain(json.fields?.[1]?.value)).not.toContain('Week');
   });
 
   it('clearly handles history with no stored snapshots', () => {
@@ -527,10 +536,10 @@ describe('club embeds', () => {
     const json = buildHistoryPageEmbed(view, paginate(points, 1, 10), CONFIG).toJSON();
 
     expect(json.title?.length).toBeLessThanOrEqual(256);
-    expect(json.description).toContain(formatAbsoluteTime(view.latestSnapshotAt));
-    expect(json.fields?.find((field) => field.name === 'Stored Snapshots')?.value).toContain('→');
-    expect(json.fields?.find((field) => field.name === 'Club Trophies')?.value).toContain('+1,100');
-    expect(json.fields?.find((field) => field.name === 'Trophy Progression')?.value).toContain('Week: +200');
+    expect(plain(json.description)).toContain(formatAbsoluteTime(view.latestSnapshotAt));
+    expect(plain(json.fields?.find((field) => field.name === 'Stored Snapshots')?.value)).toContain('→');
+    expect(plain(json.fields?.find((field) => field.name === 'Club Trophies')?.value)).toContain('+1,100');
+    expect(plain(json.fields?.find((field) => field.name === 'Trophy Progression')?.value)).toContain('Week: +200');
     expect(json.fields?.length).toBeLessThanOrEqual(25);
     for (const field of json.fields ?? []) {
       expect(field.name.length).toBeLessThanOrEqual(256);
@@ -569,15 +578,15 @@ describe('club embeds', () => {
     const field = (name: string) => (json.fields ?? []).find((item) => item.name === name);
 
     expect(json.description).toContain('different completed sync times');
-    expect(field('Total Trophies')?.value).toContain('Leader: Alpha (#2C0Y)');
+    expect(plain(field('Total Trophies')?.value)).toContain('Leader: Alpha (#2C0Y)');
     expect(field('Average Member Trophies')).toBeUndefined();
-    expect(field('Member Count')?.value).toContain('Leader: Tied');
-    expect(field('Lowest Member Trophies')?.value).toContain('Leader: Alpha (#2C0Y)');
-    expect(field('Trophy Progression · Today')?.value).toContain('Leader: Alpha (#2C0Y)');
+    expect(plain(field('Member Count')?.value)).toContain('Leader: Tied');
+    expect(plain(field('Lowest Member Trophies')?.value)).toContain('Leader: Alpha (#2C0Y)');
+    expect(plain(field('Trophy Progression · Today')?.value)).toContain('Leader: Alpha (#2C0Y)');
     expect(field('Trophy Progression · Week')).toBeUndefined();
     expect(field('Trophy Progression · Season')).toBeUndefined();
     expect(field('Latest Successful Sync')).toBeDefined();
-    expect(field('Snapshot Times')?.value).toContain('Different snapshot times.');
+    expect(plain(field('Snapshot Times')?.value)).toContain('Different snapshot times.');
   });
 
   it('marks aligned comparisons and keeps very long club names inside embed limits', () => {
@@ -629,8 +638,8 @@ describe('club embeds', () => {
 
     expect(json.title).toContain('Staff');
     expect(json.description).toContain('latest stored official roster');
-    expect(json.fields?.[0]?.value).toContain('President: [Leader]');
-    expect(json.fields?.[0]?.value).toContain('Seniors: [Senior]');
+    expect(plain(json.fields?.[0]?.value)).toContain('President: [Leader]');
+    expect(plain(json.fields?.[0]?.value)).toContain('Seniors: [Senior]');
     expect(json.footer?.text).toContain('Snapshot');
   });
 
@@ -655,16 +664,17 @@ describe('club embeds', () => {
     const json = buildClubMemberDetailsPageEmbed(memberView, paginate(members, 1, 10), CONFIG).toJSON();
     const value = json.fields?.[0]?.value ?? '';
 
+    const text = plain(value);
     expect(json.title).toContain('Member Details');
-    expect(json.description).toContain('1 matching member');
-    expect(json.description).toContain('Search: lead');
+    expect(plain(json.description)).toContain('1 matching member');
+    expect(plain(json.description)).toContain('Search: lead');
     expect(json.footer?.text).toContain('Sorted by Current trophies');
     expect(json.footer?.text).toContain('Filter: Ranked');
-    expect(value).toContain('Ranked:');
-    expect(value).toContain('All-time:');
-    expect(value).toContain('Solo wins: 42');
-    expect(value).toContain('Verified account');
-    expect(value).toContain('Push Today: +100');
+    expect(text).toContain('Ranked:');
+    expect(text).toContain('All-time:');
+    expect(text).toContain('Solo wins: 42');
+    expect(text).toContain('Verified account');
+    expect(text).toContain('Push Today: +100');
     expect(JSON.stringify(json).length).toBeLessThanOrEqual(6000);
   });
 
@@ -684,7 +694,7 @@ describe('club embeds', () => {
     expect(json.title).toContain('Previous Members');
     expect(json.footer?.text).toContain('not trophies at the time of leaving');
     expect(json.fields?.[0]?.name).toContain('https://brawlify.com/player/G2P9');
-    expect(json.fields?.[0]?.value).toContain('Trophies: 1,050');
-    expect(json.fields?.[0]?.value).toContain('Left:');
+    expect(plain(json.fields?.[0]?.value)).toContain('Trophies: 1,050');
+    expect(plain(json.fields?.[0]?.value)).toContain('Left:');
   });
 });

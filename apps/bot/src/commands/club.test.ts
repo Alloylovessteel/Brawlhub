@@ -42,7 +42,12 @@ vi.mock('../config', () => ({ getBotConfig: () => mocks.config }));
 vi.mock('../clubs/service', () => mocks.service);
 vi.mock('../metadata/assets', () => ({ resolveClubBadgeUrl: mocks.resolveClubBadgeUrl }));
 
-import { handleClubAutocomplete, handleClub, handleClubComponent } from './club';
+import {
+  buildClubSectionCustomId,
+  handleClubAutocomplete,
+  handleClub,
+  handleClubComponent,
+} from './club';
 import { handleClubs, handleClubsComponent } from './clubs';
 
 function chatInteraction(
@@ -80,16 +85,21 @@ function autocompleteInteraction(focused: string, name = 'tag') {
 }
 
 function buttonInteraction(customId: string) {
-  return {
+  const interaction = {
     customId,
     guildId: 'guild-1',
+    user: { id: 'user-1' },
     replied: false,
     deferred: false,
     deferUpdate: vi.fn(async () => undefined),
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
     editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ButtonInteraction;
+  };
+  return interaction as unknown as ButtonInteraction;
 }
 
 function selectInteraction(
@@ -406,6 +416,45 @@ describe('/clubs details command', () => {
     expect(payload.embeds).toHaveLength(2);
     expect(payload.embeds[1].toJSON().title).toContain('Previous Members');
   });
+
+  it('switches club detail sections from an in-message button', async () => {
+    const base = {
+      ...okView().view,
+      rosterSource: 'snapshot' as const,
+      completedRunIds: new Set<string>(),
+      latestSnapshot: null,
+      roster: [],
+    };
+    mocks.service.loadClubPreviousMembers.mockResolvedValue({
+      kind: 'ok',
+      value: {
+        ...base,
+        previous: [
+          {
+            playerId: 'p2',
+            tag: 'Q8VR',
+            name: 'Former',
+            trophies: 800,
+            role: 'member',
+            leftAt: '2026-11-16T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+    const interaction = buttonInteraction(buildClubSectionCustomId('previous', '2C0Y'));
+
+    await handleClubComponent(
+      interaction as unknown as Parameters<typeof handleClubComponent>[0],
+    );
+
+    expect(interaction.deferUpdate).toHaveBeenCalledOnce();
+    expect(mocks.service.loadClubPreviousMembers).toHaveBeenCalledWith(
+      expect.objectContaining({ tag: '2C0Y', guildId: 'guild-1' }),
+    );
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(payload.embeds[0].toJSON().title).toContain('Previous Members');
+    expect(payload.components[0].toJSON().components).toHaveLength(5);
+  });
 });
 
 describe('/clubs command', () => {
@@ -434,6 +483,43 @@ describe('/clubs command', () => {
     expect(interaction.deferUpdate).toHaveBeenCalledOnce();
     const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(payload.embeds[0].toJSON().footer.text).toContain('Page 2 / 2');
+  });
+
+  it('adds an open button for every club on the page', async () => {
+    mocks.service.loadClubSummaries.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) => summary(index + 1)),
+    );
+    const interaction = chatInteraction();
+
+    await handleClubs(interaction);
+
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(payload.components[0].toJSON().components[0].custom_id).toBe('clubs:page:2');
+    expect(payload.components[1].toJSON().components.map((component: { custom_id: string }) => component.custom_id)).toEqual([
+      'clubs:open:TAG1',
+      'clubs:open:TAG2',
+      'clubs:open:TAG3',
+      'clubs:open:TAG4',
+      'clubs:open:TAG5',
+    ]);
+  });
+
+  it('opens a club detail message with section buttons from a list button', async () => {
+    mocks.service.loadClubView.mockResolvedValue(okView());
+    const interaction = buttonInteraction('clubs:open:2C0Y');
+
+    await handleClubsComponent(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledOnce();
+    expect(mocks.service.loadClubView).toHaveBeenCalledWith(
+      expect.objectContaining({ tag: '2C0Y', guildId: 'guild-1' }),
+    );
+    const payload = (interaction.editReply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(payload.embeds[0].toJSON().title).toContain('#2C0Y');
+    expect(payload.components[0].toJSON().components).toHaveLength(5);
+    expect(payload.components[0].toJSON().components[0].custom_id).toMatch(
+      /^club:section:overview\|trophies\|-\|-\|0\|2C0Y$/,
+    );
   });
 
   it('ignores pagination buttons belonging to another command', async () => {

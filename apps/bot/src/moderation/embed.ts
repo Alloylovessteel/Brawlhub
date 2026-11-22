@@ -1,3 +1,4 @@
+import { EMBED_COLORS } from '../discord/embed-style';
 import { EmbedBuilder } from 'discord.js';
 import { fitEmbedToDiscordLimits } from '../clubs/embed';
 import type { BotConfig } from '../config';
@@ -11,7 +12,7 @@ import type {
   RemoveBlacklistResult,
 } from './types';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.neutral;
 
 type EmbedConfig = Pick<BotConfig, 'playerProfileUrlTemplate'>;
 

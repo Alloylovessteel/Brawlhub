@@ -1,3 +1,5 @@
+import { EMBED_COLORS } from '../discord/embed-style';
+import { mdCode, mdList, mdParagraphs, mdSection } from '../discord/embed-format';
 import { createLogger } from '@brawlhub/logging';
 import {
   ActionRowBuilder,
@@ -76,17 +78,25 @@ export function buildOverviewMenu(
   notice?: string | null,
 ) {
   const embed = new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.neutral)
     .setTitle('Club overview fields')
     .setDescription(
       notice ??
-        'Choose a field to show or hide in this server’s auto-posted overview. Changes apply to the next refresh; at least one field stays enabled.',
+        mdSection(
+          'Field selection',
+          mdParagraphs(
+            'Choose a field to show or hide in this server’s auto-posted overview.',
+            'Changes apply to the next refresh; at least one field stays enabled.',
+          ),
+        ),
     )
     .addFields({
       name: 'Enabled now',
-      value: OVERVIEW_FIELD_KEYS.filter((key) => hasOverviewField(fields, key))
-        .map((key) => OVERVIEW_FIELD_LABELS[key])
-        .join('\n'),
+      value: mdList(
+        OVERVIEW_FIELD_KEYS.filter((key) => hasOverviewField(fields, key)).map((key) =>
+          mdCode(OVERVIEW_FIELD_LABELS[key]),
+        ),
+      ),
     });
 
   const menu = new StringSelectMenuBuilder()

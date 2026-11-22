@@ -161,6 +161,38 @@ describe('interactive /me', () => {
     expect(editPayload(rotatedClick).content).toBeNull();
   });
 
+  it('ignores an identical double-click without expiring the view', async () => {
+    const command = chatInteraction();
+    await handleMe(command);
+    const firstNonce = nonceFrom(editPayload(command));
+    const customId = `me:section:brawlers:${firstNonce}`;
+
+    const firstClick = componentInteraction(customId);
+    await handleMeComponent(firstClick);
+    expect(mocks.service.loadPlayerBrawlers).toHaveBeenCalledTimes(1);
+    expect((firstClick.editReply as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+
+    const doubleClick = componentInteraction(customId);
+    await handleMeComponent(doubleClick);
+    expect(doubleClick.deferUpdate).toHaveBeenCalledOnce();
+    expect((doubleClick.editReply as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    expect(mocks.service.loadPlayerBrawlers).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let another user replay a consumed click', async () => {
+    const command = chatInteraction();
+    await handleMe(command);
+    const firstNonce = nonceFrom(editPayload(command));
+    const customId = `me:section:brawlers:${firstNonce}`;
+
+    await handleMeComponent(componentInteraction(customId));
+    const replay = componentInteraction(customId, { userId: 'someone-else' });
+    await handleMeComponent(replay);
+
+    expect(editPayload(replay).content).toContain('expired');
+    expect(mocks.service.loadPlayerBrawlers).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects another user and another guild without consuming the live session', async () => {
     const command = chatInteraction();
     await handleMe(command);
@@ -238,5 +270,11 @@ describe('interactive /me', () => {
     const pageNonce = nonceFrom(editPayload(pageClick));
     expect(pageNonce).not.toBe(brawlersNonce);
     expect(customIds(editPayload(pageClick))).toContain(`me:page:1:${pageNonce}`);
+
+    const duplicatePage = componentInteraction(nextPageId as string);
+    await handleMeComponent(duplicatePage);
+    expect(duplicatePage.deferUpdate).toHaveBeenCalledOnce();
+    expect((duplicatePage.editReply as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    expect(mocks.service.loadPlayerBrawlers).toHaveBeenCalledTimes(2);
   });
 });

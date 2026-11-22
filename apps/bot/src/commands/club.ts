@@ -2,6 +2,7 @@ import { createLogger } from '@brawlhub/logging';
 import {
   ActionRowBuilder,
   ButtonBuilder,
+  ButtonStyle,
   SlashCommandBuilder,
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
@@ -253,6 +254,42 @@ function failureReply(failure: ClubLookupFailure): ClubSectionReply {
   return { kind: 'lookup-failure', failure };
 }
 
+const CLUB_SECTION_PREFIX = 'club:section:';
+const SECTION_BUTTONS: ReadonlyArray<{ readonly label: string; readonly section: ClubSection }> = [
+  { label: 'Overview', section: 'overview' },
+  { label: 'Staff', section: 'staff' },
+  { label: 'Members', section: 'members' },
+  { label: 'Details', section: 'details' },
+  { label: 'Previous', section: 'previous' },
+];
+
+function defaultSectionState(tag: string | undefined, section: ClubSection): ClubSectionState {
+  return { tag, section, sort: 'trophies', filter: null, member: null, previous: false };
+}
+
+/** New in-message section action; original pagination and chooser IDs are untouched. */
+export function buildClubSectionCustomId(section: ClubSection, tag: string | undefined): string {
+  return `${CLUB_SECTION_PREFIX}${encodeSectionState(defaultSectionState(tag, section))}`;
+}
+
+function parseClubSectionCustomId(customId: string): string | null {
+  return customId.startsWith(CLUB_SECTION_PREFIX)
+    ? customId.slice(CLUB_SECTION_PREFIX.length)
+    : null;
+}
+
+/** Section shortcuts attached to a club detail message opened from the club list. */
+export function buildClubSectionRow(tag: string | undefined): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    SECTION_BUTTONS.map(({ label, section }) =>
+      new ButtonBuilder()
+        .setCustomId(buildClubSectionCustomId(section, tag))
+        .setLabel(label)
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  );
+}
+
 /** Build the requested `/clubs details` section, with stored-data-only details and previous members. */
 async function buildClubSectionReply(
   input: ClubSectionState & { readonly guildId: string | null },
@@ -320,6 +357,35 @@ async function buildClubSectionReply(
   return { kind: 'ok', ...(content === undefined ? {} : { content }), embeds, components };
 }
 
+export interface ClubMenuReply {
+  readonly content?: string;
+  readonly embeds: EmbedBuilder[];
+  readonly components: ActionRowBuilder<ButtonBuilder>[];
+  readonly failure?: ClubLookupFailure;
+}
+
+/** Build the detail message opened from a club-list button, with section shortcuts. */
+export async function buildClubMenuReply(
+  tag: string | undefined,
+  guildId: string | null,
+  config: BotConfig,
+  now: Date,
+): Promise<ClubMenuReply> {
+  const reply = await buildClubSectionReply(
+    { ...defaultSectionState(tag, 'overview'), guildId },
+    config,
+    now,
+  );
+  if (reply.kind === 'lookup-failure') {
+    return { embeds: [], components: [], failure: reply.failure };
+  }
+  return {
+    ...(reply.content === undefined ? {} : { content: reply.content }),
+    embeds: reply.embeds,
+    components: [buildClubSectionRow(tag), ...reply.components],
+  };
+}
+
 /** Handle `/clubs details` with optional sections, sorting, filters and previous members. */
 export async function handleClub(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply();
@@ -374,6 +440,41 @@ export async function handleClub(interaction: ChatInputCommandInteraction): Prom
 }
 
 export async function handleClubComponent(interaction: CommandComponentInteraction): Promise<void> {
+  const sectionStateRaw = parseClubSectionCustomId(interaction.customId);
+  if (sectionStateRaw !== null) {
+    const state = decodeSectionState(sectionStateRaw);
+    if (state === null) return;
+    try {
+      await interaction.deferUpdate();
+      const reply = await buildClubSectionReply(
+        { ...state, guildId: interaction.guildId },
+        getBotConfig(),
+        new Date(),
+      );
+      if (reply.kind === 'lookup-failure') {
+        await interaction.editReply({
+          content: mapClubLookupFailureMessage(reply.failure),
+          embeds: [],
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+      await interaction.editReply({
+        ...(reply.content === undefined ? {} : { content: reply.content }),
+        embeds: reply.embeds,
+        components: [buildClubSectionRow(state.tag), ...reply.components],
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      logger.error('Club section shortcut failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      });
+      await replyWithSafeError(interaction);
+    }
+    return;
+  }
+
   const chooser = readClubChooserSelection<ClubSectionState>(interaction, COMMAND_NAME);
   if (chooser.kind !== 'none') {
     try {

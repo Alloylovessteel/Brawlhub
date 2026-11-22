@@ -1,3 +1,5 @@
+import { mdCode, mdLabelLines, mdParagraphs, mdSection } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -312,10 +314,16 @@ async function permissionContext(interaction: ChatInputCommandInteraction | Comm
 async function buildSetupRoot(nonce: string, guildId: string) {
   const [settings, mappings] = await Promise.all([loadGuildSettings(guildId), listGuildRoleMappings(guildId)]);
   const embed = new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.neutral)
     .setTitle('BrawlHub server setup')
     .setDescription(
-      'Configure this Discord server’s BrawlHub integration. Role mappings control which Discord roles grant BrawlHub permissions in this server (per-guild, not shared).',
+      mdSection(
+        'Overview',
+        mdParagraphs(
+          'Configure this Discord server’s BrawlHub integration.',
+          'Role mappings control which Discord roles grant BrawlHub permissions in this server (per-guild, not shared).',
+        ),
+      ),
     )
     .addFields(
       {
@@ -381,7 +389,7 @@ function buildChannelPickView(nonce: string, title: string, description: string,
     .setLabel('Back')
     .setStyle(ButtonStyle.Secondary);
   return {
-    embeds: [new EmbedBuilder().setColor(0x5865_f2).setTitle(title).setDescription(description)],
+    embeds: [new EmbedBuilder().setColor(EMBED_COLORS.neutral).setTitle(title).setDescription(description)],
     components: [
       new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(select),
       new ActionRowBuilder<ButtonBuilder>().addComponents(clear, back),
@@ -405,10 +413,15 @@ function buildVerifiedRolePickView(nonce: string, settings: Awaited<ReturnType<t
   return {
     embeds: [
       new EmbedBuilder()
-        .setColor(0x5865_f2)
+        .setColor(EMBED_COLORS.neutral)
         .setTitle('Verified role')
         .setDescription(
-          `Current: ${settings.verifiedRoleId ? `<@&${settings.verifiedRoleId}>` : 'Not configured'}. Choose a Discord role to assign to verified BrawlHub members, or clear it.`,
+          mdParagraphs(
+            mdLabelLines([
+              `Current: ${settings.verifiedRoleId ? `<@&${settings.verifiedRoleId}>` : 'Not configured'}.`,
+            ]),
+            'Choose a Discord role to assign to verified BrawlHub members, or clear it.',
+          ),
         ),
     ],
     components: [
@@ -440,7 +453,7 @@ async function startChange(
   });
 
   const confirmation = new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.warning)
     .setTitle('Confirm guild settings change')
     .addFields(
       { name: 'Guild', value: `\`${guildId}\`` },
@@ -697,7 +710,12 @@ async function handleSetupInteraction(interaction: CommandComponentInteraction):
         buildChannelPickView(
           parsed.nonce,
           'Announcement channel',
-          `Current: ${settings.announcementChannelId ? `<#${settings.announcementChannelId}>` : 'Not configured'}. Select a text channel for BrawlHub announcements, or clear it.`,
+          mdParagraphs(
+            mdLabelLines([
+              `Current: ${settings.announcementChannelId ? `<#${settings.announcementChannelId}>` : 'Not configured'}.`,
+            ]),
+            'Select a text channel for BrawlHub announcements, or clear it.',
+          ),
           'announcement_select',
           'announcement_clear',
         ),
@@ -726,7 +744,7 @@ async function handleSetupInteraction(interaction: CommandComponentInteraction):
         .setPlaceholder('Select the Discord role to map…');
       const back = new ButtonBuilder().setCustomId(setupCustomId(parsed.nonce, 'roles_back')).setLabel('Back').setStyle(ButtonStyle.Secondary);
       await interaction.editReply({
-        embeds: [new EmbedBuilder().setColor(0x5865_f2).setTitle('Add/update role mapping').setDescription('Select the Discord role (e.g. Club Leaders) you want to grant BrawlHub permissions to in this server.')],
+        embeds: [new EmbedBuilder().setColor(EMBED_COLORS.neutral).setTitle('Add/update role mapping').setDescription(`Select the Discord role (e.g. ${mdCode('Club Leaders')}) you want to grant BrawlHub permissions to in this server.`)],
         components: [
           new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(select),
           new ActionRowBuilder<ButtonBuilder>().addComponents(back),
@@ -784,7 +802,12 @@ async function handleSetupInteraction(interaction: CommandComponentInteraction):
       );
     const back = new ButtonBuilder().setCustomId(setupCustomId(parsed.nonce, 'roles_back')).setLabel('Back').setStyle(ButtonStyle.Secondary);
     await interaction.editReply({
-      embeds: [new EmbedBuilder().setColor(0x5865_f2).setTitle('Choose BrawlHub role').setDescription(`Selected Discord role: <@&${discordRoleId}>. Choose which BrawlHub role/permission level it should grant in this server.`)],
+      embeds: [new EmbedBuilder().setColor(EMBED_COLORS.neutral).setTitle('Choose BrawlHub role').setDescription(
+        mdParagraphs(
+          mdLabelLines([`Selected Discord role: <@&${discordRoleId}>.`]),
+          'Choose which BrawlHub role/permission level it should grant in this server.',
+        ),
+      )],
       components: [
         new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
         new ActionRowBuilder<ButtonBuilder>().addComponents(back),

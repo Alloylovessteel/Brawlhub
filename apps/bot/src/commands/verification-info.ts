@@ -1,3 +1,5 @@
+import { mdBold, mdCode, mdList, mdParagraphs, mdSection } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import {
   EmbedBuilder,
   SlashCommandBuilder,
@@ -7,7 +9,7 @@ import { replyAdminError } from '../admin/errors.js';
 import { loadGuildSettings, requireGlobalPermission } from '../admin/service.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.success;
 
 export const verifyInfoCommandData = new SlashCommandBuilder()
   .setName('verify-info')
@@ -40,15 +42,24 @@ export async function handleVerifyInfo(interaction: ChatInputCommandInteraction)
     .setColor(EMBED_COLOR)
     .setTitle('How to verify your Brawl Stars account')
     .setDescription(
-      [
-        '**1.** Run `/members accounts verify tag:YOURTAG` with your player tag.',
-        '**2.** The bot shows a randomly chosen default brawler icon and its exact ID.',
-        '**3.** In Brawl Stars, set your player icon to that exact brawler, then run `/members accounts check`.',
-        '**4.** The bot reads your current icon from the official Brawl Stars API. An exact match links the account to your Discord user.',
-        '',
-        'Challenges expire after 10 minutes. Ownership is never guessed from names, tags or profile pictures.',
-        'After verifying, use `/members accounts list` to see your main and alt accounts, and `/members accounts set-main tag:TAG` to change your main.',
-      ].join('\n'),
+      mdParagraphs(
+        mdSection(
+          'Steps',
+          [
+            `${mdBold('1.')} Run \`/members accounts verify tag:YOURTAG\` with your player tag.`,
+            `${mdBold('2.')} The bot shows a randomly chosen default brawler icon and its exact ID.`,
+            `${mdBold('3.')} In Brawl Stars, set your player icon to that exact brawler, then run \`/members accounts check\`.`,
+            `${mdBold('4.')} The bot reads your current icon from the official Brawl Stars API. An exact match links the account to your Discord user.`,
+          ].join('\n'),
+        ),
+        mdSection(
+          'Notes',
+          mdList([
+            'Challenges expire after 10 minutes. Ownership is never guessed from names, tags or profile pictures.',
+            'After verifying, use `/members accounts list` to see your main and alt accounts, and `/members accounts set-main tag:TAG` to change your main.',
+          ]),
+        ),
+      ),
     )
     .setFooter({ text: 'BrawlHub • verification is required for account-linked features' });
 
@@ -73,7 +84,7 @@ export async function handleVerifySettings(interaction: ChatInputCommandInteract
       .setColor(EMBED_COLOR)
       .setTitle('Verification settings')
       .addFields(
-        { name: 'Server', value: `\`${interaction.guildId ?? 'none'}\``, inline: true },
+        { name: 'Server', value: mdCode(interaction.guildId ?? 'none'), inline: true },
         { name: 'Verified role', value: role, inline: true },
         {
           name: 'Method',
@@ -81,7 +92,7 @@ export async function handleVerifySettings(interaction: ChatInputCommandInteract
         },
         {
           name: 'Change settings',
-          value: '`/settings set-verified-role role:ROLE` or `/settings setup`.',
+          value: `${mdCode('/settings set-verified-role role:ROLE')} or ${mdCode('/settings setup')}.`,
         },
       );
     await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } });

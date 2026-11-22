@@ -85,4 +85,32 @@ describe('buildPlayerCardImage', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(buffer.byteLength).toBeGreaterThan(1_000);
   });
+
+  it('normalizes valid static assets into the rendered card', async () => {
+    const png = await sharp({
+      create: { width: 64, height: 64, channels: 4, background: { r: 80, g: 80, b: 200, alpha: 1 } },
+    })
+      .png()
+      .toBuffer();
+    const fetchMock = vi.fn(
+      async () => new Response(png, { status: 200, headers: { 'content-type': 'image/png' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const buffer = await buildPlayerCardImage(profile(), {
+      playerIconUrl: 'https://cdn.example.test/icon.png',
+      brawlerPortraitUrls: [
+        'https://cdn.example.test/shelly.png',
+        'https://cdn.example.test/nita.png',
+        'https://cdn.example.test/colt.png',
+      ],
+    });
+    const metadata = await sharp(buffer).metadata();
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(metadata.format).toBe('png');
+    expect(metadata.width).toBe(1200);
+    expect(metadata.height).toBe(720);
+    expect(buffer.byteLength).toBeGreaterThan(1_000);
+  });
 });

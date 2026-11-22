@@ -101,9 +101,9 @@ describe('staff embeds', () => {
     const body = text(embed);
 
     expect(body).toContain('Page 1/1');
-    expect(body).toContain('Total staff entries: 2');
-    expect(body).toContain('Global assignments: 1');
-    expect(body).toContain('Club assignments: 1');
+    expect(body).toContain('**Total staff entries:** 2');
+    expect(body).toContain('**Global assignments:** 1');
+    expect(body).toContain('**Club assignments:** 1');
     expect(body).toContain('Owner#0001');
     expect(body).toContain('Global Admin');
     expect(body).toContain('Discord ID 222222222222222222');

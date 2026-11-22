@@ -233,11 +233,11 @@ describe('global leaderboard embeds', () => {
       CONFIG,
     ).toJSON();
 
-    expect(players.fields?.[0]?.value).toContain('Trophies: 5,000');
-    expect(players.fields?.[0]?.value).toContain('Club: [Club 1](https://example.test/clubs/2C0Y)');
+    expect(players.fields?.[0]?.value).toContain('**Trophies:** 5,000');
+    expect(players.fields?.[0]?.value).toContain('**Club:** [Club 1](https://example.test/clubs/2C0Y)');
     expect(players.fields?.[0]?.value).toContain('— Current');
-    expect(trophies.fields?.[0]?.value).toContain('Personal best: 6,000');
-    expect(trophies.fields?.[0]?.value).toContain('Current trophies: Unavailable');
+    expect(trophies.fields?.[0]?.value).toContain('**Personal best:** 6,000');
+    expect(trophies.fields?.[0]?.value).toContain('**Current trophies:** Unavailable');
     expect(trophies.description).toContain('do not affect the ranking');
   });
 
@@ -248,9 +248,9 @@ describe('global leaderboard embeds', () => {
     expect(data.title).toContain('Last 7 days');
     expect(data.description).toContain('last 7 days');
     expect(data.description).toContain('Missing snapshots are never estimated');
-    expect(data.fields?.[0]?.value).toContain('Gain: +700');
-    expect(data.fields?.[0]?.value).toContain('Start: 4,300');
-    expect(data.fields?.[0]?.value).toContain('Latest: 5,000');
+    expect(data.fields?.[0]?.value).toContain('**Gain:** +700');
+    expect(data.fields?.[0]?.value).toContain('**Start:** 4,300');
+    expect(data.fields?.[0]?.value).toContain('**Latest:** 5,000');
   });
 
   it('shows graceful empty states for every leaderboard', () => {

@@ -1,3 +1,5 @@
+import { mdCode, mdList, mdParagraphs, mdSection } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import {
   ChannelType,
   EmbedBuilder,
@@ -14,7 +16,7 @@ import {
   setupGuildAutomation,
 } from '../ranked-roles/service.js';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.success;
 
 export const autoCommandData = new SlashCommandBuilder()
   .setName('auto')
@@ -64,12 +66,18 @@ export async function handleAuto(interaction: ChatInputCommandInteraction): Prom
           .setColor(EMBED_COLOR)
           .setTitle('Automation setup complete')
           .setDescription(
-            'Ranked roles and the verified role were created or reused. The verification message was posted once and will be edited on future setup runs.',
+            mdSection(
+              'Summary',
+              mdList([
+                'Ranked roles and the verified role were created or reused.',
+                'The verification message was posted once and will be edited on future setup runs.',
+              ]),
+            ),
           )
           .addFields(
             {
               name: 'Verification message',
-              value: `<#${state.verificationChannelId}> / ${state.verificationMessageId ?? 'unknown'}`,
+              value: `<#${state.verificationChannelId}> / ${mdCode(state.verificationMessageId ?? 'unknown')}`,
             },
             {
               name: 'Ranked roles',
@@ -78,7 +86,10 @@ export async function handleAuto(interaction: ChatInputCommandInteraction): Prom
             },
             {
               name: 'Channels',
-              value: 'No channels were created. Configure report and overview channels with `/settings`.',
+              value: mdParagraphs(
+                'No channels were created.',
+                `Configure report and overview channels with ${mdCode('/settings')}.`,
+              ),
             },
           ),
       ],

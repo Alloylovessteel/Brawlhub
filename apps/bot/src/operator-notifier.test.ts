@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GuildSettingsView } from './admin/types';
 import type { SyncResult } from '@brawlhub/sync';
+import { EMBED_COLORS } from './discord/embed-style';
 
 const GUILD_ID = '123456789012345678';
 const ANNOUNCEMENT_ID = '111111111111111111';
@@ -92,7 +93,8 @@ describe('operator embeds', () => {
     const json = buildSyncOperatorEmbed(result()).toJSON();
 
     expect(json.title).toBe('Member synchronization failed');
-    expect(json.description).toContain('Successfully synced Members: 601/603');
+    expect(json.color).toBe(EMBED_COLORS.warning);
+    expect(json.description?.replace(/\*\*/g, '')).toContain('Successfully synced Members: 601/603');
     expect(json.fields?.map((field) => field.name)).toContain('Failed members');
   });
 
@@ -102,7 +104,8 @@ describe('operator embeds', () => {
     ).toJSON();
 
     expect(json.title).toBe('Sync completed');
-    expect(json.description).toContain('Successfully synced Members: 603/603');
+    expect(json.color).toBe(EMBED_COLORS.success);
+    expect(json.description?.replace(/\*\*/g, '')).toContain('Successfully synced Members: 603/603');
     expect(json.fields?.map((field) => field.name)).not.toContain('Failed members');
   });
 
@@ -112,6 +115,7 @@ describe('operator embeds', () => {
     ).toJSON();
 
     expect(json.title).toBe('Synchronization failed');
+    expect(json.color).toBe(EMBED_COLORS.danger);
     expect(json.description).not.toContain('<@');
     expect(json.description).not.toContain(TOKEN);
     expect(json.description).toContain(REDACTED_LABEL);
@@ -128,6 +132,7 @@ describe('operator embeds', () => {
     }).toJSON();
 
     expect(json.title).toBe('Verification completed');
+    expect(json.color).toBe(EMBED_COLORS.success);
     expect(json.description).not.toContain('<@');
     expect(json.description).toContain('Kuromi');
     expect(json.fields?.map((field) => field.value)).toContain('Icon-verified');

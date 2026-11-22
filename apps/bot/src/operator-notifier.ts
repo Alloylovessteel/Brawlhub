@@ -1,3 +1,5 @@
+import { mdBold, mdCode, mdKeyValue, mdList, mdParagraphs } from './discord/embed-format';
+import { EMBED_COLORS } from './discord/embed-style';
 import { createLogger } from '@brawlhub/logging';
 import type { SyncResult } from '@brawlhub/sync';
 import { EmbedBuilder, REST, Routes } from 'discord.js';
@@ -7,7 +9,7 @@ import { getBotConfig } from './config.js';
 
 const logger = createLogger('bot/operator');
 const REDACTED = '[REDACTED]';
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.success;
 const SNOWFLAKE = /^\d{17,20}$/;
 
 type NoticePurpose = 'sync' | 'verification';
@@ -89,7 +91,13 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
         ? 'Member synchronization failed'
         : 'Sync completed';
 
-  const embed = new EmbedBuilder().setColor(EMBED_COLOR).setTitle(title);
+  const color =
+    result.status === 'failed'
+      ? EMBED_COLORS.danger
+      : hasMemberFailures
+        ? EMBED_COLORS.warning
+        : EMBED_COLORS.success;
+  const embed = new EmbedBuilder().setColor(color).setTitle(title);
 
   if (result.status === 'failed') {
     const token = getBotConfig().token;
@@ -97,12 +105,18 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
       token !== undefined && result.error !== undefined && result.error.includes(token)
         ? result.error.split(token).join(REDACTED)
         : result.error;
-    embed.setDescription(`Sync failed. ${clean(error, 900, 'No error details supplied.')}`);
+    embed.setDescription(`${mdBold('Sync failed.')} ${clean(error, 900, 'No error details supplied.')}`);
   } else if (expected !== undefined && succeeded !== undefined) {
     embed.setDescription(
       hasMemberFailures
-        ? `Sync completed. Successfully synced Members: ${succeeded}/${expected}.`
-        : `Sync completed. Successfully synced Members: ${succeeded}/${expected}.`,
+        ? mdParagraphs(
+            'Sync completed.',
+            mdKeyValue('Successfully synced Members', `${succeeded}/${expected}.`),
+          )
+        : mdParagraphs(
+            'Sync completed.',
+            mdKeyValue('Successfully synced Members', `${succeeded}/${expected}.`),
+          ),
     );
   } else {
     embed.setDescription('Sync completed.');
@@ -119,13 +133,13 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
   if (hasMemberFailures) {
     const lines = failures
       .slice(0, 8)
-      .map((failure) => `#${clean(failure.tag, 16)} — ${clean(failure.reason, 90)}`);
+      .map((failure) => `${mdCode(`#${clean(failure.tag, 16)}`)} — ${clean(failure.reason, 90)}`);
     if (failures.length > 8) {
       lines.push(`+${failures.length - 8} more member(s) failed.`);
     }
     embed.addFields({
       name: 'Failed members',
-      value: lines.length > 0 ? lines.join('\n') : 'Member profile data was incomplete.',
+      value: lines.length > 0 ? mdList(lines) : 'Member profile data was incomplete.',
     });
   }
 
@@ -134,15 +148,17 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
 }
 
 export function buildVerificationOperatorEmbed(input: OperatorVerificationNotice): EmbedBuilder {
-  const player = `${clean(input.playerName, 60)} (#${clean(input.playerTag, 20)})`;
+  const player = `${clean(input.playerName, 60)} (${mdCode(`#${clean(input.playerTag, 20)}`)})`;
   const method = input.method === 'staff-linked' ? 'Staff-linked' : 'Icon-verified';
   return new EmbedBuilder()
     .setColor(EMBED_COLOR)
     .setTitle('Verification completed')
-    .setDescription(`${player} is now linked to Discord user ${clean(input.discordUserId, 24)}.`)
+    .setDescription(
+      `${player} is now linked to Discord user ${mdCode(clean(input.discordUserId, 24))}.`,
+    )
     .addFields(
       { name: 'Method', value: method, inline: true },
-      { name: 'Player tag', value: clean(`#${input.playerTag}`, 20), inline: true },
+      { name: 'Player tag', value: mdCode(clean(`#${input.playerTag}`, 20)), inline: true },
     )
     .setFooter({ text: 'Guild-scoped operator notice • ownership confirmed without pings' });
 }

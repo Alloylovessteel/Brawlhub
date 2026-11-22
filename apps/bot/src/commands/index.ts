@@ -222,14 +222,46 @@ export const pendingCommands: readonly CommandDefinition[] = [
 /** Alias kept for callers that prefer the descriptive name. */
 export const commandDefinitions = commands;
 
+export interface CommandRegistrationRest {
+  get(route: string): Promise<unknown>;
+  put(route: string, options: { body: unknown }): Promise<unknown>;
+}
+
+export interface CommandRegistrationOptions {
+  /** Injectable REST client for tests. */
+  readonly rest?: CommandRegistrationRest;
+  readonly token?: string;
+  readonly clientId?: string;
+  /** `null` disables the configured-guild fast path without reading config. */
+  readonly guildId?: string | null;
+  /** Override the guild list used for instant per-guild registration in tests. */
+  readonly guildIds?: readonly string[];
+}
+
+async function listBotGuildIds(rest: CommandRegistrationRest): Promise<readonly string[]> {
+  const guilds = await rest.get(Routes.userGuilds());
+  if (!Array.isArray(guilds)) return [];
+  return guilds
+    .map((guild) =>
+      guild !== null && typeof guild === 'object' && 'id' in guild ? guild.id : null,
+    )
+    .filter((id): id is string => typeof id === 'string' && /^\d{17,20}$/.test(id));
+}
+
 /**
- * Register the full command set. When DISCORD_GUILD_ID is configured, commands
- * are registered to that guild (fast updates). Otherwise global application
- * commands are registered so the bot can be invited to servers without extra
- * config (propagation may take up to about an hour).
+ * Register the full command set globally so new servers receive commands, and
+ * also register it directly to every joined guild for instant availability.
+ * DISCORD_GUILD_ID remains a fast-update target but is no longer the only
+ * registration scope.
  */
-export async function registerCommands(): Promise<void> {
-  const { token, clientId, guildId } = getBotConfig();
+export async function registerCommands(options: CommandRegistrationOptions = {}): Promise<void> {
+  const config = getBotConfig();
+  const token = options.token ?? config.token;
+  const clientId = options.clientId ?? config.clientId;
+  const guildId =
+    options.guildId === undefined
+      ? config.guildId
+      : (options.guildId ?? undefined);
 
   if (clientId === undefined) {
     logger.warn(
@@ -244,20 +276,42 @@ export async function registerCommands(): Promise<void> {
   }
 
   const body = commands.map((command) => command.data.toJSON());
-  const rest = new REST().setToken(token);
+  const rest: CommandRegistrationRest = options.rest ?? new REST().setToken(token);
 
   try {
-    if (guildId !== undefined) {
-      await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body });
-      logger.info(`Registered ${body.length} guild slash command(s) for ${guildId}`);
-    } else {
-      await rest.put(Routes.applicationCommands(clientId), { body });
-      logger.info(
-        `Registered ${body.length} global application slash command(s); propagation to servers may take up to ~1 hour`
-      );
-    }
+    await rest.put(Routes.applicationCommands(clientId), { body });
+    logger.info(
+      `Registered ${body.length} global application slash command(s); propagation to new servers may take up to ~1 hour`
+    );
   } catch (error) {
-    logger.error('Failed to register slash commands', { error: errorMessage(error) });
+    logger.error('Failed to register global slash commands', { error: errorMessage(error) });
+  }
+
+  let joinedGuildIds = options.guildIds;
+  if (joinedGuildIds === undefined) {
+    try {
+      joinedGuildIds = await listBotGuildIds(rest);
+    } catch (error) {
+      logger.warn('Could not list joined guilds for slash command registration', {
+        error: errorMessage(error),
+      });
+      joinedGuildIds = [];
+    }
+  }
+
+  const targets = new Set<string>(joinedGuildIds);
+  if (guildId !== undefined) targets.add(guildId);
+
+  for (const targetGuildId of targets) {
+    try {
+      await rest.put(Routes.applicationGuildCommands(clientId, targetGuildId), { body });
+      logger.info(`Registered ${body.length} guild slash command(s) for ${targetGuildId}`);
+    } catch (error) {
+      logger.error('Failed to register guild slash commands', {
+        guildId: targetGuildId,
+        error: errorMessage(error),
+      });
+    }
   }
 }
 

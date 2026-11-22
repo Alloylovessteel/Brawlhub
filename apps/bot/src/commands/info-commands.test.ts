@@ -204,6 +204,21 @@ describe('/help', () => {
     }
   });
 
+  it('formats command entries as scannable groups with permission notes', () => {
+    const paged = paginate(HELP_CATEGORIES, 1, 2);
+    const embed = buildHelpPageEmbed(paged).toJSON();
+    const fields = embed.fields ?? [];
+
+    expect(embed.description).toContain('Page 1 of 5');
+    expect(fields[0]?.name).toBe('How to read this list');
+
+    const club = fields.find((field) => field.name.includes('Club'));
+    expect(club?.name).toContain('🏛️');
+    expect(club?.value).toContain('**clubs**');
+    expect(club?.value).toContain('• `/clubs details`');
+    expect(club?.value).toContain('🔒 Requires club management');
+  });
+
   it('replies with the first page and pagination controls', async () => {
     const interaction = chat();
 

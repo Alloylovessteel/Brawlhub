@@ -1,3 +1,5 @@
+import { mdKeyValueList, mdParagraphs } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import { EmbedBuilder } from 'discord.js';
 import type { BotConfig } from '../config';
 import {
@@ -24,7 +26,7 @@ import type {
   TrophyLeaderboardView,
 } from './types';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.leaderboard;
 
 const PERIOD_LABELS: Readonly<Record<ProgressionPeriod, string>> = {
   '7d': 'Last 7 days',
@@ -71,14 +73,14 @@ function clubLabel(club: PlayerClubRef, config: LeaderboardEmbedConfig): string 
   return `${formatClubLink(club.name, club.tag, config.clubProfileUrlTemplate)} (${displayTag(club.tag)})`;
 }
 
-function clubLine(
+function clubValue(
   club: PlayerClubRef | null,
   status: ClubMembershipStatus | null,
   config: LeaderboardEmbedConfig,
 ): string {
-  if (club === null) return 'Club: Unavailable';
+  if (club === null) return 'Unavailable';
   const label = status === null ? '' : ` — ${MEMBERSHIP_LABELS[status]}`;
-  return `Club: ${clubLabel(club, config)}${label}`;
+  return `${clubLabel(club, config)}${label}`;
 }
 
 function sharedSuffix(rows: readonly RankedRow[], index: number): string {
@@ -90,7 +92,7 @@ function sharedSuffix(rows: readonly RankedRow[], index: number): string {
 }
 
 function withWarning(description: string, warning: string | null): string {
-  return warning === null ? description : `${description} ${warning}`;
+  return warning === null ? description : mdParagraphs(description, warning);
 }
 
 function baseEmbed(
@@ -150,12 +152,12 @@ export function buildClubLeaderboardPageEmbed(
         256,
       ),
       value: truncate(
-        [
-          `Total trophies: ${formatInteger(row.totalTrophies) ?? '0'}`,
-          `Members: ${formatInteger(row.memberCount) ?? 'Unavailable'}`,
-          `Average trophies: ${formatInteger(row.averageTrophies) ?? 'Unavailable'}`,
-          `Snapshot: ${formatAbsoluteTime(row.snapshotAt) ?? row.snapshotAt}`,
-        ].join('\n'),
+        mdKeyValueList([
+          ['Total trophies', formatInteger(row.totalTrophies) ?? '0'],
+          ['Members', formatInteger(row.memberCount) ?? 'Unavailable'],
+          ['Average trophies', formatInteger(row.averageTrophies) ?? 'Unavailable'],
+          ['Snapshot', formatAbsoluteTime(row.snapshotAt) ?? row.snapshotAt],
+        ]),
         1024,
       ),
     });
@@ -194,11 +196,11 @@ export function buildPlayerLeaderboardPageEmbed(
         256,
       ),
       value: truncate(
-        [
-          `${formatEmoji(config.emojis.trophies, 'trophies')}Trophies: ${formatInteger(row.trophies) ?? '0'}`.trim(),
-          clubLine(row.club, row.clubStatus, config),
-          `Synced: ${formatSyncTime(row.player.lastSyncedAt) ?? 'unknown'}`,
-        ].join('\n'),
+        mdKeyValueList([
+          ['Trophies', `${formatEmoji(config.emojis.trophies, 'trophies')}${formatInteger(row.trophies) ?? '0'}`],
+          ['Club', clubValue(row.club, row.clubStatus, config)],
+          ['Synced', formatSyncTime(row.player.lastSyncedAt) ?? 'unknown'],
+        ]),
         1024,
       ),
     });
@@ -240,11 +242,11 @@ export function buildTrophyLeaderboardPageEmbed(
         256,
       ),
       value: truncate(
-        [
-          `Personal best: ${formatInteger(row.highestTrophies) ?? '0'}`,
-          `Current trophies: ${formatInteger(row.currentTrophies) ?? 'Unavailable'}`,
-          clubLine(row.club, row.clubStatus, config),
-        ].join('\n'),
+        mdKeyValueList([
+          ['Personal best', formatInteger(row.highestTrophies) ?? '0'],
+          ['Current trophies', formatInteger(row.currentTrophies) ?? 'Unavailable'],
+          ['Club', clubValue(row.club, row.clubStatus, config)],
+        ]),
         1024,
       ),
     });
@@ -286,12 +288,12 @@ export function buildProgressionLeaderboardPageEmbed(
         256,
       ),
       value: truncate(
-        [
-          `Gain: ${formatDelta(row.difference)}`,
-          `Start: ${formatInteger(row.startTrophies) ?? '0'} (${formatAbsoluteTime(row.startAt) ?? row.startAt})`,
-          `Latest: ${formatInteger(row.latestTrophies) ?? '0'} (${formatAbsoluteTime(row.latestAt) ?? row.latestAt})`,
-          clubLine(row.club, row.clubStatus, config),
-        ].join('\n'),
+        mdKeyValueList([
+          ['Gain', formatDelta(row.difference)],
+          ['Start', `${formatInteger(row.startTrophies) ?? '0'} (${formatAbsoluteTime(row.startAt) ?? row.startAt})`],
+          ['Latest', `${formatInteger(row.latestTrophies) ?? '0'} (${formatAbsoluteTime(row.latestAt) ?? row.latestAt})`],
+          ['Club', clubValue(row.club, row.clubStatus, config)],
+        ]),
         1024,
       ),
     });

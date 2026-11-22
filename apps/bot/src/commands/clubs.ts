@@ -1,5 +1,8 @@
 import { createLogger } from '@brawlhub/logging';
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   MessageFlags,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
@@ -8,9 +11,16 @@ import {
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import { buildClubsPageEmbed, paginateClubs } from '../clubs/embed';
+import type { ClubSummary } from '../clubs/types';
 import { loadClubSummaries } from '../clubs/service';
 import { OVERVIEW_MAX_SELECTIONS, parseClubOverviewCustomId } from '../clubs/overview/embed';
-import { buildClubDetailsReply, type ClubDetailsReply } from './club';
+import { cleanTag } from '../discord/format';
+import {
+  buildClubDetailsReply,
+  buildClubMenuReply,
+  type ClubDetailsReply,
+} from './club';
+import { mapClubLookupFailureMessage } from './club-utils';
 import { replyWithSafeError } from '../discord/errors';
 import {
   buildPaginationRow,
@@ -21,6 +31,26 @@ import {
 const logger = createLogger('bot');
 const CLUBS_PAGE_SIZE = 5;
 const COMMAND_NAME = 'clubs';
+const CLUB_OPEN_PREFIX = 'clubs:open:';
+
+/** New in-message action; original `clubs:page:` IDs stay byte-for-byte unchanged. */
+function parseClubOpenCustomId(customId: string): string | null {
+  if (!customId.startsWith(CLUB_OPEN_PREFIX)) return null;
+  const tag = cleanTag(customId.slice(CLUB_OPEN_PREFIX.length));
+  return tag === '' ? null : tag;
+}
+
+function buildClubOpenRow(page: { readonly items: readonly ClubSummary[] }): ActionRowBuilder<ButtonBuilder> | null {
+  if (page.items.length === 0) return null;
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    page.items.map((summary) =>
+      new ButtonBuilder()
+        .setCustomId(`${CLUB_OPEN_PREFIX}${cleanTag(summary.club.tag)}`)
+        .setLabel(`Details · #${cleanTag(summary.club.tag)}`)
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  );
+}
 
 export const clubsCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
@@ -30,8 +60,15 @@ async function buildPage(guildId: string | null, pageNumber: number) {
   const summaries = await loadClubSummaries(guildId);
   const page = paginateClubs(summaries, pageNumber, CLUBS_PAGE_SIZE);
   const embed = buildClubsPageEmbed(summaries, page, getBotConfig());
-  const row = buildPaginationRow(COMMAND_NAME, page.page, page.pageCount);
-  return { embeds: [embed], components: row === null ? [] : [row] };
+  const paginationRow = buildPaginationRow(COMMAND_NAME, page.page, page.pageCount);
+  const openRow = buildClubOpenRow(page);
+  return {
+    embeds: [embed],
+    components: [
+      ...(paginationRow === null ? [] : [paginationRow]),
+      ...(openRow === null ? [] : [openRow]),
+    ],
+  };
 }
 
 /** Handle `/clubs` with a paginated list of registered clubs. */
@@ -95,6 +132,40 @@ export async function handleClubsComponent(interaction: CommandComponentInteract
       typeof interaction.isStringSelectMenu === 'function' && interaction.isStringSelectMenu();
     if (isSelect) {
       await handleOverviewSelect(interaction as StringSelectMenuInteraction, overviewGuildId);
+    }
+    return;
+  }
+
+  const openTag = parseClubOpenCustomId(interaction.customId);
+  if (openTag !== null) {
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const reply = await buildClubMenuReply(
+        openTag,
+        interaction.guildId,
+        getBotConfig(),
+        new Date(),
+      );
+      if (reply.failure !== undefined) {
+        await interaction.editReply({
+          content: mapClubLookupFailureMessage(reply.failure),
+          embeds: [],
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+      await interaction.editReply({
+        ...(reply.content === undefined ? {} : { content: reply.content }),
+        embeds: reply.embeds,
+        components: reply.components,
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      logger.error('Club list detail button failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      });
+      await replyWithSafeError(interaction);
     }
     return;
   }

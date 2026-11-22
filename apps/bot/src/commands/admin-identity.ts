@@ -1,3 +1,5 @@
+import { mdBold, mdCode, mdList } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import {
   EmbedBuilder,
   SlashCommandBuilder,
@@ -22,7 +24,7 @@ import {
   type RegisteredLinkView,
 } from '../verification/index.js';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.neutral;
 
 async function postVerificationOperatorNotice(
   interaction: ChatInputCommandInteraction,
@@ -147,14 +149,14 @@ function permissionContext(interaction: ChatInputCommandInteraction | CommandCom
 
 function linksEmbed(links: RegisteredLinkView[], title: string): EmbedBuilder {
   const lines = links.slice(0, 25).map((link) => {
-    const label = link.isMain ? 'MAIN' : 'Alt';
+    const label = link.isMain ? mdBold('MAIN') : 'Alt';
     const source = link.method === 'manual_staff' ? 'staff-linked' : 'icon-verified';
-    return `• <@${link.discordUserId}> — ${link.name ?? 'Unknown'} (#${link.tag}) [${label}, ${source}]`;
+    return `<@${link.discordUserId}> — ${link.name ?? 'Unknown'} (${mdCode(`#${link.tag}`)}) [${label}, ${source}]`;
   });
   return new EmbedBuilder()
     .setColor(EMBED_COLOR)
     .setTitle(title)
-    .setDescription(lines.length > 0 ? lines.join('\n') : 'No matching verified account links in this server.')
+    .setDescription(lines.length > 0 ? mdList(lines) : 'No matching verified account links in this server.')
     .setFooter({ text: `${links.length} link(s) shown${links.length > 25 ? ' (first 25)' : ''}` });
 }
 

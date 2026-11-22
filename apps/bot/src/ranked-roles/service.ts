@@ -1,3 +1,5 @@
+import { mdBold, mdLabelLines, mdList, mdParagraphs, mdSection } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -19,7 +21,7 @@ import { listGuildVerifiedLinks } from '../verification/service.js';
 
 const logger = createLogger('bot');
 const SNOWFLAKE_PATTERN = /^\d{17,20}$/;
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.success;
 
 export const RANKED_TIERS = [
   'BRONZE',
@@ -275,21 +277,32 @@ export function buildVerificationMessage(guildId: string): {
   readonly allowedMentions: { readonly parse: readonly [] };
 } {
   const appUrl = getBotConfig().appUrl;
-  const lines = [
-    '**1.** Run `/members accounts verify tag:YOURTAG` with your Brawl Stars player tag.',
-    '**2.** The bot shows a randomly chosen default brawler icon and its exact ID.',
-    '**3.** Set that exact icon in Brawl Stars, then run `/members accounts check`.',
-    '**4.** The official Brawl Stars API confirms the match and links the account to you.',
-    '',
-    'Challenges expire after 10 minutes. Ownership is never guessed from names, tags or profile pictures.',
-    'Use `/members accounts list` and `/members accounts set-main tag:TAG` to choose the account used for ranked roles.',
+  const sections = [
+    mdSection(
+      'Steps',
+      [
+        `${mdBold('1.')} Run \`/members accounts verify tag:YOURTAG\` with your Brawl Stars player tag.`,
+        `${mdBold('2.')} The bot shows a randomly chosen default brawler icon and its exact ID.`,
+        `${mdBold('3.')} Set that exact icon in Brawl Stars, then run \`/members accounts check\`.`,
+        `${mdBold('4.')} The official Brawl Stars API confirms the match and links the account to you.`,
+      ].join('\n'),
+    ),
+    mdSection(
+      'Notes',
+      mdList([
+        'Challenges expire after 10 minutes. Ownership is never guessed from names, tags or profile pictures.',
+        'Use `/members accounts list` and `/members accounts set-main tag:TAG` to choose the account used for ranked roles.',
+      ]),
+    ),
   ];
-  if (appUrl !== undefined) lines.push('', `BrawlHub website: ${appUrl}`);
+  if (appUrl !== undefined) {
+    sections.push(mdSection('Links', mdLabelLines([`BrawlHub website: ${appUrl}`])));
+  }
 
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
     .setTitle('Verify your Brawl Stars account')
-    .setDescription(lines.join('\n'))
+    .setDescription(mdParagraphs(...sections))
     .setFooter({ text: 'BrawlHub • account-linked roles require verification' });
 
   const button = new ButtonBuilder()

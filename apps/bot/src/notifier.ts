@@ -1,3 +1,5 @@
+import { mdBold, mdCode } from './discord/embed-format';
+import { EMBED_COLORS } from './discord/embed-style';
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import type { SyncNotifier, SyncNotifierWithChannel } from '@brawlhub/sync';
@@ -23,17 +25,17 @@ function clean(value: string | undefined, maxLength: number): string {
 }
 
 function formatEmbed(input: Parameters<SyncNotifier['send']>[0]): EmbedBuilder {
-  const player = `${clean(input.playerName, 60)} (${clean(input.playerTag, 24)})`;
-  const embed = new EmbedBuilder().setColor(0x5865_f2).setTitle('Club membership update');
+  const player = `${clean(input.playerName, 60)} (${mdCode(clean(input.playerTag, 24))})`;
+  const embed = new EmbedBuilder().setColor(EMBED_COLORS.neutral).setTitle('Club membership update');
 
   switch (input.eventType) {
     case 'join':
-      return embed.setDescription(`${player} joined **${clean(input.clubName, 60)}**.`);
+      return embed.setDescription(`${player} joined ${mdBold(clean(input.clubName, 60))}.`);
     case 'leave':
-      return embed.setDescription(`${player} left **${clean(input.clubName, 60)}**.`);
+      return embed.setDescription(`${player} left ${mdBold(clean(input.clubName, 60))}.`);
     case 'transfer':
       return embed.setDescription(
-        `${player} transferred from **${clean(input.fromClubName, 60)}** to **${clean(input.toClubName, 60)}**.`,
+        `${player} transferred from ${mdBold(clean(input.fromClubName, 60))} to ${mdBold(clean(input.toClubName, 60))}.`,
       );
   }
 }

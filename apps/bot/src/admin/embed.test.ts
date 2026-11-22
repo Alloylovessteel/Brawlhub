@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { mdCode } from '../discord/embed-format';
 import { buildSyncStatusEmbed } from './embed';
 import type { SyncStatusView } from './types';
 
@@ -34,7 +35,7 @@ describe('buildSyncStatusEmbed', () => {
 
     expect(fields.find((field) => field.name === 'Error')).toBeUndefined();
     expect(fields.find((field) => field.name === 'Previous error')?.value).toBe(
-      'Sync interrupted by process restart',
+      mdCode('Sync interrupted by process restart'),
     );
   });
 
@@ -51,7 +52,7 @@ describe('buildSyncStatusEmbed', () => {
     const fields = json.fields ?? [];
 
     expect(fields.find((field) => field.name === 'Error')?.value).toBe(
-      'Official API rejected the request',
+      mdCode('Official API rejected the request'),
     );
   });
 });

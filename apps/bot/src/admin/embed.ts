@@ -1,3 +1,12 @@
+import {
+  mdBold,
+  mdCode,
+  mdLabelLines,
+  mdList,
+  mdParagraphs,
+  mdSection,
+} from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import type { SyncResult } from '@brawlhub/sync';
 import { EmbedBuilder } from 'discord.js';
 import { OVERVIEW_FIELD_LABELS } from '../clubs/overview/fields';
@@ -39,12 +48,14 @@ export function buildClubRegistrationPreviewEmbed(
   preview: ClubRegistrationPreview,
 ): EmbedBuilder {
   return new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.neutral)
     .setTitle('Confirm club registration')
-    .setDescription('Verify the official Brawl Stars club below before confirming.')
+    .setDescription(
+      mdSection('Before you confirm', 'Verify the official Brawl Stars club below before confirming.'),
+    )
     .addFields(
       { name: 'Club', value: text(preview.name), inline: INLINE },
-      { name: 'Tag', value: `#${preview.tag}`, inline: INLINE },
+      { name: 'Tag', value: mdCode(`#${preview.tag}`), inline: INLINE },
       { name: 'Trophies', value: text(preview.trophies), inline: INLINE },
       { name: 'Members', value: text(preview.memberCount), inline: INLINE },
     );
@@ -52,19 +63,21 @@ export function buildClubRegistrationPreviewEmbed(
 
 export function buildClubRegisteredEmbed(preview: ClubRegistrationPreview): EmbedBuilder {
   return new EmbedBuilder()
-    .setColor(0x57f2_87)
+    .setColor(EMBED_COLORS.success)
     .setTitle('Club registered')
-    .setDescription(`${text(preview.name)} (#${preview.tag}) is now registered with BrawlHub.`);
+    .setDescription(
+      `${text(preview.name)} (${mdCode(`#${preview.tag}`)}) is now registered with BrawlHub.`,
+    );
 }
 
 export function buildSyncResultEmbed(result: SyncResult, run: SyncRunSummary | null): EmbedBuilder {
-  const color = result.status === 'failed' ? 0xed_4245 : result.status === 'skipped' ? 0xfaa_61a : 0x57f2_87;
+  const color = result.status === 'failed' ? EMBED_COLORS.danger : result.status === 'skipped' ? EMBED_COLORS.warning : EMBED_COLORS.success;
   const embed = new EmbedBuilder()
     .setColor(color)
     .setTitle(result.status === 'completed' ? 'Sync completed' : result.status === 'failed' ? 'Sync failed' : 'Sync skipped')
     .addFields(
-      { name: 'Status', value: result.status, inline: INLINE },
-      { name: 'Run', value: text(result.syncRunId), inline: INLINE },
+      { name: 'Status', value: mdCode(result.status), inline: INLINE },
+      { name: 'Run', value: mdCode(text(result.syncRunId)), inline: INLINE },
       { name: 'Clubs processed', value: text(result.clubsProcessed), inline: INLINE },
       { name: 'Affected clubs', value: text(result.affectedClubIds.length), inline: INLINE },
       { name: 'Players upserted', value: text(result.playersUpserted), inline: INLINE },
@@ -75,7 +88,7 @@ export function buildSyncResultEmbed(result: SyncResult, run: SyncRunSummary | n
     );
 
   if (result.error !== undefined) {
-    embed.addFields({ name: 'Error', value: text(result.error) });
+    embed.addFields({ name: 'Error', value: mdCode(text(result.error)) });
   }
   return embed;
 }
@@ -83,11 +96,11 @@ export function buildSyncResultEmbed(result: SyncResult, run: SyncRunSummary | n
 export function buildSyncStatusEmbed(view: SyncStatusView): EmbedBuilder {
   const run = view.latestRun;
   const embed = new EmbedBuilder()
-    .setColor(view.lock.active ? 0xfaa_61a : 0x5865_f2)
+    .setColor(view.lock.active ? EMBED_COLORS.warning : EMBED_COLORS.neutral)
     .setTitle('Synchronisation status')
     .addFields(
       { name: 'Currently running', value: view.lock.active ? 'Yes' : 'No', inline: INLINE },
-      { name: 'Latest status', value: text(run?.status), inline: INLINE },
+      { name: 'Latest status', value: mdCode(text(run?.status)), inline: INLINE },
       { name: 'Start', value: timestamp(run?.startedAt ?? null), inline: INLINE },
       { name: 'Completed', value: timestamp(run?.finishedAt ?? null), inline: INLINE },
       { name: 'Affected clubs', value: text(run?.affectedClubIds.length ?? 0), inline: INLINE },
@@ -97,18 +110,21 @@ export function buildSyncStatusEmbed(view: SyncStatusView): EmbedBuilder {
     );
 
   if (run !== null && run.clubTags.length > 0) {
-    embed.addFields({ name: 'Club tags', value: text(run.clubTags.map((tag) => `#${tag}`).join(', ')) });
+    embed.addFields({
+      name: 'Club tags',
+      value: text(mdList(run.clubTags.map((tag) => mdCode(`#${tag}`)))),
+    });
   }
   const error = run?.error ?? null;
   if (error !== null) {
-    embed.addFields({ name: 'Error', value: text(error) });
+    embed.addFields({ name: 'Error', value: mdCode(text(error)) });
   } else if (run !== null && run.lastError !== null) {
     // `last_error` is retained across retries by design (migration 0004). Only
     // present it as the active error when the run actually failed, otherwise
     // label it so an in-progress sync isn't shown as broken.
     embed.addFields({
       name: run.status === 'failed' ? 'Error' : 'Previous error',
-      value: text(run.lastError),
+      value: mdCode(text(run.lastError)),
     });
   }
   return embed;
@@ -120,16 +136,17 @@ export function buildSettingsViewEmbed(
 ): EmbedBuilder {
   const mappingValue =
     roleMappings.length === 0
-      ? 'Not configured. Use `/settings set-role-mapping` to map Discord roles to BrawlHub roles.'
-      : roleMappings
-          .slice(0, 10)
-          .map((mapping) => `<@&${mapping.discordRoleId}> → **${mapping.brawlhubRole}**`)
-          .join('\n');
+      ? `Not configured. Use ${mdCode('/settings set-role-mapping')} to map Discord roles to BrawlHub roles.`
+      : mdList(
+          roleMappings
+            .slice(0, 10)
+            .map((mapping) => `<@&${mapping.discordRoleId}> → **${mapping.brawlhubRole}**`),
+        );
 
   return new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.neutral)
     .setTitle('Guild settings')
-    .setDescription(`Settings for guild \`${settings.guildId}\`.`)
+    .setDescription(mdSection('Scope', `Settings for guild ${mdCode(settings.guildId)}.`))
     .addFields(
       {
         name: 'Announcement channel',
@@ -149,10 +166,11 @@ export function buildSettingsViewEmbed(
       {
         name: 'Overview sections',
         value: text(
-          settings.overviewFields
-            .map((field) => OVERVIEW_FIELD_LABELS[field])
-            .filter((label): label is string => label !== undefined)
-            .join(', '),
+          mdList(
+            settings.overviewFields
+              .map((field) => OVERVIEW_FIELD_LABELS[field])
+              .filter((label): label is string => label !== undefined),
+          ),
           'All defaults',
         ),
       },
@@ -194,29 +212,32 @@ export function buildRoleMappingsEmbed(
   notice?: string,
 ): EmbedBuilder {
   const embed = new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.neutral)
     .setTitle('Discord role mappings')
     .setDescription(
-      `Configured BrawlHub role mappings for guild \`${guildId}\`. ${notice ?? 'These mappings grant BrawlHub permissions in this server.'}`.slice(
-        0,
-        4000,
-      ),
+      mdParagraphs(
+        `Configured BrawlHub role mappings for guild ${mdCode(guildId)}.`,
+        notice ?? 'These mappings grant BrawlHub permissions in this server.',
+      ).slice(0, 4000),
     );
 
   if (roleMappings.length === 0) {
     embed.addFields({
       name: 'Mappings',
-      value: 'None configured. Use `/settings set-role-mapping` to add one (e.g. club leaders role → admin/staff).',
+      value: `None configured. Use ${mdCode('/settings set-role-mapping')} to add one (e.g. club leaders role → admin/staff).`,
     });
     return embed;
   }
 
   embed.addFields({
     name: `Mappings (${roleMappings.length})`,
-    value: roleMappings
-      .map((mapping) => `• <@&${mapping.discordRoleId}> → **${mapping.brawlhubRole}**`)
-      .join('\n')
-      .slice(0, MAX_FIELD_LENGTH),
+    value: text(
+      mdList(
+        roleMappings.map(
+          (mapping) => `<@&${mapping.discordRoleId}> → **${mapping.brawlhubRole}**`,
+        ),
+      ),
+    ),
   });
   return embed;
 }
@@ -227,27 +248,37 @@ export function buildSettingsUpdatedEmbed(
 ): EmbedBuilder {
   const embed = buildSettingsViewEmbed(settings);
   embed.setTitle('Guild settings updated');
-  embed.setColor(0x57f2_87);
-  embed.addFields({ name: 'Changed', value: text(changedFields.join(', '), 'None') });
+  embed.setColor(EMBED_COLORS.success);
+  embed.addFields({
+    name: 'Changed',
+    value: text(mdList(changedFields.map((field) => mdCode(field))), 'None'),
+  });
   return embed;
 }
 
 function auditEntryValue(entry: AuditLogEntry, index: number): string {
   const details = detailsText(entry.details);
-  return [
-    `'${index}' ${entry.action}`,
-    `Actor: ${entry.actorLabel}`,
-    `Target: ${text(entry.targetType)} / ${text(entry.targetId)}`,
-    `Time: ${timestamp(entry.createdAt)}`,
-    ...(details === '' ? [] : [`Details: \`${details}\``]),
-  ].join('\n');
+  return mdSection(
+    `'${index}' ${mdCode(entry.action)}`,
+    mdLabelLines([
+      `Actor: ${entry.actorLabel}`,
+      `Target: ${text(entry.targetType)} / ${text(entry.targetId)}`,
+      `Time: ${timestamp(entry.createdAt)}`,
+      ...(details === '' ? [] : [`Details: ${mdCode(details)}`]),
+    ]),
+  );
 }
 
 export function buildAuditPageEmbed(view: AuditLogView, page: Page<AuditLogEntry>): EmbedBuilder {
   const embed = new EmbedBuilder()
-    .setColor(0x5865_f2)
+    .setColor(EMBED_COLORS.neutral)
     .setTitle('BrawlHub audit log')
-    .setDescription(`Page ${page.page} of ${page.pageCount} — ${page.total} record(s). Read-only.`);
+    .setDescription(
+      mdParagraphs(
+        mdBold(`Page ${page.page} of ${page.pageCount} — ${page.total} record(s).`),
+        'Read-only.',
+      ),
+    );
 
   if (page.items.length === 0) {
     embed.addFields({ name: 'No records', value: 'No audit entries are available.' });
@@ -265,28 +296,39 @@ export function buildAuditPageEmbed(view: AuditLogView, page: Page<AuditLogEntry
 
 export function buildClubArchivePreviewEmbed(clubName: string, clubTag: string): EmbedBuilder {
   return new EmbedBuilder()
-    .setColor(0xfaa_61a)
+    .setColor(EMBED_COLORS.warning)
     .setTitle('Archive club?')
     .setDescription(
-      `${clubName} (#${clubTag}) will be hidden from this server’s commands and overview. ` +
-        'Snapshots, memberships, roles and history are kept; this does not delete data. ' +
-        'The tag can be registered again later.',
+      mdSection(
+        'Details',
+        mdParagraphs(
+          `${clubName} (${mdCode(`#${clubTag}`)}) will be hidden from this server’s commands and overview.`,
+          'Snapshots, memberships, roles and history are kept; this does not delete data.',
+          'The tag can be registered again later.',
+        ),
+      ),
     );
 }
 
 export function buildClubArchivedEmbed(clubName: string, clubTag: string): EmbedBuilder {
   return new EmbedBuilder()
-    .setColor(0x57f2_87)
+    .setColor(EMBED_COLORS.success)
     .setTitle('Club archived')
-    .setDescription(`${clubName} (#${clubTag}) is no longer active in this server.`);
+    .setDescription(
+      `${clubName} (${mdCode(`#${clubTag}`)}) is no longer active in this server.`,
+    );
 }
 
 /** @deprecated Kept for compatibility; archival is now available. */
 export function buildClubRemovalUnavailableEmbed(): EmbedBuilder {
   return new EmbedBuilder()
-    .setColor(0xfaa_61a)
+    .setColor(EMBED_COLORS.warning)
     .setTitle('Club removal is unavailable')
     .setDescription(
-      'The current schema has no archival state. Deleting a club would cascade-delete snapshots, memberships and roles, so destructive removal is intentionally disabled. A safe archival migration is required before this command can be enabled.',
+      mdParagraphs(
+        'The current schema has no archival state.',
+        'Deleting a club would cascade-delete snapshots, memberships and roles, so destructive removal is intentionally disabled.',
+        'A safe archival migration is required before this command can be enabled.',
+      ),
     );
 }

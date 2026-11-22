@@ -1,3 +1,5 @@
+import { EMBED_COLORS } from '../../discord/embed-style';
+import { mdCode, mdParagraphs } from '../../discord/embed-format';
 import { EmbedBuilder } from 'discord.js';
 import { getBotConfig } from '../../config';
 import { clubEmojis, fitEmbedToDiscordLimits } from '../embed';
@@ -5,7 +7,7 @@ import { cleanTag } from '../../discord/format';
 import { CLUB_LOG_PERIOD_LABELS } from './page-view';
 import type { ClubLogConfig, ClubLogEvent } from './types';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.neutral;
 const MAX_FIELDS = 25;
 const STORED_HISTORY_NOTE = 'From stored BrawlHub sync history • not live';
 
@@ -37,8 +39,8 @@ export function buildClubLogsConfigEmbed(input: {
     .setTitle(`${emojis.members} Club change logs`)
     .setDescription(
       input.logs.length === 0
-        ? `No club logs are configured for this server (\`${input.guildId}\`).`
-        : `Club logs configured for this server (\`${input.guildId}\`):`,
+        ? `No club logs are configured for this server (${mdCode(input.guildId)}).`
+        : `Club logs configured for this server (${mdCode(input.guildId)}):`,
     );
 
   if (input.notice !== undefined && input.notice !== null && input.notice.trim() !== '') {
@@ -48,7 +50,7 @@ export function buildClubLogsConfigEmbed(input: {
   const shown = input.logs.length > MAX_FIELDS ? MAX_FIELDS - 1 : MAX_FIELDS;
   for (const log of input.logs.slice(0, shown)) {
     const periodLabels = (log.periods.length > 0 ? log.periods : (['today'] as const))
-      .map((period) => CLUB_LOG_PERIOD_LABELS[period])
+      .map((period) => mdCode(CLUB_LOG_PERIOD_LABELS[period]))
       .join(', ');
     embed.addFields({
       name: truncate(`${log.clubName} (#${cleanTag(log.clubTag)})`, 256),
@@ -91,7 +93,7 @@ export function buildClubLogEventEmbed(input: {
     const timestamp = discordTimestamp(event.detectedAt);
     embed.addFields({
       name: truncate(`${KIND_LABELS[event.kind]} • ${timestamp}`, 256),
-      value: truncate(`${event.description}\n${timestamp}`, 1024),
+      value: truncate(mdParagraphs(event.description, timestamp), 1024),
     });
   }
   return fitEmbedToDiscordLimits(embed);

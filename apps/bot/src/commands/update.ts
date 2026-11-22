@@ -1,3 +1,5 @@
+import { mdList, mdSection } from '../discord/embed-format';
+import { EMBED_COLORS } from '../discord/embed-style';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -13,7 +15,8 @@ import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
 import { refreshGuildRankedRoles } from '../ranked-roles/service.js';
 
-const EMBED_COLOR = 0x5865_f2;
+const EMBED_COLOR = EMBED_COLORS.neutral;
+const SUCCESS_COLOR = EMBED_COLORS.success;
 
 export const updateCommandData = new SlashCommandBuilder()
   .setName('update')
@@ -54,7 +57,13 @@ export async function handleUpdate(interaction: ChatInputCommandInteraction): Pr
           .setColor(EMBED_COLOR)
           .setTitle('Refresh ranked roles?')
           .setDescription(
-            'This updates ranked roles for verified main accounts in this server using stored official Brawl Stars data. It does not create channels or run a sync.',
+            mdSection(
+              'What this does',
+              mdList([
+                'This updates ranked roles for verified main accounts in this server using stored official Brawl Stars data.',
+                'It does not create channels or run a sync.',
+              ]),
+            ),
           ),
       ],
       components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button)],
@@ -81,7 +90,7 @@ export async function handleUpdateComponent(interaction: CommandComponentInterac
     await interaction.editReply({
       embeds: [
         new EmbedBuilder()
-          .setColor(EMBED_COLOR)
+          .setColor(SUCCESS_COLOR)
           .setTitle('Ranked roles refreshed')
           .addFields(
             { name: 'Verified mains', value: String(result.planned), inline: true },
