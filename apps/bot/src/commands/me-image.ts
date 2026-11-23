@@ -4,16 +4,23 @@ import { getBotConfig } from '../config.js';
 import { replyWithSafeError } from '../discord/errors';
 import { cleanTag, escapeMarkdown } from '../discord/format';
 import { loadOrRenderChart } from '../images/chart-service.js';
-import { buildSeasonProgressImage } from '../images/season-card.js';
 import { resolveBrawlerPortraitUrl, resolvePlayerIconUrl } from '../metadata/assets.js';
 import {
   buildPlayerCardImage,
   selectTopBrawlers,
+  type ModeWinStat,
   type PlayerCardAssets,
+  type PlayerCardCharts,
   type PlayerCardOptions,
   type PlayerHistorySummary,
+  type PlayerSnapshotPoint,
 } from '../players/card.js';
-import { loadPlayerBrawlers, loadPlayerHistory, loadPlayerProfile } from '../players/service';
+import {
+  loadPlayerBattles,
+  loadPlayerBrawlers,
+  loadPlayerHistory,
+  loadPlayerProfile,
+} from '../players/service';
 import { listLinkedAccounts, type LinkedAccountView } from '../verification/index.js';
 import { DEFAULT_ME_IMAGE_MODE, isMeImageMode } from './me-image-modes.js';
 import { meTagErrorMessage, resolveMeTag } from './me-utils.js';
@@ -29,15 +36,30 @@ function badgesFor(accounts: readonly LinkedAccountView[] | null, tag: string): 
   return linked.isMain ? ['VERIFIED', 'MAIN'] : ['VERIFIED', 'ALT'];
 }
 
-/** Build the truthful history summary used by the Player History preset. */
-async function loadHistorySummary(
-  tag: string,
-  guildId: string | null,
-): Promise<PlayerHistorySummary | null> {
-  if (guildId === null) return null;
+interface LoadedHistory {
+  readonly summary: PlayerHistorySummary | null;
+  readonly snapshots: readonly PlayerSnapshotPoint[];
+}
+
+/** Convert an official battle mode id such as `brawlBall` into `Brawl Ball`. */
+function modeLabel(mode: string | null): string {
+  if (mode === null || mode.trim() === '') return 'Unknown';
+  return mode
+    .trim()
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/** Build the truthful history summary and trophy points used by the presets. */
+async function loadHistoryData(tag: string, guildId: string | null): Promise<LoadedHistory> {
+  if (guildId === null) return { summary: null, snapshots: [] };
   try {
     const result = await loadPlayerHistory({ tag, guildId, period: '30d' });
-    if (result.kind !== 'ok') return null;
+    if (result.kind !== 'ok') return { summary: null, snapshots: [] };
     const view = result.value;
     const first = view.points[0] ?? null;
     const latest = view.points.at(-1) ?? null;
@@ -54,27 +76,61 @@ async function loadHistorySummary(
     });
     const megaPig = view.player.megaPig ?? null;
     return {
-      points: view.points.length,
-      firstAt: first?.capturedAt ?? null,
-      latestAt: latest?.capturedAt ?? null,
-      firstTrophies: first?.trophies ?? null,
-      latestTrophies: latest?.trophies ?? null,
-      clubChanges: view.events.length,
-      nameChanges: null,
-      events,
-      megaPig:
-        megaPig === null
-          ? null
-          : {
-              date: megaPig.date ?? null,
-              wins: megaPig.wins ?? null,
-              draws: megaPig.draws ?? null,
-              losses: megaPig.losses ?? null,
-              ticketsUsed: megaPig.ticketsUsed ?? null,
-            },
+      summary: {
+        points: view.points.length,
+        firstAt: first?.capturedAt ?? null,
+        latestAt: latest?.capturedAt ?? null,
+        firstTrophies: first?.trophies ?? null,
+        latestTrophies: latest?.trophies ?? null,
+        clubChanges: view.events.length,
+        nameChanges: null,
+        events,
+        megaPig:
+          megaPig === null
+            ? null
+            : {
+                date: megaPig.date ?? null,
+                wins: megaPig.wins ?? null,
+                draws: megaPig.draws ?? null,
+                losses: megaPig.losses ?? null,
+                ticketsUsed: megaPig.ticketsUsed ?? null,
+              },
+      },
+      snapshots: view.points.map((point) => ({
+        date: point.capturedAt,
+        trophies: point.trophies,
+      })),
     };
   } catch {
-    return null;
+    return { summary: null, snapshots: [] };
+  }
+}
+
+/** Aggregate stored official battles into mode win rates for the season preset. */
+async function loadModeStats(tag: string, guildId: string | null): Promise<readonly ModeWinStat[]> {
+  if (guildId === null) return [];
+  try {
+    const result = await loadPlayerBattles({ tag, guildId, period: '30d' });
+    if (result.kind !== 'ok') return [];
+    const counts = new Map<string, { wins: number; matches: number }>();
+    for (const battle of result.value.battles) {
+      const label = modeLabel(battle.mode);
+      const entry = counts.get(label) ?? { wins: 0, matches: 0 };
+      entry.matches += 1;
+      if (battle.result?.toLowerCase() === 'victory') entry.wins += 1;
+      counts.set(label, entry);
+    }
+    return [...counts.entries()]
+      .map(([label, entry]) => ({
+        label,
+        wins: entry.wins,
+        matches: entry.matches,
+        winRate: entry.matches === 0 ? null : (entry.wins / entry.matches) * 100,
+      }))
+      .sort((left, right) => right.matches - left.matches)
+      .slice(0, 8);
+  } catch {
+    return [];
   }
 }
 
@@ -131,7 +187,6 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
       badges: badgesFor(linkedAccounts, profile.player.tag),
     };
     let options: PlayerCardOptions = { mode };
-    let seasonImage: Buffer | null = null;
 
     if (mode === 'season') {
       const config = getBotConfig();
@@ -139,12 +194,16 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
         start: config.seasonStartIso ?? null,
         end: config.seasonEndIso ?? null,
       };
-      options = { mode, seasonWindow };
+      let snapshots: readonly PlayerSnapshotPoint[] = [];
+      let modeStats: readonly ModeWinStat[] = [];
+      let charts: PlayerCardCharts | null = null;
 
       // Stored history is guild-scoped. Without a guild we can only show the
       // current official snapshot, never cross-guild graph data.
       if (interaction.guildId !== null) {
-        const [trophyChart, activityChart] = await Promise.all([
+        const [history, stats, trophyChart, activityChart] = await Promise.all([
+          loadHistoryData(resolved.tag, interaction.guildId),
+          loadModeStats(resolved.tag, interaction.guildId),
           loadOrRenderChart({
             guildId: interaction.guildId,
             kind: 'player',
@@ -160,17 +219,20 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
             period: '30d',
           }),
         ]);
+        snapshots = history.snapshots;
+        modeStats = stats;
         if (trophyChart.kind === 'ok' && activityChart.kind === 'ok') {
-          seasonImage = await buildSeasonProgressImage({
-            profile,
-            seasonWindow,
+          charts = {
             trophyChartPng: trophyChart.image.png,
             activityChartPng: activityChart.image.png,
-          });
+          };
         }
       }
+
+      options = { mode, seasonWindow, snapshots, modeStats, charts };
     } else if (mode === 'history') {
-      options = { mode, history: await loadHistorySummary(resolved.tag, interaction.guildId) };
+      const history = await loadHistoryData(resolved.tag, interaction.guildId);
+      options = { mode, history: history.summary, snapshots: history.snapshots };
     } else if (mode === 'brawler') {
       const detailResult = await loadPlayerBrawlers({
         tag: resolved.tag,
@@ -193,14 +255,14 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
       };
     }
 
-    const image = seasonImage ?? (await buildPlayerCardImage(profile, assets, options));
+    const image = await buildPlayerCardImage(profile, assets, options);
     const clean = cleanTag(profile.player.tag);
     const fileName = mode === 'profile' ? `brawlhub-${clean}.png` : `brawlhub-${clean}-${mode}.png`;
     const label =
       mode === 'profile'
         ? 'Player card'
-        : seasonImage !== null
-          ? 'Season progress with stored graphs'
+        : mode === 'season'
+          ? 'Season progress'
           : `${mode.replaceAll('_', ' ')} card`;
 
     const attachment = new AttachmentBuilder(image, { name: fileName });

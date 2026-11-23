@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   service: {
     loadPlayerProfile: vi.fn(),
     loadPlayerHistory: vi.fn(),
+    loadPlayerBattles: vi.fn(),
     loadPlayerBrawlers: vi.fn(),
     searchPlayers: vi.fn(),
   },
@@ -24,9 +25,6 @@ const mocks = vi.hoisted(() => ({
   charts: {
     loadOrRenderChart: vi.fn(),
   },
-  seasonCard: {
-    buildSeasonProgressImage: vi.fn(async (): Promise<Buffer> => Buffer.from('season-png')),
-  },
 }));
 
 vi.mock('../players/service', () => mocks.service);
@@ -40,7 +38,6 @@ vi.mock('../verification/index', () => mocks.verification);
 vi.mock('../metadata/assets.js', () => mocks.assets);
 vi.mock('../players/card.js', () => mocks.card);
 vi.mock('../images/chart-service.js', () => mocks.charts);
-vi.mock('../images/season-card.js', () => mocks.seasonCard);
 
 import { handleMeImage } from './me-image';
 
@@ -111,6 +108,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.service.loadPlayerProfile.mockResolvedValue(profileResult());
   mocks.service.loadPlayerHistory.mockResolvedValue({ kind: 'not-found', tag: '2C0Y' });
+  mocks.service.loadPlayerBattles.mockResolvedValue({ kind: 'not-found', tag: '2C0Y' });
   mocks.service.loadPlayerBrawlers.mockResolvedValue({ kind: 'not-found', tag: '2C0Y' });
   mocks.verification.findVerifiedPlayerForDiscordUser.mockResolvedValue(null);
   mocks.verification.listLinkedAccounts.mockResolvedValue(null);
@@ -119,7 +117,6 @@ beforeEach(() => {
   mocks.card.buildPlayerCardImage.mockResolvedValue(Buffer.from('fake-png'));
   mocks.card.selectTopBrawlers.mockImplementation((profile: any) => profile.brawlers.slice(0, 3));
   mocks.charts.loadOrRenderChart.mockResolvedValue({ kind: 'not-found', tag: '2C0Y' });
-  mocks.seasonCard.buildSeasonProgressImage.mockResolvedValue(Buffer.from('season-png'));
 });
 
 describe('/me image', () => {
@@ -257,13 +254,37 @@ describe('/me image', () => {
     expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      {
+      expect.objectContaining({
         mode: 'season',
         seasonWindow: {
           start: '2026-11-05T08:00:00.000Z',
           end: '2026-12-03T08:00:00.000Z',
         },
-      },
+        snapshots: [],
+        modeStats: [],
+        charts: null,
+      }),
+    );
+  });
+
+  it('uses a snapshot-only season card in DMs', async () => {
+    mocks.verification.findVerifiedPlayerForDiscordUser.mockResolvedValue({ tag: '2C0Y' });
+    const interaction = chatInteraction({ mode: 'season' }, null);
+
+    await handleMeImage(interaction);
+
+    expect(mocks.service.loadPlayerHistory).not.toHaveBeenCalled();
+    expect(mocks.service.loadPlayerBattles).not.toHaveBeenCalled();
+    expect(mocks.charts.loadOrRenderChart).not.toHaveBeenCalled();
+    expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        mode: 'season',
+        snapshots: [],
+        modeStats: [],
+        charts: null,
+      }),
     );
   });
 
@@ -301,7 +322,25 @@ describe('/me image', () => {
     expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y-brawler.png');
   });
 
-  it('builds a graph-heavy season image when stored charts are available', async () => {
+  it('builds the graph-heavy season preset from stored charts and battles', async () => {
+    mocks.service.loadPlayerHistory.mockResolvedValue({
+      kind: 'ok',
+      value: {
+        points: [{ capturedAt: '2026-11-05T08:00:00.000Z', trophies: 4800 }],
+        events: [],
+        player: { megaPig: null },
+      },
+    });
+    mocks.service.loadPlayerBattles.mockResolvedValue({
+      kind: 'ok',
+      value: {
+        battles: [
+          { mode: 'gemGrab', result: 'victory' },
+          { mode: 'gemGrab', result: 'defeat' },
+          { mode: 'brawlBall', result: 'victory' },
+        ],
+      },
+    });
     mocks.charts.loadOrRenderChart
       .mockResolvedValueOnce({ kind: 'ok', image: { png: Buffer.from('trophy-chart') } })
       .mockResolvedValueOnce({ kind: 'ok', image: { png: Buffer.from('activity-chart') } });
@@ -314,18 +353,27 @@ describe('/me image', () => {
       'trophies',
       'activity',
     ]);
-    expect(mocks.seasonCard.buildSeasonProgressImage).toHaveBeenCalledWith(
+    expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
       expect.objectContaining({
-        trophyChartPng: Buffer.from('trophy-chart'),
-        activityChartPng: Buffer.from('activity-chart'),
+        mode: 'season',
         seasonWindow: {
           start: '2026-11-05T08:00:00.000Z',
           end: '2026-12-03T08:00:00.000Z',
         },
+        snapshots: [{ date: '2026-11-05T08:00:00.000Z', trophies: 4800 }],
+        modeStats: [
+          { label: 'Gem Grab', wins: 1, matches: 2, winRate: 50 },
+          { label: 'Brawl Ball', wins: 1, matches: 1, winRate: 100 },
+        ],
+        charts: {
+          trophyChartPng: Buffer.from('trophy-chart'),
+          activityChartPng: Buffer.from('activity-chart'),
+        },
       }),
     );
-    expect(mocks.card.buildPlayerCardImage).not.toHaveBeenCalled();
-    expect(payload(interaction).content).toContain('Season progress with stored graphs');
+    expect(payload(interaction).content).toContain('Season progress');
     expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y-season.png');
   });
 
@@ -378,6 +426,10 @@ describe('/me image', () => {
             ticketsUsed: 4,
           },
         },
+        snapshots: [
+          { date: '2026-11-01T00:00:00.000Z', trophies: 4800 },
+          { date: '2026-11-20T00:00:00.000Z', trophies: 5000 },
+        ],
       },
     );
   });

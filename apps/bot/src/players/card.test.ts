@@ -50,13 +50,13 @@ describe('buildPlayerCardImage', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders a 1200x720 PNG', async () => {
+  it('renders a 1200x650 profile PNG', async () => {
     const buffer = await buildPlayerCardImage(profile());
     const metadata = await sharp(buffer).metadata();
 
     expect(metadata.format).toBe('png');
     expect(metadata.width).toBe(1200);
-    expect(metadata.height).toBe(720);
+    expect(metadata.height).toBe(650);
     expect(buffer.byteLength).toBeGreaterThan(1_000);
   });
 
@@ -86,7 +86,7 @@ describe('buildPlayerCardImage', () => {
     expect(buffer.byteLength).toBeGreaterThan(1_000);
   });
 
-  it('normalizes valid static assets into the rendered card', async () => {
+  it('normalizes valid player and club assets into the rendered card', async () => {
     const png = await sharp({
       create: { width: 64, height: 64, channels: 4, background: { r: 80, g: 80, b: 200, alpha: 1 } },
     })
@@ -99,22 +99,19 @@ describe('buildPlayerCardImage', () => {
 
     const buffer = await buildPlayerCardImage(profile(), {
       playerIconUrl: 'https://cdn.example.test/icon.png',
-      brawlerPortraitUrls: [
-        'https://cdn.example.test/shelly.png',
-        'https://cdn.example.test/nita.png',
-        'https://cdn.example.test/colt.png',
-      ],
+      clubBadgeUrl: 'https://cdn.example.test/badge.png',
     });
     const metadata = await sharp(buffer).metadata();
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(metadata.format).toBe('png');
     expect(metadata.width).toBe(1200);
-    expect(metadata.height).toBe(720);
+    expect(metadata.height).toBe(650);
     expect(buffer.byteLength).toBeGreaterThan(1_000);
   });
 
-  it('renders every BrawlTools-style preset as a 1200x720 PNG', async () => {
+  it('renders every BrawlTools-style preset at its expected size', async () => {
+    const gridModes = new Set(['brawler', 'rank', 'trophies', 'highest']);
     for (const mode of PLAYER_CARD_MODES) {
       const buffer = await buildPlayerCardImage(profile(), {}, {
         mode,
@@ -130,12 +127,18 @@ describe('buildPlayerCardImage', () => {
           events: [{ type: 'join', label: 'Joined Alpha Club', date: '2026-11-02T00:00:00.000Z' }],
           megaPig: { date: '2026-11-01T00:00:00.000Z', wins: 5, draws: 1, losses: 2, ticketsUsed: 4 },
         },
+        snapshots: [
+          { date: '2026-11-01T00:00:00.000Z', trophies: 4800 },
+          { date: '2026-11-20T00:00:00.000Z', trophies: 5000 },
+        ],
+        modeStats: [{ label: 'Gem Grab', wins: 3, matches: 5, winRate: 60 }],
       });
       const metadata = await sharp(buffer).metadata();
+      const expectedHeight = mode === 'history' ? 1800 : gridModes.has(mode) ? 1500 : mode === 'season' ? 720 : 650;
 
       expect(metadata.format, mode).toBe('png');
       expect(metadata.width, mode).toBe(1200);
-      expect(metadata.height, mode).toBe(720);
+      expect(metadata.height, mode).toBe(expectedHeight);
       expect(buffer.byteLength, mode).toBeGreaterThan(1_000);
     }
   });
@@ -147,6 +150,23 @@ describe('buildPlayerCardImage', () => {
 
   it('renders the history preset without stored data', async () => {
     const buffer = await buildPlayerCardImage(profile(), {}, { mode: 'history', history: null });
+    expect(buffer.byteLength).toBeGreaterThan(1_000);
+  });
+
+  it('composites stored charts into the season preset', async () => {
+    const chart = await sharp({
+      create: { width: 32, height: 32, channels: 4, background: { r: 30, g: 20, b: 70, alpha: 1 } },
+    })
+      .png()
+      .toBuffer();
+    const buffer = await buildPlayerCardImage(profile(), {}, {
+      mode: 'season',
+      charts: { trophyChartPng: chart, activityChartPng: chart },
+    });
+    const metadata = await sharp(buffer).metadata();
+
+    expect(metadata.width).toBe(1200);
+    expect(metadata.height).toBe(720);
     expect(buffer.byteLength).toBeGreaterThan(1_000);
   });
 });
