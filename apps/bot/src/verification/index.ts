@@ -7,6 +7,13 @@ export {
 } from './icons.js';
 export type { VerificationTargetIcon } from './icons.js';
 export {
+  readAutoCheckBatchSize,
+  readAutoCheckIntervalSeconds,
+  runVerificationAutoCheck,
+  startVerificationAutoCheckSchedule,
+} from './auto-check.js';
+export type { VerificationAutoCheckSummary } from './auto-check.js';
+export {
   cancelVerification,
   checkVerification,
   clearVerificationChallengesForTests,

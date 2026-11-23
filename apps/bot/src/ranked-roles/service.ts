@@ -283,14 +283,14 @@ export function buildVerificationMessage(guildId: string): {
       [
         `${mdBold('1.')} Run \`/verify tag tag:YOURTAG\` with your Brawl Stars player tag.`,
         `${mdBold('2.')} The bot shows a randomly chosen default brawler icon and its exact ID.`,
-        `${mdBold('3.')} Set that exact icon in Brawl Stars, then run \`/verify check\`.`,
-        `${mdBold('4.')} The official Brawl Stars API confirms the match and links the account to you.`,
+        `${mdBold('3.')} Set that exact icon in Brawl Stars and keep it equipped.`,
+        `${mdBold('4.')} BrawlHub checks the official Brawl Stars API automatically and links the account to you on an exact match.`,
       ].join('\n'),
     ),
     mdSection(
       'Notes',
       mdList([
-        'Challenges expire after 10 minutes. Ownership is never guessed from names, tags or profile pictures.',
+        'Challenges expire after 30 minutes. Ownership is never guessed from names, tags or profile pictures.',
         'Use `/verify accounts list` and `/verify accounts set-main tag:TAG` to choose the account used for ranked roles.',
       ]),
     ),

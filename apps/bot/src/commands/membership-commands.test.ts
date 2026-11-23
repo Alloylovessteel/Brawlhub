@@ -334,7 +334,7 @@ describe('/verify tag command', () => {
     expect(reply.content).toContain('Verification started for Alpha (#2C0Y)');
     expect(reply.content).toContain('Spike');
     expect(reply.content).toContain('default brawler icon');
-    expect(reply.content).toContain('/verify check');
+    expect(reply.content).toContain('automatically');
     expect(reply.content).toContain('any other icon will not verify');
     expect(reply.content).toContain('will not infer ownership');
     expect(reply.embeds?.[0]?.toJSON?.().image?.url ?? JSON.stringify(reply.embeds)).toContain('28000016');
@@ -393,7 +393,7 @@ describe('/verify tag command', () => {
     expect(reply.content).toContain('28000003');
     expect(reply.content).toContain('28000016');
     expect(reply.content).toContain('any other icon will not verify');
-    expect(reply.content).toContain('few minutes');
+    expect(reply.content).toContain('checking automatically');
     expect(reply.embeds?.[0]?.toJSON?.().image?.url ?? JSON.stringify(reply.embeds)).toContain('28000016');
   });
 

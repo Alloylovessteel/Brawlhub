@@ -101,7 +101,7 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
         usage:
           '/verify tag tag:<tag> | /verify check | /verify cancel | /verify status | /verify info | /verify settings | /verify list',
         description:
-          'Verify ownership of a Brawl Stars account and manage verified links, identity data and the verified-member role.',
+          'Verify ownership of a Brawl Stars account with automatic icon checks and manage verified links, identity data and the verified-member role. `/verify check` remains an immediate fallback.',
         permission: 'members:verify for staff actions and clubs:write for the verified role',
       },
       {

@@ -876,8 +876,8 @@ export async function startVerification(
       code: 'active-challenge',
       message:
         `You already have an active verification challenge for ${formatTag(active.playerTag)} ` +
-        `with required icon **${active.targetIconName}**. Run \`/verify check\` ` +
-        `to finish it, or \`/verify cancel\` before verifying a different player tag.`,
+        `with required icon **${active.targetIconName}**. BrawlHub is checking it automatically; use \`/verify check\` ` +
+        `for an immediate status, or \`/verify cancel\` before verifying a different player tag.`,
       challenge: active,
     };
   }
@@ -986,8 +986,8 @@ export async function startVerification(
         code: 'active-challenge',
         message:
           `You already have an active verification challenge for ${formatTag(raced.challenge.playerTag)} ` +
-          `with required icon **${raced.challenge.targetIconName}**. Run \`/verify check\` ` +
-          `to finish it, or \`/verify cancel\` before verifying a different player tag.`,
+          `with required icon **${raced.challenge.targetIconName}**. BrawlHub is checking it automatically; use \`/verify check\` ` +
+          `for an immediate status, or \`/verify cancel\` before verifying a different player tag.`,
         challenge: raced.challenge,
       };
     }

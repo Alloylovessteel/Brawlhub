@@ -27,6 +27,7 @@ import {
   reconcileAllConfiguredRoles,
   setRoleAutomationClient,
 } from './role-automation/index.js';
+import { startVerificationAutoCheckSchedule } from './verification/auto-check.js';
 import {
   startLiveBattleSchedule,
   stopLiveBattleSchedule,
@@ -87,6 +88,7 @@ let stopOverviewSchedule: (() => void) | undefined;
 let stopClubLogsSchedule: (() => void) | undefined;
 let stopReportsSchedule: (() => void) | undefined;
 let stopRetentionSchedule: (() => void) | undefined;
+let stopVerificationAutoCheckSchedule: (() => void) | undefined;
 let activeSync: Promise<void> | undefined;
 let activeRoleReconcile: Promise<void> | undefined;
 let instanceLock: SingleInstanceLock | undefined;
@@ -344,6 +346,7 @@ client.once('clientReady', async () => {
   stopRetentionSchedule = startBattleRawRetentionSchedule();
   startLiveBattleSchedule(client);
   startAutoRoleSchedule();
+  stopVerificationAutoCheckSchedule = startVerificationAutoCheckSchedule(client);
 });
 
 let shuttingDown = false;
@@ -359,6 +362,7 @@ async function shutdown(signal: string): Promise<void> {
   stopRetentionSchedule?.();
   stopLiveBattleSchedule();
   stopAutoRoleSchedule();
+  stopVerificationAutoCheckSchedule?.();
 
   if (activeRoleReconcile !== undefined) {
     const drained = await waitForInFlightWork(activeRoleReconcile, SHUTDOWN_SYNC_TIMEOUT_MS);

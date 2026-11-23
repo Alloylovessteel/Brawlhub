@@ -199,7 +199,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     `**${heading} for ${challenge.playerName} (${formatTag(challenge.playerTag)})**`,
     '',
     `1. Open Brawl Stars and change your **player icon** to **${icon.name}** (shown below).`,
-    '2. Wait for the official API to update, then run `/verify check`. If it is not detected yet, keep this exact icon and check again.',
+    '2. Keep this exact icon equipped. BrawlHub checks the official API automatically and will verify you as soon as it appears; `/verify check` is only an immediate manual fallback.',
     `3. This challenge expires ${formatExpiry(challenge.expiresAt)}.`,
     '',
     `Starting icon detected by the official API: \`${challenge.startingIconId}\``,
@@ -262,7 +262,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
       '',
       `Current icon ID from the official API: \`${result.currentIconId}\``,
       `Required icon: **${icon.name}** (ID \`${icon.id}\`)`,
-      `Keep your in-game player icon set to **${icon.name}** (shown below). The official API can take a few minutes to show a new icon, so run \`/verify check\` again shortly.`,
+      `Keep your in-game player icon set to **${icon.name}** (shown below). BrawlHub is checking automatically and will verify you as soon as the official API shows it; \`/verify check\` only forces an immediate check.`,
       'Changing to any other icon will not verify ownership.',
       `Challenge expires ${formatExpiry(result.expiresAt)}.`,
     ];
@@ -328,7 +328,7 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
       `Starting icon ID: \`${challenge.startingIconId}\`\n` +
       `Required icon: **${icon.name}** (ID \`${icon.id}\`) — default brawler icon\n` +
       `Expires: ${formatExpiry(challenge.expiresAt)}\n\n` +
-      `Set your in-game icon to **${icon.name}** (shown below), then run \`/verify check\`. Changing to any other icon will not verify.`,
+      `Your in-game icon should be **${icon.name}** (shown below). BrawlHub is checking automatically; changing to any other icon will not verify.`,
     embeds: [targetIconEmbed(icon)],
   });
 }
