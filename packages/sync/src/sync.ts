@@ -39,6 +39,9 @@ const CLUB_CAPACITY = 30;
 const DEFAULT_API_TIMEOUT_MS = 30_000;
 const DEFAULT_NOTIFIER_TIMEOUT_MS = 10_000;
 const MAX_ERROR_LENGTH = 1000;
+/** Recover announcements for events committed by a run that failed before delivery. */
+const NOTIFICATION_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const MAX_NOTIFICATIONS_PER_SYNC = 20;
 
 type EventType = 'join' | 'leave' | 'transfer';
 
@@ -345,18 +348,16 @@ interface SnapshotHashRow {
   payload_hash: string;
 }
 
-interface PlayerLookupRow {
-  id: string;
-  tag: string;
-  name: string;
-}
-
-interface RunEventRow {
+interface PendingEventRow {
   id: string;
   player_id: string;
   event_type: string;
   from_club_id: string | null;
   to_club_id: string | null;
+  detected_at: string;
+  player?: { tag?: unknown; name?: unknown } | null;
+  from_club?: { name?: unknown } | null;
+  to_club?: { name?: unknown } | null;
 }
 
 interface FetchedClub {
@@ -1124,32 +1125,77 @@ async function readOpenMembershipsForClubs(
 }
 
 /**
- * Reads every event owned by this run. Notifications are derived from this list
- * rather than from the current membership state, so a retry after a partial
- * failure can still deliver claims for events that were already committed.
+ * Reads recent membership events involving this guild's clubs. Notifications are
+ * derived from stored events, not just the current run: a run that committed an
+ * event and then failed would otherwise orphan its announcement when the next
+ * sync starts under a new run id.
  */
-async function readRunEvents(db: SupabaseClient, runId: string): Promise<RunEventRow[]> {
-  const result = await db
-    .from('membership_events')
-    .select('id, player_id, event_type, from_club_id, to_club_id')
-    .eq('source_sync_run_id', runId)
-    .order('detected_at', { ascending: true });
-  requireOk(result.error, 'Read run events');
-  return (result.data ?? []) as RunEventRow[];
+async function readPendingEvents(
+  db: SupabaseClient,
+  clubIds: readonly string[],
+  nowIso: string,
+): Promise<PendingEventRow[]> {
+  if (clubIds.length === 0) return [];
+  const sinceIso = new Date(Date.parse(nowIso) - NOTIFICATION_LOOKBACK_MS).toISOString();
+  const columns = `
+    id, player_id, event_type, from_club_id, to_club_id, detected_at,
+    player:players!membership_events_player_id_fkey(tag, name),
+    from_club:clubs!membership_events_from_club_id_fkey(name),
+    to_club:clubs!membership_events_to_club_id_fkey(name)
+  `;
+  const [toEvents, fromEvents] = await Promise.all([
+    db
+      .from('membership_events')
+      .select(columns)
+      .in('to_club_id', [...clubIds])
+      .gte('detected_at', sinceIso)
+      .order('detected_at', { ascending: false })
+      .limit(MAX_NOTIFICATIONS_PER_SYNC),
+    db
+      .from('membership_events')
+      .select(columns)
+      .in('from_club_id', [...clubIds])
+      .gte('detected_at', sinceIso)
+      .order('detected_at', { ascending: false })
+      .limit(MAX_NOTIFICATIONS_PER_SYNC),
+  ]);
+  requireOk(toEvents.error, 'Read membership events by destination club');
+  requireOk(fromEvents.error, 'Read membership events by source club');
+
+  const rows = new Map<string, PendingEventRow>();
+  for (const item of [...(toEvents.data ?? []), ...(fromEvents.data ?? [])]) {
+    const row = item as PendingEventRow;
+    if (
+      typeof row.id !== 'string' ||
+      typeof row.event_type !== 'string' ||
+      typeof row.detected_at !== 'string'
+    ) {
+      continue;
+    }
+    rows.set(row.id, row);
+  }
+  return [...rows.values()]
+    .sort((a, b) => b.detected_at.localeCompare(a.detected_at) || a.id.localeCompare(b.id))
+    .slice(0, MAX_NOTIFICATIONS_PER_SYNC);
 }
 
-async function readPlayerLookup(
+/** Events that already have a notification claim must never be announced again. */
+async function readClaimedEventIds(
   db: SupabaseClient,
-  playerId: string,
-): Promise<{ tag: string; name: string }> {
+  events: readonly PendingEventRow[],
+): Promise<Set<string>> {
+  if (events.length === 0) return new Set();
   const result = await db
-    .from('players')
-    .select('id, tag, name')
-    .eq('id', playerId)
-    .maybeSingle();
-  requireOk(result.error, `Read player ${playerId}`);
-  const row = (result.data ?? null) as PlayerLookupRow | null;
-  return { tag: row?.tag ?? '', name: row?.name ?? '' };
+    .from('notifications')
+    .select('event_id')
+    .in('event_id', [...new Set(events.map((event) => event.id))]);
+  requireOk(result.error, 'Read notification claims');
+  const claimed = new Set<string>();
+  for (const item of result.data ?? []) {
+    const id = (item as { event_id?: unknown } | null)?.event_id;
+    if (typeof id === 'string') claimed.add(id);
+  }
+  return claimed;
 }
 
 async function writeSnapshot(db: SupabaseClient, write: SnapshotWrite): Promise<boolean> {
@@ -1557,13 +1603,10 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
 
     // 4. Leaves for open memberships in this scope absent from the synced roster.
     const openMemberships = await readOpenMembershipsForClubs(db, clubIds);
-    const leavingPlayers = new Map<string, { tag: string; name: string }>();
     for (const open of openMemberships) {
       if (presentPlayerIds.has(open.player_id)) {
         continue;
       }
-      const player = await readPlayerLookup(db, open.player_id);
-      leavingPlayers.set(open.player_id, player);
       await applyMembershipTransition(db, {
         playerId: open.player_id,
         eventType: 'leave',
@@ -1579,26 +1622,39 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     }
 
     // Notifications are derived from persisted events, not from the live
-    // membership state. A retry can therefore deliver an event that was
-    // committed in an earlier failed attempt without creating a new event.
-    const playerLookups = new Map<string, { tag: string; name: string }>();
-    for (const state of states) {
-      playerLookups.set(state.playerId, { tag: state.tag, name: state.name });
-    }
-    for (const [playerId, player] of leavingPlayers) {
-      playerLookups.set(playerId, player);
-    }
-    const pendingNotifications: SyncNotificationInput[] = (await readRunEvents(db, runId)).map(
-      (event) =>
-        buildNotification(
+    // membership state or the current run id. An event committed by a run that
+    // later failed is still announced by a later sync unless it was already
+    // claimed in the notifications ledger.
+    const recentEvents = await readPendingEvents(db, clubIds, nowIso);
+    const claimedEventIds = await readClaimedEventIds(db, recentEvents);
+    const pendingNotifications: SyncNotificationInput[] = recentEvents
+      .filter((event) => !claimedEventIds.has(event.id))
+      .map((event) => {
+        const fromClubId = event.from_club_id ?? undefined;
+        const toClubId = event.to_club_id ?? undefined;
+        const fallbackNames = new Map<string, string>();
+        const fromName = event.from_club?.name;
+        const toName = event.to_club?.name;
+        if (fromClubId !== undefined && typeof fromName === 'string') {
+          fallbackNames.set(fromClubId, fromName);
+        }
+        if (toClubId !== undefined && typeof toName === 'string') {
+          fallbackNames.set(toClubId, toName);
+        }
+        const tag = event.player?.tag;
+        const name = event.player?.name;
+        return buildNotification(
           event.id,
           event.event_type as EventType,
-          playerLookups.get(event.player_id) ?? { tag: '', name: '' },
-          clubNames,
-          event.from_club_id ?? undefined,
-          event.to_club_id ?? undefined,
-        ),
-    );
+          {
+            tag: typeof tag === 'string' ? tag : '',
+            name: typeof name === 'string' ? name : '',
+          },
+          new Map([...fallbackNames, ...clubNames]),
+          fromClubId,
+          toClubId,
+        );
+      });
 
     // 5. Capacity transitions and snapshots (snapshots are skipped when the
     //    payload digest is unchanged). Read the previous count before writing

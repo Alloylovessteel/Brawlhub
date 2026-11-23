@@ -85,6 +85,11 @@ vi.mock('@brawlhub/database', () => {
       return this;
     }
 
+    gte(column: string, value: unknown): this {
+      this.filters[column] = { gte: value };
+      return this;
+    }
+
     order(column: string, options?: unknown): this {
       this.orders.push({ column, options });
       return this;
@@ -517,9 +522,14 @@ describe('runSync', () => {
           event_type: 'transfer',
           from_club_id: 'club-old',
           to_club_id: 'club-1',
+          detected_at: T0.toISOString(),
+          player: { tag: 'G2P9', name: 'Player One' },
+          from_club: { name: 'Old Club' },
+          to_club: { name: 'Alpha' },
         },
       ],
     });
+    fake.state.handlers['notifications:select'] = () => ({ data: [] });
 
     let claimAttempts = 0;
     let sends = 0;
@@ -553,6 +563,53 @@ describe('runSync', () => {
     expect(claimAttempts).toBe(2);
     expect(delivered[0]?.clubName).toBe('Alpha');
     expect(delivered[0]?.toClubName).toBe('Alpha');
+  });
+
+  it('announces an event committed by a failed run when a later run gets a new run id', async () => {
+    setupSuccessfulSync({ failFirstSnapshot: true, forceOldMembership: true });
+    const failed = await runSync({ now: T0, guildId: 'guild-test' });
+    expect(failed.status).toBe('failed');
+
+    const orphanedEvent = {
+      id: 'orphan-event',
+      player_id: 'player-1',
+      event_type: 'transfer',
+      from_club_id: 'club-old',
+      to_club_id: 'club-1',
+      detected_at: T0.toISOString(),
+      player: { tag: 'G2P9', name: 'Player One' },
+      from_club: { name: 'Old Club' },
+      to_club: { name: 'Alpha' },
+    };
+    fake.state.handlers['membership_events:select'] = () => ({ data: [orphanedEvent] });
+    fake.state.handlers['notifications:select'] = () => ({ data: [] });
+    fake.state.handlers['notifications:insert'] = () => ({ data: [{ id: 'notification-orphan' }] });
+    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+
+    const delivered: Array<{ clubName: string; fromClubName: string | undefined; toClubName: string | undefined }> = [];
+    const notifier = {
+      channelId: 'channel-1',
+      send: async (input: { clubName: string; fromClubName: string | undefined; toClubName: string | undefined }) => {
+        delivered.push({
+          clubName: input.clubName,
+          fromClubName: input.fromClubName,
+          toClubName: input.toClubName,
+        });
+        return `message-${delivered.length}`;
+      },
+    };
+
+    const second = await runSync({
+      now: new Date(T0.getTime() + 16 * 60_000),
+      guildId: 'guild-test',
+      notifier,
+    });
+
+    expect(second.status).toBe('completed');
+    expect(second.notificationsSent).toBe(1);
+    expect(delivered).toEqual([
+      { clubName: 'Alpha', fromClubName: 'Old Club', toClubName: 'Alpha' },
+    ]);
   });
 
   it('skips when another process already holds the database lock', async () => {

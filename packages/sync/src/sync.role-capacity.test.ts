@@ -82,6 +82,11 @@ vi.mock('@brawlhub/database', () => {
       return this;
     }
 
+    gte(column: string, value: unknown): this {
+      this.filters[column] = { gte: value };
+      return this;
+    }
+
     order(column: string, options?: unknown): this {
       this.orders.push({ column, options });
       return this;
