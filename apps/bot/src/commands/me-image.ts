@@ -21,6 +21,7 @@ import {
   loadPlayerHistory,
   loadPlayerProfile,
 } from '../players/service';
+import type { PlayerBrawler, PlayerBrawlerDetail } from '../players/types';
 import { listLinkedAccounts, type LinkedAccountView } from '../verification/index.js';
 import { DEFAULT_ME_IMAGE_MODE, isMeImageMode } from './me-image-modes.js';
 import { meTagErrorMessage, resolveMeTag } from './me-utils.js';
@@ -137,15 +138,30 @@ async function loadModeStats(tag: string, guildId: string | null): Promise<reado
 /** Resolve static portraits for the brawlers shown by a grid/focus preset. */
 async function resolveModePortraits(
   profileBrawlers: ReadonlyArray<{ readonly name: string; readonly trophies: number }>,
-  mode: string,
 ): Promise<Record<string, string | null>> {
   const sorted = [...profileBrawlers].sort((left, right) => right.trophies - left.trophies);
-  const names =
-    mode === 'brawler'
-      ? sorted.slice(0, 1).map((brawler) => brawler.name)
-      : sorted.slice(0, 24).map((brawler) => brawler.name);
+  const names = sorted.slice(0, 24).map((brawler) => brawler.name);
   const urls = await Promise.all(names.map((name) => resolveBrawlerPortraitUrl(name)));
   return Object.fromEntries(names.map((name, index) => [name, urls[index] ?? null]));
+}
+
+/** Convert the full official brawler detail list into card-grid brawlers. */
+function toCardBrawler(detail: PlayerBrawlerDetail): PlayerBrawler | null {
+  if (detail.trophies === null) return null;
+  return {
+    name: detail.name,
+    trophies: detail.trophies,
+    highestTrophies: detail.highestTrophies ?? null,
+    power: detail.power ?? null,
+    rank: detail.rank ?? null,
+    prestigeLevel: detail.prestigeLevel ?? null,
+    currentWinStreak: detail.currentWinStreak ?? null,
+    maxWinStreak: detail.maxWinStreak ?? null,
+    gadgets: detail.gadgets.length,
+    starPowers: detail.starPowers.length,
+    gears: detail.gears.length,
+    hyperCharges: detail.hyperCharges.length,
+  };
 }
 
 /** Post a public BrawlTools-style player image card for the resolved player. */
@@ -233,25 +249,33 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
     } else if (mode === 'history') {
       const history = await loadHistoryData(resolved.tag, interaction.guildId);
       options = { mode, history: history.summary, snapshots: history.snapshots };
-    } else if (mode === 'brawler') {
+    } else if (mode === 'brawler' || mode === 'rank' || mode === 'trophies' || mode === 'highest') {
+      // The profile view only carries eight brawlers. Grid modes use the full
+      // official brawler list, falling back to those eight only if it is empty.
       const detailResult = await loadPlayerBrawlers({
         tag: resolved.tag,
         guildId: interaction.guildId,
       });
-      const topName = [...profile.brawlers].sort((left, right) => right.trophies - left.trophies)[0]?.name;
-      const detail =
-        detailResult.kind === 'ok' && topName !== undefined
-          ? detailResult.value.brawlers.find((brawler) => brawler.name === topName) ?? null
-          : null;
-      options = { mode, brawlerDetail: detail };
+      const details = detailResult.kind === 'ok' ? detailResult.value.brawlers : [];
+      const fullBrawlers = details
+        .map(toCardBrawler)
+        .filter((brawler): brawler is PlayerBrawler => brawler !== null);
+      const cardBrawlers = fullBrawlers.length > 0 ? fullBrawlers : profile.brawlers;
+      const topName = [...cardBrawlers].sort((left, right) => right.trophies - left.trophies)[0]?.name;
+      const detail = topName === undefined ? null : details.find((brawler) => brawler.name === topName) ?? null;
+      options = {
+        mode,
+        brawlers: cardBrawlers,
+        ...(mode === 'brawler' ? { brawlerDetail: detail } : {}),
+      };
       assets = {
         ...assets,
-        allBrawlerPortraitUrls: await resolveModePortraits(profile.brawlers, mode),
+        allBrawlerPortraitUrls: await resolveModePortraits(cardBrawlers),
       };
     } else if (mode !== 'profile') {
       assets = {
         ...assets,
-        allBrawlerPortraitUrls: await resolveModePortraits(profile.brawlers, mode),
+        allBrawlerPortraitUrls: await resolveModePortraits(profile.brawlers),
       };
     }
 

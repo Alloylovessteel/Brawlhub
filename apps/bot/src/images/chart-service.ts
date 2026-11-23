@@ -20,7 +20,7 @@ import {
  */
 
 const logger = createLogger('bot');
-const RENDER_VERSION = 'stored-chart-2026-11-22-v1';
+const RENDER_VERSION = 'stored-chart-2026-11-23-light-v1';
 const DEFAULT_PERIOD: HistoryPeriod = '30d';
 
 type Db = ReturnType<typeof createTrustedClient>;

@@ -134,7 +134,7 @@ describe('buildPlayerCardImage', () => {
         modeStats: [{ label: 'Gem Grab', wins: 3, matches: 5, winRate: 60 }],
       });
       const metadata = await sharp(buffer).metadata();
-      const expectedHeight = mode === 'history' ? 1800 : gridModes.has(mode) ? 1500 : mode === 'season' ? 720 : 650;
+      const expectedHeight = mode === 'history' ? 1800 : gridModes.has(mode) ? 1500 : mode === 'season' ? 1120 : 650;
 
       expect(metadata.format, mode).toBe('png');
       expect(metadata.width, mode).toBe(1200);
@@ -166,7 +166,7 @@ describe('buildPlayerCardImage', () => {
     const metadata = await sharp(buffer).metadata();
 
     expect(metadata.width).toBe(1200);
-    expect(metadata.height).toBe(720);
+    expect(metadata.height).toBe(1120);
     expect(buffer.byteLength).toBeGreaterThan(1_000);
   });
 });

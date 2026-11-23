@@ -78,6 +78,8 @@ export interface PlayerCardCharts {
 export interface PlayerCardOptions {
   readonly mode?: PlayerCardMode;
   readonly brawlerName?: string | null;
+  /** Complete official brawler list for grid modes; falls back to the 8 profile brawlers. */
+  readonly brawlers?: readonly PlayerBrawler[];
   readonly brawlerDetail?: PlayerBrawlerDetail | null;
   readonly seasonWindow?: PlayerSeasonWindow;
   readonly history?: PlayerHistorySummary | null;

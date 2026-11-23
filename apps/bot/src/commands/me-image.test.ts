@@ -241,9 +241,46 @@ describe('/me image', () => {
           Jessie: 'https://cdn.example.test/Jessie.png',
         },
       }),
-      { mode: 'trophies' },
+      expect.objectContaining({
+        mode: 'trophies',
+        brawlers: expect.arrayContaining([expect.objectContaining({ name: 'Shelly' })]),
+      }),
     );
     expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y-trophies.png');
+  });
+
+  it('uses the full official brawler list for grid presets', async () => {
+    mocks.service.loadPlayerBrawlers.mockResolvedValue({
+      kind: 'ok',
+      value: {
+        brawlers: Array.from({ length: 18 }, (_, index) => ({
+          name: `Brawler ${index + 1}`,
+          trophies: 1500 - index * 40,
+          highestTrophies: 1600 - index * 40,
+          power: 11,
+          rank: 30 - index,
+          gadgets: [{ id: 1, name: 'Gadget', level: null }],
+          starPowers: [],
+          gears: [],
+          hyperCharges: [],
+        })),
+      },
+    });
+    const interaction = chatInteraction({ tag: '#2c0y', mode: 'highest' });
+
+    await handleMeImage(interaction);
+
+    expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        mode: 'highest',
+        brawlers: expect.arrayContaining([
+          expect.objectContaining({ name: 'Brawler 1', trophies: 1500, gadgets: 1 }),
+        ]),
+      }),
+    );
+    expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y-highest.png');
   });
 
   it('passes the configured season window to the season preset', async () => {
