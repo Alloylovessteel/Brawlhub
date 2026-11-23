@@ -382,24 +382,30 @@ async function readInactivityPost(
   return messageId === null || channelId === null ? null : { messageId, channelId };
 }
 
+export interface InactivityReportRunResult {
+  readonly posted: number;
+  readonly failed: number;
+}
+
 /** Post the inactivity digest once per guild and UTC day, editing replays in place. */
 export async function postInactivityReports(
   now: Date,
   rest: REST,
   token: string | undefined,
   db: SupabaseClient = createTrustedClient(),
-): Promise<number> {
+): Promise<InactivityReportRunResult> {
   const settings = await db
     .from('guild_settings')
     .select('guild_id, report_inactivity_days, report_inactivity_channel_id, overview_channel_id')
     .not('report_inactivity_days', 'is', null);
   if (settings.error) {
     logger.warn('Could not read inactivity report guilds', { error: safeError(settings.error, token) });
-    return 0;
+    return { posted: 0, failed: 1 };
   }
 
   const periodKey = now.toISOString().slice(0, 10);
   let posted = 0;
+  let failed = 0;
   for (const row of settings.data ?? []) {
     const item = record(row);
     const guildId = asString(item?.['guild_id']);
@@ -439,11 +445,12 @@ export async function postInactivityReports(
       if (saved.error) throw new Error(`Record inactivity post failed: ${saved.error.message}`);
       posted += 1;
     } catch (error: unknown) {
+      failed += 1;
       logger.warn('Inactivity report failed for guild', {
         guildId,
         error: safeError(error, token),
       });
     }
   }
-  return posted;
+  return { posted, failed };
 }

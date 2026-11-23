@@ -17,6 +17,7 @@ const logger = createLogger('bot');
 const REDACTED = '[REDACTED]';
 const MAX_REPORT_CLUBS = 25;
 const MAX_EVENT_ROWS = 10_000;
+const LEDGER_WRITE_ATTEMPTS = 2;
 
 export interface ReportData {
   readonly period: ReportPeriod;
@@ -44,7 +45,14 @@ export interface PostScheduledReportInput {
 export interface PostScheduledReportResult {
   readonly posted: boolean;
   readonly messageId: string | null;
+  /** False when Discord accepted the message but the ledger write failed. */
+  readonly recorded?: boolean;
   readonly error?: string;
+}
+
+export interface ScheduledReportRunResult {
+  /** Report types with at least one failed guild post; safe to retry this period. */
+  readonly failedTypes: readonly ReportType[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -327,20 +335,29 @@ export async function postScheduledReport(
     }
   }
 
-  try {
-    const { error } = await db.from('guild_report_posts').upsert(
-      {
-        guild_id: input.guildId,
-        report_type: input.period.type,
-        period_key: input.period.periodKey,
-        channel_id: channelId,
-        message_id: messageId,
-      },
-      { onConflict: 'guild_id,report_type,period_key' },
-    );
-    requireOk(error, 'Record report post');
-  } catch (error: unknown) {
-    return { posted: true, messageId, error: safeError(error, input.token) };
+  const ledgerPayload = {
+    guild_id: input.guildId,
+    report_type: input.period.type,
+    period_key: input.period.periodKey,
+    channel_id: channelId,
+    message_id: messageId,
+  };
+  const ledgerOptions = { onConflict: 'guild_id,report_type,period_key' } as const;
+  let recordError: string | null = null;
+  for (let attempt = 0; attempt < LEDGER_WRITE_ATTEMPTS; attempt += 1) {
+    try {
+      const { error } = await db.from('guild_report_posts').upsert(ledgerPayload, ledgerOptions);
+      if (!error) {
+        recordError = null;
+        break;
+      }
+      recordError = error.message;
+    } catch (error: unknown) {
+      recordError = safeError(error, input.token);
+    }
+  }
+  if (recordError !== null) {
+    return { posted: true, messageId, recorded: false, error: recordError };
   }
 
   return { posted: true, messageId };
@@ -371,11 +388,13 @@ function parseScheduledGuild(value: unknown): ScheduledGuild | null {
 export async function runScheduledReports(
   now: Date,
   types: readonly ReportType[] = REPORT_TYPES,
-): Promise<void> {
+): Promise<ScheduledReportRunResult> {
+  const failedTypes = new Set<ReportType>();
   const token = getBotConfig().token;
   if (token === undefined) {
     logger.warn('Scheduled reports skipped: DISCORD_TOKEN is not configured');
-    return;
+    for (const type of types) failedTypes.add(type);
+    return { failedTypes: [...failedTypes] };
   }
 
   let guilds: ScheduledGuild[];
@@ -396,10 +415,11 @@ export async function runScheduledReports(
     logger.error('Scheduled reports could not read guild targets', {
       error: safeError(error, token),
     });
-    return;
+    for (const type of types) failedTypes.add(type);
+    return { failedTypes: [...failedTypes] };
   }
 
-  if (guilds.length === 0) return;
+  if (guilds.length === 0) return { failedTypes: [] };
   const rest = new REST({ version: '10' }).setToken(token);
 
   for (const guild of guilds) {
@@ -416,15 +436,18 @@ export async function runScheduledReports(
           token,
           guildLabel: null,
         });
-        if (!result.posted) {
-          logger.warn('Scheduled report was not posted', {
+        if (!result.posted || result.recorded === false || result.error !== undefined) {
+          failedTypes.add(type);
+          logger.warn('Scheduled report was not fully recorded', {
             guildId: guild.guildId,
             reportType: type,
             periodKey: period.periodKey,
+            messageId: result.messageId,
             error: result.error ?? 'unknown error',
           });
         }
       } catch (error: unknown) {
+        failedTypes.add(type);
         logger.warn('Scheduled report failed for guild', {
           guildId: guild.guildId,
           reportType: type,
@@ -433,4 +456,6 @@ export async function runScheduledReports(
       }
     }
   }
+
+  return { failedTypes: [...failedTypes] };
 }

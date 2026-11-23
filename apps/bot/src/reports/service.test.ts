@@ -384,6 +384,31 @@ describe('postScheduledReport', () => {
     });
   });
 
+  it('reports an unrecorded post when the ledger write keeps failing', async () => {
+    setHandler('guild_report_posts:select', () => ({ data: null }));
+    const upsert = vi.fn(() => ({ data: null, error: { message: 'ledger down' } }));
+    setHandler('guild_report_posts:upsert', upsert);
+    const patch = vi.fn(async () => ({ id: 'unused' }));
+    const post = vi.fn(async () => ({ id: 'new-message' }));
+
+    const result = await postScheduledReport({
+      rest: fakeRest(patch, post),
+      guildId: GUILD_ID,
+      period: PERIOD,
+      channelId: CHANNEL_ID,
+      token: TOKEN,
+      guildLabel: null,
+    });
+
+    expect(result).toMatchObject({
+      posted: true,
+      messageId: 'new-message',
+      recorded: false,
+      error: expect.stringContaining('ledger down'),
+    });
+    expect(upsert).toHaveBeenCalledTimes(2);
+  });
+
   it('posts a replacement when the stored message is unknown', async () => {
     setHandler('guild_report_posts:select', () => ({
       data: { message_id: 'deleted-message', channel_id: CHANNEL_ID },

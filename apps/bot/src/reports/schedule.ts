@@ -3,7 +3,7 @@ import { REST } from 'discord.js';
 import { getBotConfig } from '../config.js';
 import { postInactivityReports } from './inactivity.js';
 import { currentReportPeriod, REPORT_TYPES, type ReportType } from './period';
-import { runScheduledReports } from './service';
+import { runScheduledReports, type ScheduledReportRunResult } from './service';
 
 const logger = createLogger('bot');
 const TICK_MS = 60_000;
@@ -24,26 +24,21 @@ function safeScheduleError(error: unknown): string {
   );
 }
 
-function runSafely(reason: string, types: readonly ReportType[]): void {
-  void runScheduledReports(new Date(), types).catch((error: unknown) => {
-    logger.warn('Scheduled reports tick failed', {
-      reason,
-      error: safeScheduleError(error),
-    });
-  });
-}
-
 /** Auto-post the inactivity digest only at the UTC boundary; never on startup. */
-function runInactivitySafely(now: Date): void {
+function runInactivitySafely(now: Date, onComplete: (succeeded: boolean) => void): void {
   const token = getBotConfig().token;
   if (token === undefined) return;
   const rest = new REST({ version: '10' }).setToken(token);
   void postInactivityReports(now, rest, token).then(
-    (posted: number) => {
-      if (posted > 0) logger.info('Inactivity reports posted', { posted });
+    (result) => {
+      if (result.posted > 0) {
+        logger.info('Inactivity reports posted', { posted: result.posted, failed: result.failed });
+      }
+      onComplete(result.failed === 0);
     },
     (error: unknown) => {
       logger.warn('Inactivity report tick failed', { error: safeScheduleError(error) });
+      onComplete(false);
     },
   );
 }
@@ -51,35 +46,73 @@ function runInactivitySafely(now: Date): void {
 /** Start the in-process UTC report schedule; returns a stop function for shutdown. */
 export function startReportsSchedule(): () => void {
   const lastRun = new Map<ReportType, string>();
+  const inFlight = new Set<ReportType>();
   let lastInactivityKey: string | null = null;
+  let inactivityInFlight = false;
+
+  const launchReports = (
+    now: Date,
+    types: readonly ReportType[],
+    reason: string,
+    markComplete: boolean,
+  ): void => {
+    if (types.length === 0) return;
+    for (const type of types) inFlight.add(type);
+    void runScheduledReports(now, types).then(
+      (result: ScheduledReportRunResult | undefined) => {
+        if (!markComplete) return;
+        const failed = new Set<ReportType>(result?.failedTypes ?? []);
+        for (const type of types) {
+          if (failed.has(type)) continue;
+          lastRun.set(type, currentReportPeriod(now, type).periodKey);
+        }
+      },
+      (error: unknown) => {
+        logger.warn('Scheduled reports tick failed', {
+          reason,
+          error: safeScheduleError(error),
+        });
+      },
+    ).finally(() => {
+      for (const type of types) inFlight.delete(type);
+    });
+  };
 
   const tick = (): void => {
     const now = new Date();
     if (now.getUTCHours() !== 0 || now.getUTCMinutes() >= BOUNDARY_WINDOW_MINUTES) return;
 
     const inactivityKey = now.toISOString().slice(0, 10);
-    if (lastInactivityKey !== inactivityKey) {
-      lastInactivityKey = inactivityKey;
-      runInactivitySafely(now);
+    if (
+      getBotConfig().token !== undefined &&
+      lastInactivityKey !== inactivityKey &&
+      !inactivityInFlight
+    ) {
+      inactivityInFlight = true;
+      runInactivitySafely(now, (succeeded) => {
+        inactivityInFlight = false;
+        // Advance the digest marker only once every configured guild succeeded.
+        if (succeeded) lastInactivityKey = inactivityKey;
+      });
     }
 
     const due: ReportType[] = ['daily'];
     if (now.getUTCDay() === 1) due.push('weekly');
     if (now.getUTCDate() === 1) due.push('monthly');
 
-    const changedTypes = due.filter((type) => {
+    const retryable = due.filter((type) => {
       const periodKey = currentReportPeriod(now, type).periodKey;
-      if (lastRun.get(type) === periodKey) return false;
-      lastRun.set(type, periodKey);
-      return true;
+      return lastRun.get(type) !== periodKey && !inFlight.has(type);
     });
-    if (changedTypes.length > 0) runSafely('UTC boundary', changedTypes);
+    if (retryable.length > 0) launchReports(now, retryable, 'UTC boundary', true);
   };
 
   const intervalTimer = setInterval(tick, TICK_MS);
   let immediateTimer: ReturnType<typeof setTimeout> | undefined;
   if (process.env.REPORTS_IMMEDIATE_ON_START === '1') {
-    immediateTimer = setTimeout(() => runSafely('startup', REPORT_TYPES), IMMEDIATE_DELAY_MS);
+    immediateTimer = setTimeout(() => {
+      launchReports(new Date(), REPORT_TYPES, 'startup', false);
+    }, IMMEDIATE_DELAY_MS);
   }
 
   logger.info('Scheduled reports enabled', {

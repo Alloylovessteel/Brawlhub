@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  runScheduledReports: vi.fn(async (_now: Date, _types?: readonly string[]) => undefined),
-  postInactivityReports: vi.fn(
-    async (_now: Date, _rest?: unknown, _token?: string | undefined) => 0,
-  ),
+  runScheduledReports: vi.fn(async (_now: Date, _types?: readonly string[]) => ({
+    failedTypes: [] as string[],
+  })),
+  postInactivityReports: vi.fn(async (_now: Date, _rest?: unknown, _token?: string | undefined) => ({
+    posted: 0,
+    failed: 0,
+  })),
   logger: {
     info: vi.fn(),
     warn: vi.fn(),
@@ -26,7 +29,9 @@ beforeEach(() => {
   delete process.env.REPORTS_IMMEDIATE_ON_START;
   delete process.env.DISCORD_TOKEN;
   mocks.runScheduledReports.mockReset();
+  mocks.runScheduledReports.mockResolvedValue({ failedTypes: [] });
   mocks.postInactivityReports.mockReset();
+  mocks.postInactivityReports.mockResolvedValue({ posted: 0, failed: 0 });
   mocks.logger.info.mockReset();
   mocks.logger.warn.mockReset();
   mocks.logger.error.mockReset();
@@ -41,6 +46,12 @@ afterEach(() => {
 function tickAt(instant: string): void {
   vi.setSystemTime(new Date(instant));
   vi.advanceTimersByTime(60_000);
+}
+
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe('startReportsSchedule', () => {
@@ -92,6 +103,53 @@ describe('startReportsSchedule', () => {
     expect(mocks.runScheduledReports).not.toHaveBeenCalled();
     stop();
   });
+
+  it('retries a failed report type inside the boundary window', async () => {
+    mocks.runScheduledReports
+      .mockResolvedValueOnce({ failedTypes: ['daily'] })
+      .mockResolvedValue({ failedTypes: [] });
+    const stop = startReportsSchedule();
+
+    tickAt('2026-11-19T00:00:05Z');
+    await flush();
+    tickAt('2026-11-19T00:01:00Z');
+    await flush();
+    tickAt('2026-11-19T00:02:00Z');
+    await flush();
+
+    expect(mocks.runScheduledReports).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it('retries when the report runner throws', async () => {
+    mocks.runScheduledReports
+      .mockRejectedValueOnce(new Error('runner down'))
+      .mockResolvedValue({ failedTypes: [] });
+    const stop = startReportsSchedule();
+
+    tickAt('2026-11-19T00:00:05Z');
+    await flush();
+    tickAt('2026-11-19T00:01:00Z');
+    await flush();
+
+    expect(mocks.runScheduledReports).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it('retries only the report types that failed', async () => {
+    mocks.runScheduledReports
+      .mockResolvedValueOnce({ failedTypes: ['weekly'] })
+      .mockResolvedValue({ failedTypes: [] });
+    const stop = startReportsSchedule();
+
+    tickAt('2026-11-23T00:00:05Z');
+    await flush();
+    tickAt('2026-11-23T00:01:00Z');
+    await flush();
+
+    expect(mocks.runScheduledReports.mock.calls[1]?.[1]).toEqual(['weekly']);
+    stop();
+  });
 });
 
 describe('inactivity report schedule', () => {
@@ -125,6 +183,24 @@ describe('inactivity report schedule', () => {
 
     expect(mocks.runScheduledReports).toHaveBeenCalledOnce();
     expect(mocks.postInactivityReports).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('retries the inactivity digest after a failed guild post', async () => {
+    process.env.DISCORD_TOKEN = 'test-token';
+    mocks.postInactivityReports
+      .mockResolvedValueOnce({ posted: 0, failed: 1 })
+      .mockResolvedValue({ posted: 1, failed: 0 });
+    const stop = startReportsSchedule();
+
+    tickAt('2026-11-19T00:00:05Z');
+    await flush();
+    tickAt('2026-11-19T00:01:00Z');
+    await flush();
+    tickAt('2026-11-19T00:02:00Z');
+    await flush();
+
+    expect(mocks.postInactivityReports).toHaveBeenCalledTimes(2);
     stop();
   });
 

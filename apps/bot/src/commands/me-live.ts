@@ -16,6 +16,8 @@ function startFailureMessage(result: Exclude<LiveTrackingStartResult, { readonly
   switch (result.kind) {
     case 'guild-required':
       return 'Live tracking is only available in a server.';
+    case 'channel-required':
+      return 'Live tracking needs a valid server channel.';
     case 'invalid-tag':
       return 'That player tag is not valid.';
     case 'not-found':
@@ -29,6 +31,8 @@ function stopFailureMessage(result: Exclude<LiveTrackingStopResult, { readonly k
   switch (result.kind) {
     case 'guild-required':
       return 'Live tracking is only available in a server.';
+    case 'channel-required':
+      return 'Live tracking needs a valid server channel.';
     case 'not-found':
       return `Player #${result.tag} is not available in this server's stored data.`;
     case 'lookup-error':

@@ -364,7 +364,10 @@ describe('postInactivityReports', () => {
     const post = vi.fn(async (_route: string, _options?: unknown) => ({ id: 'message-1' }));
     const rest = { post, patch: vi.fn() } as unknown as REST;
 
-    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toBe(1);
+    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+      posted: 1,
+      failed: 0,
+    });
 
     expect(post).toHaveBeenCalledOnce();
     expect(String(post.mock.calls[0]?.[0])).toContain(CHANNEL_ID);
@@ -386,5 +389,41 @@ describe('postInactivityReports', () => {
       'guild_id',
       GUILD_ID,
     ]);
+  });
+
+  it('reports a failed guild so the scheduler can retry the digest', async () => {
+    const { db } = fakeDb({
+      'guild_settings:select': () => ({
+        data: [
+          {
+            guild_id: GUILD_ID,
+            report_inactivity_days: 4,
+            report_inactivity_channel_id: CHANNEL_ID,
+            overview_channel_id: null,
+          },
+        ],
+        error: null,
+      }),
+      'clubs:select': () => ({
+        data: [{ id: 'club-1', tag: 'ABC', name: 'Alpha' }],
+        error: null,
+      }),
+      'club_memberships:select': () => ({
+        data: [{ club_id: 'club-1', player_id: 'player-1', role: 'member' }],
+        error: null,
+      }),
+      'players:select': () => ({
+        data: [{ id: 'player-1', tag: 'P1', name: 'Idle', last_battle_at: daysAgo(9) }],
+        error: null,
+      }),
+      'guild_inactivity_report_posts:select': () => ({ data: null, error: null }),
+      'guild_inactivity_report_posts:upsert': () => ({ data: null, error: { message: 'ledger down' } }),
+    });
+    const rest = { post: vi.fn(async () => ({ id: 'message-1' })), patch: vi.fn() } as unknown as REST;
+
+    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+      posted: 0,
+      failed: 1,
+    });
   });
 });

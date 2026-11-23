@@ -28,6 +28,9 @@ const MIN_POLL_INTERVAL_MS = 15_000;
 const MAX_POLL_INTERVAL_MS = 5 * 60_000;
 const PLAYER_CHUNK_SIZE = 100;
 const MAX_ERROR_LENGTH = 1000;
+const MAX_ID_LENGTH = 64;
+const LEDGER_WRITE_ATTEMPTS = 2;
+const UNCONFIRMED_LEDGER_TTL_MS = MAX_SESSION_MS;
 
 type Db = ReturnType<typeof createTrustedClient>;
 
@@ -86,10 +89,23 @@ type MutableLivePollOutcome = {
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let pollRunning = false;
 
+/** Sends whose delivery-ledger write has not been confirmed yet. */
+const unconfirmedDeliveries = new Map<
+  string,
+  { readonly battleKey: string; readonly messageId: string; readonly at: number }
+>();
+
 function safeError(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   const cleaned = text.replace(/\s+/g, ' ').trim();
   return cleaned.length <= MAX_ERROR_LENGTH ? cleaned : `${cleaned.slice(0, MAX_ERROR_LENGTH - 3)}...`;
+}
+
+/** Discord ids are opaque here, but blanks, whitespace and oversized values are never valid. */
+function isUsableId(value: string | null | undefined): value is string {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= MAX_ID_LENGTH && !/[\u0000-\u001f\s]/.test(trimmed);
 }
 
 function readPollIntervalMs(): number {
@@ -126,6 +142,7 @@ export type LiveTrackingStartResult =
       readonly sessionMs: number;
     }
   | { readonly kind: 'guild-required' }
+  | { readonly kind: 'channel-required' }
   | { readonly kind: 'invalid-tag' }
   | { readonly kind: 'not-found'; readonly tag: string }
   | { readonly kind: 'lookup-error' };
@@ -134,7 +151,10 @@ export type LiveTrackingStartResult =
 export async function startLiveTracking(
   input: LiveTrackingStartInput,
 ): Promise<LiveTrackingStartResult> {
-  if (input.guildId === null || input.guildId.trim() === '') return { kind: 'guild-required' };
+  if (!isUsableId(input.guildId)) return { kind: 'guild-required' };
+  if (!isUsableId(input.channelId) || !isUsableId(input.discordUserId)) {
+    return { kind: 'channel-required' };
+  }
   const db = input.db ?? createTrustedClient();
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
@@ -192,7 +212,13 @@ export async function startLiveTracking(
   if (typeof existing?.id === 'string') {
     const { error } = await db
       .from('guild_live_subscriptions')
-      .update({ active: true, expires_at: expiresAt })
+      .update({
+        active: true,
+        expires_at: expiresAt,
+        started_at: nowIso,
+        last_battle_seen_at: null,
+        profile_id: profileId,
+      })
       .eq('guild_id', key.guild_id)
       .eq('channel_id', key.channel_id)
       .eq('discord_user_id', key.discord_user_id)
@@ -243,6 +269,7 @@ export interface LiveTrackingStopInput {
 export type LiveTrackingStopResult =
   | { readonly kind: 'ok'; readonly stopped: number }
   | { readonly kind: 'guild-required' }
+  | { readonly kind: 'channel-required' }
   | { readonly kind: 'not-found'; readonly tag: string }
   | { readonly kind: 'lookup-error' };
 
@@ -250,7 +277,10 @@ export type LiveTrackingStopResult =
 export async function stopLiveTracking(
   input: LiveTrackingStopInput,
 ): Promise<LiveTrackingStopResult> {
-  if (input.guildId === null || input.guildId.trim() === '') return { kind: 'guild-required' };
+  if (!isUsableId(input.guildId)) return { kind: 'guild-required' };
+  if (!isUsableId(input.channelId) || !isUsableId(input.discordUserId)) {
+    return { kind: 'channel-required' };
+  }
   const db = input.db ?? createTrustedClient();
 
   let query = db
@@ -316,9 +346,10 @@ async function runScheduledPoll(client: Client): Promise<void> {
 function isExpired(row: SubscriptionRow, nowMs: number): boolean {
   if (Date.parse(row.expires_at) <= nowMs) return true;
   if (Date.parse(row.started_at) <= nowMs - MAX_SESSION_MS) return true;
-  if (row.last_battle_seen_at === null) return false;
-  const lastSeenMs = Date.parse(row.last_battle_seen_at);
-  return !Number.isNaN(lastSeenMs) && lastSeenMs <= nowMs - IDLE_SESSION_MS;
+  // Before the first delivery the session start is the idle baseline; without
+  // this, a session with no battles would never hit the advertised 60m cutoff.
+  const idleBaseline = Date.parse(row.last_battle_seen_at ?? row.started_at);
+  return !Number.isNaN(idleBaseline) && idleBaseline <= nowMs - IDLE_SESSION_MS;
 }
 
 async function deactivateSubscription(db: Db, row: SubscriptionRow): Promise<void> {
@@ -399,7 +430,8 @@ async function readDeliveredKeys(
         guildId: row.guild_id,
         reason: error.message,
       });
-      return new Set<string>();
+      // Fail closed: without a trustworthy ledger we must not post duplicates.
+      throw new Error(`Delivery ledger read failed: ${error.message}`);
     }
     for (const value of data ?? []) {
       const key = (value as { battle_key?: unknown } | null)?.battle_key;
@@ -456,6 +488,44 @@ async function resolveSubscriptionChannel(
   }
 }
 
+interface DeliveryResult {
+  readonly delivered: number;
+  readonly error: string | null;
+}
+
+function deliveryKey(row: SubscriptionRow, playerId: string, battleKey: string): string {
+  return `${row.guild_id}|${row.id}|${playerId}|${battleKey}`;
+}
+
+async function recordDelivery(
+  db: Db,
+  row: SubscriptionRow,
+  playerId: string,
+  battle: ParsedBattle,
+  messageId: string,
+  nowIso: string,
+): Promise<string | null> {
+  const payload = {
+    guild_id: row.guild_id,
+    subscription_id: row.id,
+    player_id: playerId,
+    battle_key: battle.key,
+    discord_message_id: messageId,
+    delivered_at: nowIso,
+  };
+  const options = {
+    onConflict: 'guild_id,subscription_id,player_id,battle_key',
+    ignoreDuplicates: true,
+  } as const;
+  let lastError: string | null = null;
+  for (let attempt = 0; attempt < LEDGER_WRITE_ATTEMPTS; attempt += 1) {
+    const { error } = await db.from('live_battle_deliveries').upsert(payload, options);
+    if (!error) return null;
+    lastError = error.message;
+  }
+  return lastError ?? 'Unknown delivery ledger error';
+}
+
 async function deliverBattles(
   client: Client,
   db: Db,
@@ -464,19 +534,58 @@ async function deliverBattles(
   tag: string,
   battles: readonly ParsedBattle[],
   nowIso: string,
-): Promise<number> {
-  if (battles.length === 0) return 0;
-  const deliveredKeys = await readDeliveredKeys(
-    db,
-    row,
-    playerId,
-    battles.map((battle) => battle.key),
+): Promise<DeliveryResult> {
+  if (battles.length === 0) return { delivered: 0, error: null };
+
+  let deliveredKeys: Set<string>;
+  try {
+    deliveredKeys = await readDeliveredKeys(
+      db,
+      row,
+      playerId,
+      battles.map((battle) => battle.key),
+    );
+  } catch (error) {
+    return { delivered: 0, error: safeError(error) };
+  }
+
+  const battlesByKey = new Map(battles.map((battle) => [battle.key, battle]));
+  const errors: string[] = [];
+  const addError = (message: string): void => {
+    if (errors.length === 0) errors.push(message);
+  };
+
+  // Reconcile a send whose ledger write failed on an earlier poll before
+  // deciding that the battle still needs a fresh Discord message.
+  const nowMs = Date.now();
+  for (const [key, unconfirmed] of unconfirmedDeliveries) {
+    if (nowMs - unconfirmed.at > UNCONFIRMED_LEDGER_TTL_MS) {
+      unconfirmedDeliveries.delete(key);
+      continue;
+    }
+    const battle = battlesByKey.get(unconfirmed.battleKey);
+    if (battle === undefined) continue;
+    const error = await recordDelivery(db, row, playerId, battle, unconfirmed.messageId, nowIso);
+    if (error === null) {
+      unconfirmedDeliveries.delete(key);
+      deliveredKeys.add(unconfirmed.battleKey);
+    } else {
+      addError(`Could not confirm a live battle delivery: ${error}`);
+    }
+  }
+
+  const pending = battles.filter(
+    (battle) =>
+      !deliveredKeys.has(battle.key) &&
+      !unconfirmedDeliveries.has(deliveryKey(row, playerId, battle.key)),
   );
-  const pending = battles.filter((battle) => !deliveredKeys.has(battle.key));
-  if (pending.length === 0) return 0;
+  if (pending.length === 0) return { delivered: 0, error: errors[0] ?? null };
 
   const channel = await resolveSubscriptionChannel(client, row);
-  if (channel === null) return 0;
+  if (channel === null) {
+    addError('Subscription channel is unavailable');
+    return { delivered: 0, error: errors[0] ?? null };
+  }
   const sendable = channel as unknown as { send: (payload: unknown) => Promise<{ id: string }> };
 
   let delivered = 0;
@@ -486,51 +595,48 @@ async function deliverBattles(
         embeds: [buildBattleEmbed(battle, tag)],
         allowedMentions: { parse: [] },
       });
-      const { error } = await db.from('live_battle_deliveries').upsert(
-        {
-          guild_id: row.guild_id,
-          subscription_id: row.id,
-          player_id: playerId,
-          battle_key: battle.key,
-          discord_message_id: message.id,
-          delivered_at: nowIso,
-        },
-        {
-          onConflict: 'guild_id,subscription_id,player_id,battle_key',
-          ignoreDuplicates: true,
-        },
-      );
-      if (error) {
-        logger.warn('Could not record a live battle delivery', {
-          guildId: row.guild_id,
-          reason: error.message,
-        });
+      const error = await recordDelivery(db, row, playerId, battle, message.id, nowIso);
+      if (error === null) {
+        delivered += 1;
+        deliveredKeys.add(battle.key);
         continue;
       }
-      delivered += 1;
+      // Suppress this exact battle in-process. The failed poll is surfaced to
+      // the caller, and a later poll reconciles the already-sent message.
+      unconfirmedDeliveries.set(deliveryKey(row, playerId, battle.key), {
+        battleKey: battle.key,
+        messageId: message.id,
+        at: Date.now(),
+      });
+      addError(`Could not record a live battle delivery: ${error}`);
     } catch (error) {
       logger.warn('Could not post a live battle embed', {
         guildId: row.guild_id,
         channelId: row.channel_id,
         error: safeError(error),
       });
+      addError(`Could not post a live battle embed: ${safeError(error)}`);
     }
   }
 
-  const { error: seenError } = await db
-    .from('guild_live_subscriptions')
-    .update({ last_battle_seen_at: nowIso })
-    .eq('guild_id', row.guild_id)
-    .eq('channel_id', row.channel_id)
-    .eq('discord_user_id', row.discord_user_id)
-    .eq('player_id', playerId);
-  if (seenError) {
-    logger.warn('Could not refresh live subscription idle timestamp', {
-      guildId: row.guild_id,
-      reason: seenError.message,
-    });
+  // A failed send or ledger write must not keep a broken subscription alive.
+  if (delivered > 0) {
+    const { error: seenError } = await db
+      .from('guild_live_subscriptions')
+      .update({ last_battle_seen_at: nowIso })
+      .eq('guild_id', row.guild_id)
+      .eq('channel_id', row.channel_id)
+      .eq('discord_user_id', row.discord_user_id)
+      .eq('player_id', playerId);
+    if (seenError) {
+      addError(`Could not refresh live subscription idle timestamp: ${seenError.message}`);
+      logger.warn('Could not refresh live subscription idle timestamp', {
+        guildId: row.guild_id,
+        reason: seenError.message,
+      });
+    }
   }
-  return delivered;
+  return { delivered, error: errors[0] ?? null };
 }
 
 /** Poll all active subscriptions, sharing one official battle-log call per player. */
@@ -613,6 +719,9 @@ export async function runLiveBattlePoll(
         null,
         timeoutMs,
         {
+          // The scheduled sync can advance players.last_battle_at first. Live
+          // delivery is deduped by its own ledger, so emit every official row.
+          emitAllBattles: true,
           onCollected: (battle) => fresh.push(battle),
           onError: (input) => {
             collectionFailed = true;
@@ -640,22 +749,16 @@ export async function runLiveBattlePoll(
     }
 
     for (const row of subscriptions) {
+      const delivery = await deliverBattles(client, db, row, playerId, player.tag, fresh, nowIso);
       await insertPoll(db, {
         guild_id: row.guild_id,
         player_id: playerId,
-        status: 'completed',
+        status: delivery.error === null ? 'completed' : 'failed',
         last_battle_at_before: before,
         new_battles: fresh.length,
+        ...(delivery.error === null ? {} : { last_error: delivery.error }),
       });
-      outcome.delivered += await deliverBattles(
-        client,
-        db,
-        row,
-        playerId,
-        player.tag,
-        fresh,
-        nowIso,
-      );
+      outcome.delivered += delivery.delivered;
     }
     outcome.playersPolled += 1;
     outcome.newBattles += fresh.length;

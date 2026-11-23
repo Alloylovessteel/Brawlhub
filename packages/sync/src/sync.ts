@@ -134,6 +134,12 @@ export interface CollectedBattleLog {
 }
 
 export interface CollectBattleLogsOptions {
+  /**
+   * Emit every valid official battle to onCollected, including rows older than
+   * the shared player cutoff. Storage and `last_battle_at` still use only the
+   * fresh rows. Live delivery uses this so its own ledger is the dedupe source.
+   */
+  readonly emitAllBattles?: boolean;
   /** Called for every battle row accepted for storage, for live delivery readers. */
   readonly onCollected?: (battle: CollectedBattleLog) => void;
   /** Called when a fetch or battle write fails for one player. */
@@ -179,7 +185,7 @@ export async function collectBattleLogs(
 
     const cutoff = lastBattleTimes.get(playerId) ?? null;
     const cutoffMs = cutoff === null ? null : Date.parse(cutoff);
-    const rows = items
+    const parsedRows = items
       .map((item) => {
         const battleTime = parseBattleTime(item.battleTime);
         if (battleTime === null) return null;
@@ -199,11 +205,27 @@ export async function collectBattleLogs(
           raw: item as unknown as Record<string, unknown>,
         };
       })
-      .filter(
-        (row): row is NonNullable<typeof row> =>
-          row !== null && (cutoffMs === null || Date.parse(row.battle_time) > cutoffMs),
-      );
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+    const rows = parsedRows.filter(
+      (row) => cutoffMs === null || Date.parse(row.battle_time) > cutoffMs,
+    );
+    const collectableRows = options.emitAllBattles === true ? parsedRows : rows;
 
+    if (options.emitAllBattles === true) {
+      for (const row of collectableRows) {
+        options.onCollected?.({
+          playerId: row.player_id,
+          key: row.battle_key,
+          battleTime: row.battle_time,
+          mode: row.mode,
+          map: row.map,
+          battleType: row.battle_type,
+          result: row.result,
+          trophyChange: row.trophy_change,
+          raw: row.raw,
+        });
+      }
+    }
     if (rows.length === 0) continue;
 
     const { error } = await db
@@ -220,18 +242,20 @@ export async function collectBattleLogs(
     }
     inserted += rows.length;
 
-    for (const row of rows) {
-      options.onCollected?.({
-        playerId: row.player_id,
-        key: row.battle_key,
-        battleTime: row.battle_time,
-        mode: row.mode,
-        map: row.map,
-        battleType: row.battle_type,
-        result: row.result,
-        trophyChange: row.trophy_change,
-        raw: row.raw,
-      });
+    if (options.emitAllBattles !== true) {
+      for (const row of rows) {
+        options.onCollected?.({
+          playerId: row.player_id,
+          key: row.battle_key,
+          battleTime: row.battle_time,
+          mode: row.mode,
+          map: row.map,
+          battleType: row.battle_type,
+          result: row.result,
+          trophyChange: row.trophy_change,
+          raw: row.raw,
+        });
+      }
     }
 
     const latest = rows.reduce<string | null>((max, row) => {
