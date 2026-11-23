@@ -13,7 +13,7 @@ import {
   classifyApiError,
   parseSyncRunRow,
   playerSnapshotAsClubSnapshot,
-  readCompletedRuns,
+  readCompletedRunsForIds,
   record,
   relationRecord,
   requireOk,
@@ -577,23 +577,28 @@ async function readCompletedSnapshots(
   playerId: string,
   db: DatabaseClient,
 ): Promise<{ snapshots: ClubSnapshot[]; completedRunIds: Set<string> }> {
-  const runs = await readCompletedRuns(db);
-  const completedRunIds = new Set(runs.map((run) => run.id));
-  if (completedRunIds.size === 0) return { snapshots: [], completedRunIds };
-
+  // Newest first, and no row cap: status is resolved only for the runs that
+  // actually produced these snapshots, so an old run can never be dropped by a
+  // global "recent completed runs" window.
   const { data, error } = await db
     .from('player_snapshots')
     .select(PLAYER_SNAPSHOT_COLUMNS)
     .eq('player_id', playerId)
-    .order('captured_at', { ascending: true })
-    .limit(2000);
+    .order('captured_at', { ascending: false });
   requireOk(error, 'Read player history');
 
-  const snapshots = (data ?? [])
+  const all = (data ?? [])
     .map((row: unknown) => playerSnapshotAsClubSnapshot(row))
-    .filter((snapshot): snapshot is ClubSnapshot => snapshot !== null)
-    .filter((snapshot) => completedRunIds.has(snapshot.syncRunId));
-  return { snapshots, completedRunIds };
+    .filter((snapshot): snapshot is ClubSnapshot => snapshot !== null);
+  const completedRunIds = new Set(
+    (await readCompletedRunsForIds(all.map((snapshot) => snapshot.syncRunId), db)).map(
+      (run) => run.id,
+    ),
+  );
+  return {
+    snapshots: all.filter((snapshot) => completedRunIds.has(snapshot.syncRunId)),
+    completedRunIds,
+  };
 }
 
 function readBattleExtras(
@@ -645,24 +650,25 @@ async function readPlayerBattles(
   period: HistoryPeriod,
   now: Date,
 ): Promise<PlayerBattleRecord[]> {
-  const completedRunIds = new Set((await readCompletedRuns(db)).map((run) => run.id));
-  if (completedRunIds.size === 0) return [];
-
-  const { data, error } = await db
+  const days = HISTORY_PERIOD_DAYS[period];
+  const sinceMs = days === null ? null : now.getTime() - days * DAY_MS;
+  let query = db
     .from('player_battles')
     .select(PLAYER_BATTLE_COLUMNS)
     .eq('player_id', playerId)
-    .order('battle_time', { ascending: false })
-    .limit(500);
+    .order('battle_time', { ascending: false });
+  // Bound the period in the query so a row cap can never discard in-period
+  // battles in favour of newer rows outside the requested window.
+  if (sinceMs !== null) query = query.gte('battle_time', new Date(sinceMs).toISOString());
+  const { data, error } = await query;
   requireOk(error, 'Read battle history');
 
-  return (data ?? [])
+  const rows = (data ?? [])
     .map((row: unknown) => {
       const item = record(row);
       const battleTime = asString(item?.['battle_time']);
       if (battleTime === null) return null;
       const syncRunId = asString(item?.['sync_run_id']);
-      if (syncRunId !== null && !completedRunIds.has(syncRunId)) return null;
       if (!withinPeriod(battleTime, period, now)) return null;
       const trophyChange = asNumber(item?.['trophy_change']);
       const extras = readBattleExtras(item?.['raw'], playerTag);
@@ -680,6 +686,18 @@ async function readPlayerBattles(
       } satisfies PlayerBattleRecord;
     })
     .filter((battle): battle is PlayerBattleRecord => battle !== null && battle.id !== '');
+
+  const completedRunIds = new Set(
+    (await readCompletedRunsForIds(
+      rows.flatMap((battle) => (battle.syncRunId === null ? [] : [battle.syncRunId])),
+      db,
+    )).map((run) => run.id),
+  );
+  // A null sync_run_id predates run tracking and stays valid; anything with an
+  // explicit run id must belong to a completed sync.
+  return rows.filter(
+    (battle) => battle.syncRunId === null || completedRunIds.has(battle.syncRunId),
+  );
 }
 
 async function readMemberships(

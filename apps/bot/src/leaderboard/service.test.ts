@@ -12,6 +12,7 @@ type Tables = Record<string, Row[]>;
 interface Call {
   readonly table: string;
   readonly filters: Row;
+  readonly ins: Record<string, unknown[]>;
   readonly orders: number;
   readonly limit: number | null;
 }
@@ -23,6 +24,7 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
   function from(table: string) {
     const state = {
       filters: {} as Row,
+      ins: {} as Record<string, unknown[]>,
       orders: 0,
       limit: null as number | null,
       maybeSingle: false,
@@ -32,6 +34,7 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
       calls.push({
         table,
         filters: { ...state.filters },
+        ins: { ...state.ins },
         orders: state.orders,
         limit: state.limit,
       });
@@ -41,6 +44,9 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
       let result = [...(tables[table] ?? [])];
       for (const [field, value] of Object.entries(state.filters)) {
         result = result.filter((row) => (row[field] ?? null) === value);
+      }
+      for (const [field, values] of Object.entries(state.ins)) {
+        result = result.filter((row) => values.includes(row[field]));
       }
       if (state.limit !== null) result = result.slice(0, state.limit);
       return {
@@ -57,6 +63,10 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
       },
       is: (field: string, value: unknown) => {
         state.filters[field] = value;
+        return builder;
+      },
+      in: (field: string, values: readonly unknown[]) => {
+        state.ins[field] = [...values];
         return builder;
       },
       order: () => {

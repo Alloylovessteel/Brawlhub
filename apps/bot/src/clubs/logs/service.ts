@@ -26,6 +26,8 @@ type DatabaseClient = ReturnType<typeof createTrustedClient>;
 
 const MAX_LOGS_PER_GUILD = 25;
 const MAX_EVENTS_PER_LOG = 20;
+/** Page size below PostgREST's max_rows (1000) for undelivered event scans. */
+const EVENT_SCAN_PAGE_SIZE = 500;
 const CLUB_CAPACITY = 30;
 const EVENT_KINDS: readonly ClubLogEventKind[] = ['membership', 'role', 'capacity'];
 const INTEGER_FORMATTER = new Intl.NumberFormat('en-US');
@@ -603,6 +605,45 @@ function parseCapacityEvent(value: unknown, log: ClubLogRow): ClubLogEvent | nul
   };
 }
 
+type EventPageFetcher = (
+  from: number,
+  to: number,
+) => PromiseLike<{
+  readonly data: unknown;
+  readonly error: { readonly message?: string } | null;
+}>;
+
+/**
+ * Scan newest-first pages until enough rows outside the delivery ledger are
+ * found. A fixed 100-row window used to hide older undelivered events forever.
+ */
+async function readUndeliveredEventRows(
+  fetchPage: EventPageFetcher,
+  delivered: ReadonlySet<string>,
+  kind: ClubLogEventKind,
+): Promise<unknown[]> {
+  const found: unknown[] = [];
+  let offset = 0;
+  for (;;) {
+    const result = await fetchPage(offset, offset + EVENT_SCAN_PAGE_SIZE - 1);
+    requireOk(result.error, `Read club log ${kind} events`);
+    const rows = Array.isArray(result.data) ? result.data : [];
+    for (const row of rows) {
+      const id = eventId(record(row)?.['id']);
+      if (id === null || !delivered.has(`${kind}:${id}`)) found.push(row);
+    }
+    if (rows.length < EVENT_SCAN_PAGE_SIZE || found.length >= MAX_EVENTS_PER_LOG) break;
+    offset += rows.length;
+  }
+  return found
+    .sort((left, right) => {
+      const leftAt = detectedAt(record(left)?.['detected_at']) ?? '';
+      const rightAt = detectedAt(record(right)?.['detected_at']) ?? '';
+      return rightAt.localeCompare(leftAt);
+    })
+    .slice(0, MAX_EVENTS_PER_LOG);
+}
+
 async function loadEventsForLog(
   guildId: string,
   log: ClubLogRow,
@@ -615,52 +656,67 @@ async function loadEventsForLog(
     : new Set<string>();
 
   // No subscription-time watermark: stored history is included so a newly added log
-  // can backfill past joins, leaves, transfers, role and capacity changes. The delivery
-  // ledger prevents reposts and the query/display caps bound how much is shown at once.
+  // can backfill past joins, leaves, transfers, role and capacity changes. The
+  // delivery ledger is applied while scanning pages, so undelivered events past
+  // any single query window are still picked up on a later poll.
   const [membership, roles, capacity] = await Promise.all([
-    db
-      .from('membership_events')
-      .select(
-        'id, event_type, detected_at, from_club_id, to_club_id, player:players!membership_events_player_id_fkey(tag, name)',
-      )
-      .or(`from_club_id.eq.${log.clubId},to_club_id.eq.${log.clubId}`)
-      .order('detected_at', { ascending: false })
-      .limit(100),
-    db
-      .from('club_role_changes')
-      .select(
-        'id, from_role, to_role, detected_at, player:players!club_role_changes_player_id_fkey(tag, name, trophies)',
-      )
-      .eq('club_id', log.clubId)
-      .order('detected_at', { ascending: false })
-      .limit(100),
-    db
-      .from('club_capacity_events')
-      .select('id, from_count, to_count, is_full, detected_at')
-      .eq('club_id', log.clubId)
-      .order('detected_at', { ascending: false })
-      .limit(100),
+    readUndeliveredEventRows(
+      (from, to) =>
+        db
+          .from('membership_events')
+          .select(
+            'id, event_type, detected_at, from_club_id, to_club_id, player:players!membership_events_player_id_fkey(tag, name)',
+          )
+          .or(`from_club_id.eq.${log.clubId},to_club_id.eq.${log.clubId}`)
+          .order('detected_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
+      delivered,
+      'membership',
+    ),
+    readUndeliveredEventRows(
+      (from, to) =>
+        db
+          .from('club_role_changes')
+          .select(
+            'id, from_role, to_role, detected_at, player:players!club_role_changes_player_id_fkey(tag, name, trophies)',
+          )
+          .eq('club_id', log.clubId)
+          .order('detected_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
+      delivered,
+      'role',
+    ),
+    readUndeliveredEventRows(
+      (from, to) =>
+        db
+          .from('club_capacity_events')
+          .select('id, from_count, to_count, is_full, detected_at')
+          .eq('club_id', log.clubId)
+          .order('detected_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
+      delivered,
+      'capacity',
+    ),
   ]);
-  requireOk(membership.error, 'Read club log membership events');
-  requireOk(roles.error, 'Read club log role changes');
-  requireOk(capacity.error, 'Read club log capacity events');
 
   const events: ClubLogEvent[] = [];
-  for (const item of membership.data ?? []) {
+  for (const item of membership) {
     const event = parseMembershipEvent(item, log);
     if (event !== null) events.push(event);
   }
-  for (const item of roles.data ?? []) {
+  for (const item of roles) {
     const event = parseRoleEvent(item, log);
     if (event !== null) events.push(event);
   }
-  for (const item of capacity.data ?? []) {
+  for (const item of capacity) {
     const event = parseCapacityEvent(item, log);
     if (event !== null) events.push(event);
   }
 
   return events
-    .filter((event) => !delivered.has(`${event.kind}:${event.id}`))
     .sort((left, right) => right.detectedAt.localeCompare(left.detectedAt) || left.id.localeCompare(right.id))
     .slice(0, MAX_EVENTS_PER_LOG);
 }

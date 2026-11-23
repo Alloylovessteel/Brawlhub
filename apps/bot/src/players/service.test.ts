@@ -38,6 +38,7 @@ interface Call {
   readonly ins: Record<string, unknown[]>;
   readonly nulls: string[];
   readonly or: string | null;
+  readonly gte: { field: string; value: unknown } | null;
   readonly orders: number;
   readonly limit: number | null;
   readonly maybeSingle: boolean;
@@ -52,6 +53,7 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
       ins: {} as Record<string, unknown[]>,
       nulls: [] as string[],
       or: null as string | null,
+      gte: null as { field: string; value: unknown } | null,
       orders: 0,
       limit: null as number | null,
       maybeSingle: false,
@@ -76,6 +78,9 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
             .includes(needle.toLowerCase()),
         );
       }
+      if (state.gte !== null) {
+        result = result.filter((row) => String(row[state.gte!.field] ?? '') >= String(state.gte!.value));
+      }
       if (state.limit !== null) result = result.slice(0, state.limit);
       return result;
     }
@@ -87,6 +92,7 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
         ins: { ...state.ins },
         nulls: [...state.nulls],
         or: state.or,
+        gte: state.gte,
         orders: state.orders,
         limit: state.limit,
         maybeSingle: state.maybeSingle,
@@ -118,6 +124,10 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
       },
       or: (expression: string) => {
         state.or = expression;
+        return builder;
+      },
+      gte: (field: string, value: unknown) => {
+        state.gte = { field, value };
         return builder;
       },
       order: () => {
@@ -505,6 +515,41 @@ describe('player service', () => {
         { db: createFakeDb(tables()) as never },
       ),
     ).resolves.toEqual({ kind: 'not-found', tag: 'Q8VR' });
+  });
+
+  it('loads more than 100 completed history windows and reads snapshots newest-first', async () => {
+    const data = tables();
+    const runs = Array.from({ length: 601 }, (_, index) => ({
+      id: `history-run-${index}`,
+      status: 'completed',
+      started_at: new Date(Date.parse('2026-01-01T00:00:00.000Z') + index * 60_000).toISOString(),
+      finished_at: new Date(Date.parse('2026-01-01T00:01:00.000Z') + index * 60_000).toISOString(),
+      affected_club_ids: [],
+      club_tags: [],
+    }));
+    data['sync_runs'] = runs;
+    data['player_snapshots'] = runs.map((run, index) => ({
+      id: `history-snapshot-${index}`,
+      player_id: 'p1',
+      sync_run_id: run.id,
+      captured_at: run.finished_at,
+      trophies: 4000 + index,
+    }));
+    const db = createFakeDb(data);
+
+    const result = await loadPlayerHistory(
+      { tag: '2C0Y', period: 'all', now: NOW, guildId: 'guild-1' },
+      { db: db as never },
+    );
+
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.points).toHaveLength(601);
+    expect(result.value.points[0]?.trophies).toBe(4000);
+    expect(result.value.points[600]?.trophies).toBe(4600);
+    const snapshotCall = db.calls.find((call) => call.table === 'player_snapshots');
+    expect(snapshotCall?.limit).toBeNull();
+    expect(snapshotCall?.orders).toBe(1);
   });
 
   it('denies stored player history when no guild context is available', async () => {

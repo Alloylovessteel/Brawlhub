@@ -350,6 +350,7 @@ interface OpenMembershipRow {
 
 interface SnapshotHashRow {
   payload_hash: string;
+  sync_run_id?: string | null;
 }
 
 interface PendingEventRow {
@@ -1209,7 +1210,7 @@ async function readClaimedEventIds(
 async function writeSnapshot(db: SupabaseClient, write: SnapshotWrite): Promise<boolean> {
   const latestResult = await db
     .from(write.table)
-    .select('payload_hash')
+    .select('payload_hash, sync_run_id')
     .eq(write.entityColumn, write.entityId)
     .order('captured_at', { ascending: false })
     .limit(1)
@@ -1217,7 +1218,19 @@ async function writeSnapshot(db: SupabaseClient, write: SnapshotWrite): Promise<
   requireOk(latestResult.error, `Read latest ${write.table}`);
   const latest = (latestResult.data ?? null) as SnapshotHashRow | null;
   if (latest?.payload_hash === write.hash) {
-    return false;
+    // A snapshot from a failed/running run must not suppress the identical
+    // payload in a later completed run: history only trusts completed runs.
+    const runId = latest.sync_run_id;
+    if (typeof runId !== 'string' || runId === '') return false;
+    const runResult = await db
+      .from('sync_runs')
+      .select('status')
+      .eq('id', runId)
+      .maybeSingle();
+    requireOk(runResult.error, 'Read snapshot run status');
+    const status = (runResult.data as { status?: unknown } | null)?.status;
+    if (status === undefined || status === 'completed') return false;
+    // The matching hash came from an untrusted run; write a valid snapshot.
   }
 
   const payload: Record<string, unknown> = {

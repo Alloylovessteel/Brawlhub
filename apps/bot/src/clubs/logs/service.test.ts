@@ -23,6 +23,7 @@ vi.mock('@brawlhub/database', () => {
     private gteValue: Call['gteValue'] = null;
     private orderBy: Call['orderBy'] = null;
     private limitValue: number | null = null;
+    private rangeValue: Call['range'] = null;
     private mode: Call['mode'] = 'array';
 
     constructor(private readonly table: string) {}
@@ -85,6 +86,11 @@ vi.mock('@brawlhub/database', () => {
       return this;
     }
 
+    range(from: number, to: number): this {
+      this.rangeValue = { from, to };
+      return this;
+    }
+
     maybeSingle(): this {
       this.mode = 'maybeSingle';
       return this;
@@ -106,6 +112,7 @@ vi.mock('@brawlhub/database', () => {
         gteValue: this.gteValue,
         orderBy: this.orderBy,
         limit: this.limitValue,
+        range: this.rangeValue,
         mode: this.mode,
       };
       fake.calls.push(call);
@@ -154,6 +161,7 @@ interface Call {
   readonly gteValue: { column: string; value: unknown } | null;
   readonly orderBy: { column: string; options: unknown } | null;
   readonly limit: number | null;
+  readonly range: { from: number; to: number } | null;
   readonly mode: 'array' | 'maybeSingle';
 }
 
@@ -418,6 +426,29 @@ describe('loadUndeliveredClubLogEvents', () => {
     ]);
   });
 
+  it('finds an undelivered event beyond the old 100-row query window', async () => {
+    const rows = Array.from({ length: 101 }, (_, index) => ({
+      id: `c${index}`,
+      from_count: 29,
+      to_count: 30,
+      is_full: true,
+      detected_at: new Date(Date.parse('2026-11-20T12:00:00.000Z') + index * 60_000).toISOString(),
+    }));
+    setHandler('guild_club_log_deliveries:select', () => ({
+      data: rows.slice(0, 100).map((row) => ({ event_kind: 'capacity', event_id: row.id })),
+    }));
+    setHandler('membership_events:select', () => ({ data: [] }));
+    setHandler('club_role_changes:select', () => ({ data: [] }));
+    setHandler('club_capacity_events:select', (call) => {
+      expect(call.range).toEqual({ from: 0, to: 499 });
+      return { data: rows };
+    });
+
+    const groups = await loadUndeliveredClubLogEvents(GUILD_ID);
+
+    expect(groups[0]?.events.map((event) => event.id)).toEqual(['c100']);
+  });
+
   it('loads changes once under the today key even when several trophy periods are subscribed', async () => {
     setHandler('guild_club_log_periods:select', () => ({
       data: [
@@ -463,7 +494,7 @@ describe('loadUndeliveredClubLogEvents', () => {
         from_count: 29,
         to_count: 30,
         is_full: true,
-        detected_at: `2026-11-20T12:${String(index).padStart(2, '0')}:00.000Z`,
+        detected_at: new Date(Date.parse('2026-11-20T12:00:00.000Z') + index * 60_000).toISOString(),
       })),
     }));
 

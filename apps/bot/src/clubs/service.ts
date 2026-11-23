@@ -699,27 +699,70 @@ async function findClubByTag(
   return parseClubRow(data);
 }
 
+/** Chunk size for ID lookups; safely below PostgREST's max_rows (1000). */
+const RUN_ID_LOOKUP_CHUNK = 500;
+
+function runRecency(a: SyncRunRecord): number {
+  const parsed = Date.parse(a.finishedAt ?? a.startedAt ?? '');
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+function compareRunsNewestFirst(a: SyncRunRecord, b: SyncRunRecord): number {
+  return runRecency(b) - runRecency(a) || a.id.localeCompare(b.id);
+}
+
+/**
+ * Read completed runs for the ids actually referenced by the rows being
+ * displayed. Deriving the ids from the data removes any global "recent runs"
+ * window, and chunking keeps each request below PostgREST's max_rows limit.
+ */
+export async function readCompletedRunsForIds(
+  runIds: readonly string[],
+  db: DatabaseClient,
+): Promise<SyncRunRecord[]> {
+  const ids = [...new Set(runIds.filter((id) => id !== ''))];
+  const runs: SyncRunRecord[] = [];
+  for (let index = 0; index < ids.length; index += RUN_ID_LOOKUP_CHUNK) {
+    const { data, error } = await db
+      .from('sync_runs')
+      .select(SYNC_RUN_COLUMNS)
+      .eq('status', 'completed')
+      .in('id', ids.slice(index, index + RUN_ID_LOOKUP_CHUNK));
+    requireOk(error, 'Read sync history');
+    for (const row of data ?? []) {
+      const run = parseSyncRunRow(row);
+      if (run !== null) runs.push(run);
+    }
+  }
+  return runs.sort(compareRunsNewestFirst);
+}
+
+/** Merge recent display runs with runs discovered from older snapshot rows. */
+function mergeRuns(...groups: readonly (readonly SyncRunRecord[])[]): SyncRunRecord[] {
+  return [...new Map(groups.flat().map((run) => [run.id, run])).values()].sort(compareRunsNewestFirst);
+}
+
 export async function readCompletedRuns(db: DatabaseClient): Promise<SyncRunRecord[]> {
   const { data, error } = await db
     .from('sync_runs')
     .select(SYNC_RUN_COLUMNS)
     .eq('status', 'completed')
     .order('finished_at', { ascending: false, nullsFirst: false })
-    .order('started_at', { ascending: false })
-    .limit(100);
+    .order('started_at', { ascending: false });
   requireOk(error, 'Read sync history');
   return (data ?? [])
     .map((row: unknown) => parseSyncRunRow(row))
-    .filter((row): row is SyncRunRecord => row !== null);
+    .filter((row): row is SyncRunRecord => row !== null)
+    .sort(compareRunsNewestFirst);
 }
 
+/** Newest first so any server-side row cap can never hide the latest snapshot. */
 async function readSnapshots(clubId: string, db: DatabaseClient): Promise<ClubSnapshot[]> {
   const { data, error } = await db
     .from('club_snapshots')
     .select(SNAPSHOT_COLUMNS)
     .eq('club_id', clubId)
-    .order('captured_at', { ascending: true })
-    .limit(500);
+    .order('captured_at', { ascending: false });
   requireOk(error, 'Read club history');
   return (data ?? [])
     .map((row: unknown) => parseSnapshotRow(row))
@@ -799,7 +842,14 @@ export async function loadClubView(
       : { kind: 'unregistered', tag: normalizedTag };
   }
 
-  const [snapshots, runs] = await Promise.all([readSnapshots(club.id, db), readCompletedRuns(db)]);
+  const [snapshots, recentRuns] = await Promise.all([
+    readSnapshots(club.id, db),
+    readCompletedRuns(db),
+  ]);
+  const runs = mergeRuns(recentRuns, await readCompletedRunsForIds(
+    snapshots.map((snapshot) => snapshot.syncRunId),
+    db,
+  ));
   const completedRunIds = new Set(runs.map((run) => run.id));
   const latestSnapshot = latestCompletedSnapshot(snapshots, completedRunIds);
   const snapshotRosterResult = snapshotRoster(snapshots, completedRunIds);
@@ -880,13 +930,23 @@ export async function loadClubSummaries(
     typeof (guildIdOrDb as { from?: unknown }).from === 'function';
   const db = isDb ? (guildIdOrDb as DatabaseClient) : (dbArg ?? createTrustedClient());
   const guildId = isDb ? null : (guildIdOrDb as string | null | undefined);
-  const [clubs, runs] = await Promise.all([readClubs(db, guildId), readCompletedRuns(db)]);
-  const completedRunIds = new Set(runs.map((run) => run.id));
+  const [clubs, recentRuns] = await Promise.all([readClubs(db, guildId), readCompletedRuns(db)]);
   const now = new Date();
 
+  const withSnapshots = await Promise.all(
+    clubs.map(async (club) => ({ club, snapshots: await readSnapshots(club.id, db) })),
+  );
+  // Status is resolved only for runs that produced snapshots. A run older than
+  // the newest 100 completed runs must still count as a valid history source.
+  const snapshotRuns = await readCompletedRunsForIds(
+    withSnapshots.flatMap(({ snapshots }) => snapshots.map((snapshot) => snapshot.syncRunId)),
+    db,
+  );
+  const runs = mergeRuns(recentRuns, snapshotRuns);
+  const completedRunIds = new Set(runs.map((run) => run.id));
+
   const base = await Promise.all(
-    clubs.map(async (club) => {
-      const snapshots = await readSnapshots(club.id, db);
+    withSnapshots.map(async ({ club, snapshots }) => {
       const latestSnapshot = latestCompletedSnapshot(snapshots, completedRunIds);
       const rosterResult = snapshotRoster(snapshots, completedRunIds);
       const roster = rosterResult?.roster ?? (await readMembershipRoster(club.id, db));
@@ -1025,7 +1085,6 @@ export function playerSnapshotAsClubSnapshot(value: unknown): ClubSnapshot | nul
 
 async function readPlayerSnapshots(
   playerIds: readonly string[],
-  completedRunIds: ReadonlySet<string>,
   db: DatabaseClient,
 ): Promise<PlayerSnapshotRow[]> {
   if (playerIds.length === 0) return [];
@@ -1034,25 +1093,24 @@ async function readPlayerSnapshots(
     .from('player_snapshots')
     .select('id, player_id, sync_run_id, captured_at, trophies')
     .in('player_id', [...new Set(playerIds)])
-    .order('captured_at', { ascending: true })
-    .limit(2000);
+    .order('captured_at', { ascending: false });
   requireOk(error, 'Read player history');
 
-  return (data ?? [])
+  const rows = (data ?? [])
     .map((row: unknown) => {
       const source = record(row);
       const playerId = asString(source?.['player_id']);
       const snapshot = playerSnapshotAsClubSnapshot(row);
-      if (
-        playerId === null ||
-        snapshot === null ||
-        !completedRunIds.has(snapshot.syncRunId)
-      ) {
-        return null;
-      }
+      if (playerId === null || snapshot === null) return null;
       return { playerId, snapshot };
     })
     .filter((row): row is PlayerSnapshotRow => row !== null);
+  const completedRunIds = new Set(
+    (await readCompletedRunsForIds(rows.map((row) => row.snapshot.syncRunId), db)).map(
+      (run) => run.id,
+    ),
+  );
+  return rows.filter((row) => completedRunIds.has(row.snapshot.syncRunId));
 }
 
 async function readMembershipEvents(
@@ -1144,7 +1202,14 @@ async function readSyncedClubView(
   club: ClubRecord,
   db: DatabaseClient,
 ): Promise<SyncedClubView> {
-  const [snapshots, runs] = await Promise.all([readSnapshots(club.id, db), readCompletedRuns(db)]);
+  const [snapshots, recentRuns] = await Promise.all([
+    readSnapshots(club.id, db),
+    readCompletedRuns(db),
+  ]);
+  const runs = mergeRuns(recentRuns, await readCompletedRunsForIds(
+    snapshots.map((snapshot) => snapshot.syncRunId),
+    db,
+  ));
   const completedRunIds = new Set(runs.map((run) => run.id));
   const latestSnapshot = latestCompletedSnapshot(snapshots, completedRunIds);
   const snapshotRosterResult = snapshotRoster(snapshots, completedRunIds);
@@ -1241,7 +1306,6 @@ export async function loadLeaderboardView(
     entries
       .map((entry) => entry.playerId)
       .filter((id): id is string => id !== null),
-    view.completedRunIds,
     db,
   );
   const grouped = new Map<string, ClubSnapshot[]>();
@@ -1611,8 +1675,7 @@ export async function loadClubMemberDetails(
   const players = await readDetailPlayers(view.roster.map((member) => member.tag), db);
   const byTag = new Map(players.map((player) => [player.tag, player]));
   const playerIds = players.map((player) => player.id);
-  const [runs, memberships, verifications] = await Promise.all([
-    readCompletedRuns(db),
+  const [memberships, verifications] = await Promise.all([
     playerIds.length === 0
       ? Promise.resolve({ data: [] as unknown[], error: null })
       : db
@@ -1649,8 +1712,7 @@ export async function loadClubMemberDetails(
     if (id !== null) verified.add(id);
   }
 
-  const completedRunIds = new Set(runs.map((run) => run.id));
-  const snapshots = await readPlayerSnapshots(playerIds, completedRunIds, db);
+  const snapshots = await readPlayerSnapshots(playerIds, db);
   const grouped = new Map<string, ClubSnapshot[]>();
   for (const entry of snapshots) {
     const existing = grouped.get(entry.playerId) ?? [];

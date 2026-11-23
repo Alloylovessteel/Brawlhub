@@ -280,6 +280,55 @@ describe('club data service', () => {
     expect(result.view.roster.map((member) => member.tag)).toEqual(['G2P9', 'Q8VR']);
   });
 
+  it('reads club snapshots newest-first without a row cap', async () => {
+    const { db, calls } = createFakeDb(standardHandlers());
+
+    await loadClubView({ tag: CLUB.tag }, { db, api: api(), useCache: false });
+
+    const snapshotQuery = calls.find((call) => call.table === 'club_snapshots');
+    expect(snapshotQuery?.orders).toContain('captured_at');
+    expect(snapshotQuery?.limit).toBeUndefined();
+  });
+
+  it('keeps snapshots from completed runs older than the recent-run window', async () => {
+    const oldRun = { ...RUN, id: 'run-old', finished_at: '2026-01-01T00:00:00.000Z' };
+    const oldSnapshot = {
+      ...SNAPSHOT,
+      id: 'snapshot-old',
+      sync_run_id: oldRun.id,
+      captured_at: oldRun.finished_at,
+      trophies: 999,
+    };
+    const recentRuns = Array.from({ length: 150 }, (_, index) => ({
+      ...RUN,
+      id: `run-recent-${index}`,
+      affected_club_ids: [] as string[],
+      club_tags: [] as string[],
+      finished_at: new Date(Date.parse(RUN.finished_at) + index * 60_000).toISOString(),
+    }));
+    const { db } = createFakeDb({
+      ...standardHandlers(),
+      'sync_runs:select': (call) => {
+        const requested = call.filters['id__in'];
+        if (Array.isArray(requested) && requested.includes(oldRun.id)) return { data: [oldRun] };
+        return { data: requested === undefined ? recentRuns : [] };
+      },
+      'club_snapshots:select': () => ({ data: [oldSnapshot] }),
+    });
+    const client = api({
+      getClub: vi.fn(async () => {
+        throw new BrawlStarsApiError('offline', 0);
+      }),
+    });
+
+    const result = await loadClubView({ tag: CLUB.tag }, { db, api: client, useCache: false });
+
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.view.currentTrophies).toBe(999);
+    expect(result.view.latestSyncAt).toBe(oldRun.finished_at);
+  });
+
   it('uses the memberships roster when no completed snapshot contains one', async () => {
     const { db, calls } = createFakeDb({
       ...standardHandlers(),

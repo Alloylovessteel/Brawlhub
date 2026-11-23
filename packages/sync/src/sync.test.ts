@@ -240,6 +240,8 @@ interface SuccessState {
   membershipClubId: string | null;
   clubHash: string | undefined;
   playerHash: string | undefined;
+  snapshotRunId: string | undefined;
+  snapshotRunStatus: string | undefined;
   events: Map<string, string>;
 }
 
@@ -255,6 +257,8 @@ function setupSuccessfulSync(options: {
     membershipClubId: options.forceOldMembership === true ? 'club-old' : null,
     clubHash: undefined,
     playerHash: undefined,
+    snapshotRunId: undefined,
+    snapshotRunStatus: undefined,
     events: new Map<string, string>(),
   };
 
@@ -263,7 +267,10 @@ function setupSuccessfulSync(options: {
       'clubs:select': () => ({
         data: options.forceOldMembership === true ? [CLUB_ROW, OLD_CLUB_ROW] : [CLUB_ROW],
       }),
-      'sync_runs:select': () => {
+      'sync_runs:select': (call) => {
+        if (state.snapshotRunId !== undefined && call.filters['id'] === state.snapshotRunId) {
+          return { data: { id: state.snapshotRunId, status: state.snapshotRunStatus ?? 'failed' } };
+        }
         state.runSelectCount += 1;
         if (options.earlierRunFailed === true && state.runSelectCount === 2) {
           return {
@@ -336,14 +343,22 @@ function setupSuccessfulSync(options: {
           state.firstSnapshotSelect = false;
           throw new Error('simulated database outage');
         }
-        return { data: state.clubHash === undefined ? null : [{ payload_hash: state.clubHash }] };
+        return {
+          data:
+            state.clubHash === undefined
+              ? null
+              : [{ payload_hash: state.clubHash, sync_run_id: state.snapshotRunId }],
+        };
       },
       'club_snapshots:upsert': (call) => {
         state.clubHash = String(call.payload.payload_hash);
         return { data: [] };
       },
       'player_snapshots:select': () => ({
-        data: state.playerHash === undefined ? null : [{ payload_hash: state.playerHash }],
+        data:
+          state.playerHash === undefined
+            ? null
+            : [{ payload_hash: state.playerHash, sync_run_id: state.snapshotRunId }],
       }),
       'player_snapshots:upsert': (call) => {
         state.playerHash = String(call.payload.payload_hash);
@@ -486,6 +501,23 @@ describe('runSync', () => {
 
     expect(callsFor('club_snapshots', 'upsert')).toHaveLength(1);
     expect(callsFor('player_snapshots', 'upsert')).toHaveLength(1);
+  });
+
+  it('writes a fresh snapshot when the identical hash belongs to a failed run', async () => {
+    const state = setupSuccessfulSync();
+    const first = await runSync({ now: T0, guildId: 'guild-test' });
+    expect(first.snapshotsWritten).toBe(2);
+
+    state.snapshotRunId = 'run-failed';
+    state.snapshotRunStatus = 'failed';
+    const second = await runSync({
+      now: new Date(T0.getTime() + 16 * 60_000),
+      guildId: 'guild-test',
+    });
+
+    expect(second.snapshotsWritten).toBe(2);
+    expect(callsFor('club_snapshots', 'upsert')).toHaveLength(2);
+    expect(callsFor('player_snapshots', 'upsert')).toHaveLength(2);
   });
 
   it('reuses the same run id on a retry without duplicating membership events', async () => {

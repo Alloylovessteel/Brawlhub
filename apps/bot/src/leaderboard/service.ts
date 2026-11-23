@@ -5,6 +5,7 @@ import {
   parseSnapshotRow,
   playerSnapshotAsClubSnapshot,
   readCompletedRuns,
+  readCompletedRunsForIds,
   record,
   requireOk,
 } from '../clubs/service';
@@ -86,14 +87,6 @@ function latestRunAt(runs: readonly SyncRunRecord[]): string | null {
   return latest;
 }
 
-function isValidSnapshot(snapshot: ClubSnapshot, completedRunIds: ReadonlySet<string>): boolean {
-  return (
-    completedRunIds.has(snapshot.syncRunId) &&
-    finiteNumber(snapshot.trophies) !== null &&
-    parseTimestamp(snapshot.capturedAt) !== null
-  );
-}
-
 async function readPlayers(db: DatabaseClient): Promise<PlayerIdentity[]> {
   const { data, error } = await db
     .from('players')
@@ -143,25 +136,52 @@ async function readMemberships(
   return grouped;
 }
 
-/** Latest valid completed snapshot per club, keyed by club id. */
-async function readClubSnapshots(
+/**
+ * Completed status is resolved for the runs actually referenced by the stored
+ * snapshots, so no global recent-runs cap can make old history look invalid.
+ */
+async function completedRunIdsForSnapshots(
+  snapshots: readonly ClubSnapshot[],
   db: DatabaseClient,
-  completedRunIds: ReadonlySet<string>,
-): Promise<Map<string, ClubSnapshot>> {
+): Promise<Set<string>> {
+  return new Set(
+    (await readCompletedRunsForIds(snapshots.map((snapshot) => snapshot.syncRunId), db)).map(
+      (run) => run.id,
+    ),
+  );
+}
+
+/** Latest valid completed snapshot per club, keyed by club id. */
+async function readClubSnapshots(db: DatabaseClient): Promise<Map<string, ClubSnapshot>> {
   const byClub = new Map<string, ClubSnapshot>();
   const { data, error } = await db
     .from('club_snapshots')
     .select(CLUB_SNAPSHOT_COLUMNS)
-    .order('captured_at', { ascending: false })
-    .limit(MAX_ROWS);
+    .order('captured_at', { ascending: false });
   requireOk(error, 'Read club snapshots');
 
+  const parsed: { clubId: string; snapshot: ClubSnapshot }[] = [];
   for (const value of data ?? []) {
     const row = record(value);
     const clubId = asString(row?.['club_id']);
     if (row === null || clubId === null) continue;
     const snapshot = parseSnapshotRow(row);
-    if (snapshot === null || !isValidSnapshot(snapshot, completedRunIds)) continue;
+    if (
+      snapshot === null ||
+      finiteNumber(snapshot.trophies) === null ||
+      parseTimestamp(snapshot.capturedAt) === null
+    ) {
+      continue;
+    }
+    parsed.push({ clubId, snapshot });
+  }
+  const completedRunIds = await completedRunIdsForSnapshots(
+    parsed.map((entry) => entry.snapshot),
+    db,
+  );
+
+  for (const { clubId, snapshot } of parsed) {
+    if (!completedRunIds.has(snapshot.syncRunId)) continue;
     const existing = byClub.get(clubId);
     const existingAt = existing === undefined ? null : parseTimestamp(existing.capturedAt);
     const capturedAt = parseTimestamp(snapshot.capturedAt);
@@ -177,24 +197,36 @@ async function readClubSnapshots(
 }
 
 /** All valid completed snapshots grouped by player id. */
-async function readPlayerSnapshotGroups(
-  db: DatabaseClient,
-  completedRunIds: ReadonlySet<string>,
-): Promise<Map<string, ClubSnapshot[]>> {
+async function readPlayerSnapshotGroups(db: DatabaseClient): Promise<Map<string, ClubSnapshot[]>> {
   const grouped = new Map<string, ClubSnapshot[]>();
   const { data, error } = await db
     .from('player_snapshots')
     .select(PLAYER_SNAPSHOT_COLUMNS)
-    .order('captured_at', { ascending: false })
-    .limit(MAX_ROWS);
+    .order('captured_at', { ascending: false });
   requireOk(error, 'Read player snapshots');
 
+  const parsed: { playerId: string; snapshot: ClubSnapshot }[] = [];
   for (const value of data ?? []) {
     const row = record(value);
     const playerId = asString(row?.['player_id']);
     if (row === null || playerId === null) continue;
     const snapshot = playerSnapshotAsClubSnapshot(row);
-    if (snapshot === null || !isValidSnapshot(snapshot, completedRunIds)) continue;
+    if (
+      snapshot === null ||
+      finiteNumber(snapshot.trophies) === null ||
+      parseTimestamp(snapshot.capturedAt) === null
+    ) {
+      continue;
+    }
+    parsed.push({ playerId, snapshot });
+  }
+  const completedRunIds = await completedRunIdsForSnapshots(
+    parsed.map((entry) => entry.snapshot),
+    db,
+  );
+
+  for (const { playerId, snapshot } of parsed) {
+    if (!completedRunIds.has(snapshot.syncRunId)) continue;
     const existing = grouped.get(playerId) ?? [];
     existing.push(snapshot);
     grouped.set(playerId, existing);
@@ -227,8 +259,7 @@ export async function loadClubLeaderboard(
     getRegisteredClubs(options.guildId, db),
     readCompletedRuns(db),
   ]);
-  const completedRunIds = new Set(runs.map((run) => run.id));
-  const byClub = await readClubSnapshots(db, completedRunIds);
+  const byClub = await readClubSnapshots(db);
 
   const ranked = rankByScore(
     clubs,
@@ -349,8 +380,7 @@ export async function loadTrophyLeaderboard(
     players = players.filter((player) => player.id !== null && allowedPlayerIds.has(player.id));
   }
   const [runs] = await Promise.all([readCompletedRuns(db)]);
-  const completedRunIds = new Set(runs.map((run) => run.id));
-  const snapshotGroups = await readPlayerSnapshotGroups(db, completedRunIds);
+  const snapshotGroups = await readPlayerSnapshotGroups(db);
   const memberships = await readMemberships(db, players, now);
 
   const sources = players.map((player) => ({
@@ -415,8 +445,7 @@ export async function loadProgressionLeaderboard(
     players = players.filter((player) => player.id !== null && allowedPlayerIds.has(player.id));
   }
   const [runs] = await Promise.all([readCompletedRuns(db)]);
-  const completedRunIds = new Set(runs.map((run) => run.id));
-  const snapshotGroups = await readPlayerSnapshotGroups(db, completedRunIds);
+  const snapshotGroups = await readPlayerSnapshotGroups(db);
 
   const provisional = players
     .map((player) => ({
