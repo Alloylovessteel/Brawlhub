@@ -10,7 +10,43 @@ export interface PlayerCardAssets {
   readonly playerIconUrl?: string | null;
   readonly clubBadgeUrl?: string | null;
   readonly brawlerPortraitUrls?: readonly (string | null | undefined)[];
+  /** Portrait URLs keyed by brawler name, used by grid/rank image modes. */
+  readonly allBrawlerPortraitUrls?: Readonly<Record<string, string | null | undefined>>;
   readonly badges?: readonly string[];
+}
+
+export const PLAYER_CARD_MODES = [
+  'profile',
+  'brawler',
+  'rank',
+  'trophies',
+  'highest',
+  'season',
+  'history',
+] as const;
+
+export type PlayerCardMode = (typeof PLAYER_CARD_MODES)[number];
+
+export interface PlayerSeasonWindow {
+  readonly start: string | null;
+  readonly end: string | null;
+}
+
+export interface PlayerHistorySummary {
+  readonly points: number;
+  readonly firstAt: string | null;
+  readonly latestAt: string | null;
+  readonly firstTrophies: number | null;
+  readonly latestTrophies: number | null;
+  readonly clubChanges: number | null;
+  readonly nameChanges: number | null;
+}
+
+export interface PlayerCardOptions {
+  readonly mode?: PlayerCardMode;
+  readonly brawlerName?: string | null;
+  readonly seasonWindow?: PlayerSeasonWindow;
+  readonly history?: PlayerHistorySummary | null;
 }
 
 const WIDTH = 1200;
@@ -168,11 +204,310 @@ function brawlerMarkup(
     <text x="${x + 84}" y="${y + 59}" font-size="15" fill="#aaa5d6">${trophies} trophies</text>`;
 }
 
+function modeHeading(mode: PlayerCardMode): string {
+  switch (mode) {
+    case 'brawler': return 'BRAWLER FOCUS';
+    case 'rank': return 'BRAWLER RANKS';
+    case 'trophies': return 'BRAWLER TROPHIES • CURRENT';
+    case 'highest': return 'BRAWLER TROPHIES • HIGHEST';
+    case 'season': return 'SEASON SNAPSHOT';
+    case 'history': return 'PLAYER HISTORY';
+    default: return 'TOP BRAWLERS';
+  }
+}
+
+function sortedModeBrawlers(
+  profile: PlayerProfileView,
+  mode: PlayerCardMode,
+): readonly PlayerBrawler[] {
+  const brawlers = [...profile.brawlers];
+  switch (mode) {
+    case 'highest':
+      return brawlers.sort(
+        (left, right) => (right.highestTrophies ?? right.trophies ?? 0) - (left.highestTrophies ?? left.trophies ?? 0),
+      );
+    case 'rank':
+      return brawlers.sort((left, right) => {
+        const leftRank = left.rank ?? -1;
+        const rightRank = right.rank ?? -1;
+        return rightRank - leftRank || right.trophies - left.trophies;
+      });
+    default:
+      return brawlers.sort((left, right) => right.trophies - left.trophies);
+  }
+}
+
+function focusBrawler(
+  profile: PlayerProfileView,
+  options: PlayerCardOptions,
+): PlayerBrawler | undefined {
+  const wanted = options.brawlerName?.trim().toLowerCase();
+  if (wanted !== undefined && wanted !== '') {
+    const match = profile.brawlers.find((brawler) => brawler.name.toLowerCase() === wanted);
+    if (match !== undefined) return match;
+  }
+  return sortedModeBrawlers(profile, 'trophies')[0];
+}
+
+function brawlerPortraitDataUrl(
+  name: string,
+  assets: PlayerCardAssets,
+): Promise<string | null> {
+  return assetDataUrl(assets.allBrawlerPortraitUrls?.[name] ?? null, 64);
+}
+
+function gridMarkup(
+  brawlers: readonly PlayerBrawler[],
+  portraits: readonly (string | null)[],
+  mode: PlayerCardMode,
+): string {
+  return brawlers
+    .map((brawler, index) => {
+      const column = index % 4;
+      const row = Math.floor(index / 4);
+      const x = 64 + column * 272;
+      const y = 354 + row * 48;
+      const value =
+        mode === 'highest'
+          ? formatNumber(brawler.highestTrophies ?? brawler.trophies ?? null)
+          : mode === 'rank'
+            ? brawler.rank === null ? '—' : `R${brawler.rank}`
+            : formatNumber(brawler.trophies ?? null);
+      const badge =
+        mode === 'rank'
+          ? `P${brawler.power ?? '—'}`
+          : mode === 'highest'
+            ? 'BEST'
+            : mode === 'trophies'
+              ? 'NOW'
+              : '';
+      const portrait = portraits[index] ?? null;
+      const portraitMarkup =
+        portrait === null
+          ? `<rect width="34" height="34" rx="9" fill="#2f2a63" stroke="#8f82ff" stroke-width="2"/>
+             <text x="17" y="23" text-anchor="middle" font-size="12" font-weight="700" fill="#dcd6ff">${escapeXml(initials(brawler.name))}</text>`
+          : `<image href="${portrait}" width="34" height="34" preserveAspectRatio="xMidYMid slice"/>`;
+      return `<g transform="translate(${x} ${y})">
+        <rect width="262" height="42" rx="12" fill="#ffffff" fill-opacity="${index % 2 === 0 ? '0.05' : '0.025'}" stroke="#ffffff" stroke-opacity="0.07"/>
+        <g transform="translate(7 4)" clip-path="url(#modeClip${index})">${portraitMarkup}</g>
+        <text x="48" y="18" font-size="14" font-weight="700" fill="#f7f6ff">${escapeXml(truncate(brawler.name, 18))}</text>
+        <text x="48" y="34" font-size="13" fill="#cfc9ff">${escapeXml(value)}</text>
+        <text x="252" y="26" text-anchor="end" font-size="11" font-weight="700" letter-spacing="0.8" fill="#8f82ff">${escapeXml(badge)}</text>
+      </g>`;
+    })
+    .join('');
+}
+
+function pill(x: number, y: number, label: string, value: string, color: string): string {
+  const width = Math.max(126, Array.from(label).length * 8 + Array.from(value).length * 8 + 34);
+  return `<rect x="${x}" y="${y}" width="${width}" height="34" rx="17" fill="#ffffff" fill-opacity="0.055" stroke="${color}" stroke-opacity="0.55"/>
+    <text x="${x + 14}" y="${y + 22}" font-size="11" letter-spacing="1" fill="#aaa5d6">${escapeXml(label)}</text>
+    <text x="${x + width - 14}" y="${y + 22}" text-anchor="end" font-size="15" font-weight="700" fill="${color}">${escapeXml(value)}</text>`;
+}
+
+function focusMarkup(
+  brawler: PlayerBrawler | undefined,
+  portrait: string | null,
+): string {
+  if (brawler === undefined) {
+    return `<text x="64" y="400" font-size="24" fill="#aaa5d6">No brawler data available for this player.</text>`;
+  }
+  const portraitMarkup =
+    portrait === null
+      ? `<rect width="160" height="160" rx="30" fill="#2f2a63" stroke="#8f82ff" stroke-width="4"/>
+         <text x="80" y="102" text-anchor="middle" font-size="48" font-weight="700" fill="#dcd6ff">${escapeXml(initials(brawler.name))}</text>`
+      : `<image href="${portrait}" width="160" height="160" preserveAspectRatio="xMidYMid slice"/>`;
+  const chips = [
+    pill(270, 458, 'POWER', formatNumber(brawler.power ?? null), '#8f82ff'),
+    pill(406, 458, 'RANK', brawler.rank === null ? '—' : `R${brawler.rank}`, '#ff8fab'),
+    pill(270, 504, 'GADGETS', formatNumber(brawler.gadgets ?? null), '#46d6ff'),
+    pill(406, 504, 'STAR POWERS', formatNumber(brawler.starPowers ?? null), '#ffd166'),
+    pill(542, 458, 'GEARS', formatNumber(brawler.gears ?? null), '#7de2a0'),
+    pill(542, 504, 'HYPER', formatNumber(brawler.hyperCharges ?? null), '#c58cff'),
+  ].join('');
+  return `<g transform="translate(76 360)" clip-path="url(#focusClip)">${portraitMarkup}</g>
+    <text x="270" y="396" font-size="40" font-weight="700" fill="#f7f6ff">${escapeXml(truncate(brawler.name, 22))}</text>
+    <text x="270" y="430" font-size="20" fill="#46d6ff">${formatNumber(brawler.trophies ?? null)} trophies</text>
+    ${chips}
+    <text x="76" y="580" font-size="14" fill="#aaa5d6">Highest ${formatNumber(brawler.highestTrophies ?? brawler.trophies ?? null)} • Best streak ${formatNumber(brawler.maxWinStreak ?? null)}</text>`;
+}
+
+function seasonMarkup(
+  profile: PlayerProfileView,
+  window: PlayerSeasonWindow | undefined,
+): string {
+  const player = profile.player;
+  const wins = [player.threeVsThreeVictories, player.soloVictories, player.duoVictories].reduce<number>(
+    (total, value) => total + (value ?? 0),
+    0,
+  );
+  const tiles = [
+    ['CURRENT TROPHIES', formatNumber(player.trophies), '#46d6ff'],
+    ['HIGHEST TROPHIES', formatNumber(player.highestTrophies), '#ffd166'],
+    ['RANKED', player.rankedRankName ?? player.highestSeasonRankedRankName ?? '—', '#ff8fab'],
+    ['FAME', formatNumber(player.fame), '#8f82ff'],
+    ['VICTORIES', formatNumber(wins), '#7de2a0'],
+    ['BRAWLERS', formatNumber(profile.stats?.brawlerCount ?? profile.brawlers.length), '#c58cff'],
+  ] as const;
+  const markup = tiles
+    .map(([label, value, color], index) => {
+      const x = 64 + (index % 3) * 360;
+      const y = 350 + Math.floor(index / 3) * 118;
+      return `<rect x="${x}" y="${y}" width="340" height="98" rx="18" fill="#ffffff" fill-opacity="0.055" stroke="#ffffff" stroke-opacity="0.09"/>
+        <text x="${x + 20}" y="${y + 32}" font-size="12" font-weight="700" letter-spacing="1.4" fill="${color}">${escapeXml(label)}</text>
+        <text x="${x + 20}" y="${y + 70}" font-size="26" font-weight="700" fill="#f7f6ff">${escapeXml(truncate(value, 20))}</text>`;
+    })
+    .join('');
+  const start = window?.start === null || window?.start === undefined ? 'not configured' : formatDate(window.start);
+  const end = window?.end === null || window?.end === undefined ? 'not configured' : formatDate(window.end);
+  return `${markup}
+    <text x="64" y="616" font-size="14" fill="#aaa5d6">Season window: ${escapeXml(start)} → ${escapeXml(end)}</text>
+    <text x="64" y="640" font-size="13" fill="#8e88bd">Current official values only • no invented season deltas</text>`;
+}
+
+function historyMarkup(summary: PlayerHistorySummary | null | undefined): string {
+  if (summary === null || summary === undefined) {
+    return `<text x="64" y="400" font-size="24" fill="#aaa5d6">No stored history is available for this window.</text>`;
+  }
+  const delta =
+    summary.firstTrophies === null || summary.latestTrophies === null
+      ? '—'
+      : `${summary.latestTrophies - summary.firstTrophies >= 0 ? '+' : ''}${(summary.latestTrophies - summary.firstTrophies).toLocaleString('en-US')}`;
+  const tiles = [
+    ['SNAPSHOTS', formatNumber(summary.points), '#46d6ff'],
+    ['TROPHY CHANGE', delta, '#7de2a0'],
+    ['CLUB CHANGES', formatNumber(summary.clubChanges), '#8f82ff'],
+    ['NAME CHANGES', formatNumber(summary.nameChanges), '#ff8fab'],
+  ] as const;
+  const markup = tiles
+    .map(([label, value, color], index) => {
+      const x = 64 + (index % 2) * 552;
+      const y = 350 + Math.floor(index / 2) * 128;
+      return `<rect x="${x}" y="${y}" width="530" height="106" rx="18" fill="#ffffff" fill-opacity="0.055" stroke="#ffffff" stroke-opacity="0.09"/>
+        <text x="${x + 20}" y="${y + 32}" font-size="12" font-weight="700" letter-spacing="1.4" fill="${color}">${escapeXml(label)}</text>
+        <text x="${x + 20}" y="${y + 72}" font-size="28" font-weight="700" fill="#f7f6ff">${escapeXml(truncate(value, 20))}</text>`;
+    })
+    .join('');
+  const first = summary.firstAt === null ? '—' : formatDate(summary.firstAt);
+  const latest = summary.latestAt === null ? '—' : formatDate(summary.latestAt);
+  return `${markup}
+    <text x="64" y="620" font-size="14" fill="#aaa5d6">Stored snapshots: ${escapeXml(first)} → ${escapeXml(latest)}</text>
+    <text x="64" y="644" font-size="13" fill="#8e88bd">Built only from synced official data • no live claims</text>`;
+}
+
+function modeDefs(mode: PlayerCardMode, gridCount: number): string {
+  if (mode === 'brawler') {
+    return `<clipPath id="focusClip"><rect width="160" height="160" rx="30"/></clipPath>`;
+  }
+  if (mode === 'rank' || mode === 'trophies' || mode === 'highest') {
+    return Array.from({ length: gridCount }, (_, index) =>
+      `<clipPath id="modeClip${index}"><rect width="34" height="34" rx="9"/></clipPath>`,
+    ).join('');
+  }
+  return '';
+}
+
+/** Render one of the BrawlTools-style `/me image` modes as PNG bytes. */
+async function buildPlayerModeImage(
+  profile: PlayerProfileView,
+  assets: PlayerCardAssets,
+  options: PlayerCardOptions,
+): Promise<Buffer> {
+  const mode = options.mode ?? 'profile';
+  const player = profile.player;
+  const displayName = truncate(player.name, 24);
+  const tag = `#${player.tag}`;
+  const club = profile.currentClub;
+  const sourceLabel = profile.source === 'live' ? 'LIVE OFFICIAL DATA' : 'STORED OFFICIAL DATA';
+  const updated = formatDate(profile.profileFetchedAt ?? profile.latestSnapshotAt);
+
+  const [playerIcon, clubBadge] = await Promise.all([
+    assetDataUrl(assets.playerIconUrl, 156),
+    assetDataUrl(assets.clubBadgeUrl, 58),
+  ]);
+
+  const gridBrawlers =
+    mode === 'rank' || mode === 'trophies' || mode === 'highest'
+      ? sortedModeBrawlers(profile, mode).slice(0, 24)
+      : [];
+  const gridPortraits = await Promise.all(
+    gridBrawlers.map((brawler) => brawlerPortraitDataUrl(brawler.name, assets)),
+  );
+
+  const focused = mode === 'brawler' ? focusBrawler(profile, options) : undefined;
+  const focusedPortrait =
+    focused === undefined
+      ? null
+      : await brawlerPortraitDataUrl(
+          focused.name,
+          assets.allBrawlerPortraitUrls?.[focused.name] === undefined
+            ? { ...assets, allBrawlerPortraitUrls: { [focused.name]: assets.brawlerPortraitUrls?.[0] } }
+            : assets,
+        );
+
+  let body: string;
+  if (mode === 'season') {
+    body = seasonMarkup(profile, options.seasonWindow);
+  } else if (mode === 'history') {
+    body = historyMarkup(options.history);
+  } else if (mode === 'brawler') {
+    body = focusMarkup(focused, focusedPortrait);
+  } else {
+    body = gridMarkup(gridBrawlers, gridPortraits, mode);
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#11102b"/>
+      <stop offset="55%" stop-color="#1c1748"/>
+      <stop offset="100%" stop-color="#34216b"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#292353"/>
+      <stop offset="100%" stop-color="#1b173c"/>
+    </linearGradient>
+    <clipPath id="avatarClip"><circle cx="144" cy="228" r="78"/></clipPath>
+    <clipPath id="clubClip"><rect x="786" y="154" width="58" height="58" rx="14"/></clipPath>
+    ${modeDefs(mode, gridBrawlers.length)}
+  </defs>
+  <rect width="${WIDTH}" height="${HEIGHT}" fill="url(#background)"/>
+  <circle cx="1090" cy="40" r="240" fill="#9a7dff" fill-opacity="0.12"/>
+  <circle cx="1120" cy="690" r="180" fill="#46d6ff" fill-opacity="0.08"/>
+  <rect x="42" y="34" width="356" height="44" rx="22" fill="#ffffff" fill-opacity="0.08"/>
+  <text x="64" y="63" font-size="17" font-weight="700" letter-spacing="2.2" fill="#dcd6ff">BRAWLHUB • PLAYER IMAGE</text>
+  <text x="1158" y="63" text-anchor="end" font-size="14" font-weight="700" letter-spacing="1.4" fill="#aaa5d6">${escapeXml(sourceLabel)}</text>
+  <rect x="40" y="104" width="1120" height="548" rx="30" fill="url(#panel)" stroke="#ffffff" stroke-opacity="0.12"/>
+  ${avatarMarkup(playerIcon, displayName)}
+  <text x="252" y="198" font-size="43" font-weight="700" fill="#f7f6ff">${escapeXml(displayName)}</text>
+  <text x="252" y="236" font-size="24" font-weight="600" fill="#aaa5d6">${escapeXml(tag)}</text>
+  ${badgeMarkup(assets.badges ?? [], 252, 258)}
+  <rect x="760" y="138" width="360" height="98" rx="20" fill="#ffffff" fill-opacity="0.055" stroke="#ffffff" stroke-opacity="0.08"/>
+  ${clubMarkup(clubBadge)}
+  <text x="858" y="178" font-size="19" font-weight="700" fill="#f7f6ff">${escapeXml(truncate(club?.name ?? 'No club recorded', 24))}</text>
+  <text x="858" y="207" font-size="15" fill="#aaa5d6">${escapeXml(formatRole(club?.role ?? null))}</text>
+  <text x="64" y="332" font-size="14" font-weight="700" letter-spacing="1.7" fill="#aaa5d6">${escapeXml(modeHeading(mode))}</text>
+  <text x="1136" y="332" text-anchor="end" font-size="12" fill="#8e88bd">BRAWLTOOLS-STYLE PRESET</text>
+  ${body}
+  <text x="42" y="695" font-size="13" fill="#8e88bd">Official Brawl Stars data • Static BrawlAPI assets • Updated ${escapeXml(updated)}</text>
+  <text x="1158" y="695" text-anchor="end" font-size="13" fill="#8e88bd">Made for ${escapeXml(truncate(player.name, 28))}</text>
+</svg>`;
+
+  return sharp(Buffer.from(svg), { limitInputPixels: MAX_INPUT_PIXELS })
+    .png()
+    .toBuffer();
+}
+
 /** Render a public Spotlight-style player profile card as PNG bytes. */
 export async function buildPlayerCardImage(
   profile: PlayerProfileView,
   assets: PlayerCardAssets = {},
+  options: PlayerCardOptions = {},
 ): Promise<Buffer> {
+  if (options.mode !== undefined && options.mode !== 'profile') {
+    return buildPlayerModeImage(profile, assets, options);
+  }
+
   const player = profile.player;
   const displayName = truncate(player.name, 24);
   const tag = `#${player.tag}`;

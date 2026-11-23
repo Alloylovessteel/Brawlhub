@@ -5,6 +5,7 @@ import { SAFE_USER_ERROR } from '../discord/errors';
 const mocks = vi.hoisted(() => ({
   service: {
     loadPlayerProfile: vi.fn(),
+    loadPlayerHistory: vi.fn(),
     searchPlayers: vi.fn(),
   },
   verification: {
@@ -22,6 +23,12 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../players/service', () => mocks.service);
+vi.mock('../config.js', () => ({
+  getBotConfig: vi.fn(() => ({
+    seasonStartIso: '2026-11-05T08:00:00.000Z',
+    seasonEndIso: '2026-12-03T08:00:00.000Z',
+  })),
+}));
 vi.mock('../verification/index', () => mocks.verification);
 vi.mock('../metadata/assets.js', () => mocks.assets);
 vi.mock('../players/card.js', () => mocks.card);
@@ -94,6 +101,7 @@ function payload(interaction: { editReply: ReturnType<typeof vi.fn> }): any {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.service.loadPlayerProfile.mockResolvedValue(profileResult());
+  mocks.service.loadPlayerHistory.mockResolvedValue({ kind: 'not-found', tag: '2C0Y' });
   mocks.verification.findVerifiedPlayerForDiscordUser.mockResolvedValue(null);
   mocks.verification.listLinkedAccounts.mockResolvedValue(null);
   mocks.assets.resolvePlayerIconUrl.mockResolvedValue(null);
@@ -139,6 +147,7 @@ describe('/me image', () => {
         ],
         badges: ['VERIFIED', 'MAIN'],
       }),
+      { mode: 'profile' },
     );
 
     const reply = payload(interaction);
@@ -168,6 +177,7 @@ describe('/me image', () => {
     expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ badges: ['VERIFIED', 'ALT'] }),
+      { mode: 'profile' },
     );
   });
 
@@ -202,5 +212,97 @@ describe('/me image', () => {
       content: SAFE_USER_ERROR,
       flags: 64,
     });
+  });
+
+  it('renders the brawler-trophies preset with all static portraits', async () => {
+    mocks.assets.resolveBrawlerPortraitUrl.mockImplementation(
+      async (name: string | null) => `https://cdn.example.test/${name}.png`,
+    );
+    const interaction = chatInteraction({ tag: '#2c0y', mode: 'trophies' });
+
+    await handleMeImage(interaction);
+
+    expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        allBrawlerPortraitUrls: {
+          Shelly: 'https://cdn.example.test/Shelly.png',
+          Nita: 'https://cdn.example.test/Nita.png',
+          Colt: 'https://cdn.example.test/Colt.png',
+          Jessie: 'https://cdn.example.test/Jessie.png',
+        },
+      }),
+      { mode: 'trophies' },
+    );
+    expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y-trophies.png');
+  });
+
+  it('passes the configured season window to the season preset', async () => {
+    const interaction = chatInteraction({ tag: '#2c0y', mode: 'season' });
+
+    await handleMeImage(interaction);
+
+    expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      {
+        mode: 'season',
+        seasonWindow: {
+          start: '2026-11-05T08:00:00.000Z',
+          end: '2026-12-03T08:00:00.000Z',
+        },
+      },
+    );
+  });
+
+  it('loads stored snapshots for the history preset', async () => {
+    mocks.service.loadPlayerHistory.mockResolvedValue({
+      kind: 'ok',
+      value: {
+        points: [
+          { capturedAt: '2026-11-01T00:00:00.000Z', trophies: 4800 },
+          { capturedAt: '2026-11-20T00:00:00.000Z', trophies: 5000 },
+        ],
+        events: [{ eventType: 'join' }, { eventType: 'leave' }],
+      },
+    });
+    const interaction = chatInteraction({ tag: '#2c0y', mode: 'history' });
+
+    await handleMeImage(interaction);
+
+    expect(mocks.service.loadPlayerHistory).toHaveBeenCalledWith({
+      tag: '#2c0y',
+      guildId: 'guild-1',
+      period: '30d',
+    });
+    expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      {
+        mode: 'history',
+        history: {
+          points: 2,
+          firstAt: '2026-11-01T00:00:00.000Z',
+          latestAt: '2026-11-20T00:00:00.000Z',
+          firstTrophies: 4800,
+          latestTrophies: 5000,
+          clubChanges: 2,
+          nameChanges: null,
+        },
+      },
+    );
+  });
+
+  it('falls back to the profile preset for an unknown mode', async () => {
+    const interaction = chatInteraction({ tag: '#2c0y', mode: 'mastery' });
+
+    await handleMeImage(interaction);
+
+    expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { mode: 'profile' },
+    );
+    expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y.png');
   });
 });

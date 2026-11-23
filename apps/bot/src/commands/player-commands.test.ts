@@ -280,7 +280,7 @@ describe('/me command', () => {
       ]),
     );
     expect(optionsBySubcommand.get('profile')).toEqual(['tag']);
-    expect(optionsBySubcommand.get('image')).toEqual(['tag']);
+    expect(optionsBySubcommand.get('image')).toEqual(['tag', 'mode']);
     expect(optionsBySubcommand.get('live')).toEqual(['tag']);
     expect(optionsBySubcommand.get('live-stop')).toEqual([]);
     expect(optionsBySubcommand.get('chart')).toEqual(['option', 'tag', 'period']);

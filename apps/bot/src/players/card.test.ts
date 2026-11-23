@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildPlayerCardImage, selectTopBrawlers } from './card';
+import { buildPlayerCardImage, PLAYER_CARD_MODES, selectTopBrawlers } from './card';
 import type { PlayerProfileView } from './types';
 
 vi.setConfig({ testTimeout: 20_000 });
@@ -111,6 +111,40 @@ describe('buildPlayerCardImage', () => {
     expect(metadata.format).toBe('png');
     expect(metadata.width).toBe(1200);
     expect(metadata.height).toBe(720);
+    expect(buffer.byteLength).toBeGreaterThan(1_000);
+  });
+
+  it('renders every BrawlTools-style preset as a 1200x720 PNG', async () => {
+    for (const mode of PLAYER_CARD_MODES) {
+      const buffer = await buildPlayerCardImage(profile(), {}, {
+        mode,
+        seasonWindow: { start: '2026-11-05T08:00:00.000Z', end: '2026-12-03T08:00:00.000Z' },
+        history: {
+          points: 2,
+          firstAt: '2026-11-01T00:00:00.000Z',
+          latestAt: '2026-11-20T00:00:00.000Z',
+          firstTrophies: 4800,
+          latestTrophies: 5000,
+          clubChanges: 1,
+          nameChanges: null,
+        },
+      });
+      const metadata = await sharp(buffer).metadata();
+
+      expect(metadata.format, mode).toBe('png');
+      expect(metadata.width, mode).toBe(1200);
+      expect(metadata.height, mode).toBe(720);
+      expect(buffer.byteLength, mode).toBeGreaterThan(1_000);
+    }
+  });
+
+  it('renders grid presets safely with missing optional brawler fields', async () => {
+    const buffer = await buildPlayerCardImage(profile(), {}, { mode: 'rank' });
+    expect(buffer.byteLength).toBeGreaterThan(1_000);
+  });
+
+  it('renders the history preset without stored data', async () => {
+    const buffer = await buildPlayerCardImage(profile(), {}, { mode: 'history', history: null });
     expect(buffer.byteLength).toBeGreaterThan(1_000);
   });
 });

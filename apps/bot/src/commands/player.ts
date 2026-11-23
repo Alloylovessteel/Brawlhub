@@ -11,6 +11,7 @@ import {
   type MeSessionInput,
 } from './me-components.js';
 import { handleMeImage } from './me-image.js';
+import { ME_IMAGE_MODE_CHOICES } from './me-image-modes.js';
 import { handleMeLive, handleMeLiveStop } from './me-live.js';
 import { handleMeChart } from './me-chart.js';
 import { meTagErrorMessage, resolveMeTag } from './me-utils.js';
@@ -49,13 +50,22 @@ export const meCommandData = new SlashCommandBuilder()
         .setDescription('Show an interactive Brawl Stars player overview'),
     ),
   )
-  .addSubcommand((subcommand) =>
+  .addSubcommand((subcommand) => {
     addTagOption(
       subcommand
         .setName('image')
-        .setDescription('Post a Brawl Stars player profile card in this channel'),
-    ),
-  )
+        .setDescription('Post a Brawl Stars player image card in this channel'),
+    );
+    subcommand.addStringOption((option) => {
+      option
+        .setName('mode')
+        .setDescription('Which BrawlTools-style image to render')
+        .setRequired(false);
+      for (const choice of ME_IMAGE_MODE_CHOICES) option.addChoices(choice);
+      return option;
+    });
+    return subcommand;
+  })
   .addSubcommand((subcommand) =>
     addTagOption(
       subcommand
