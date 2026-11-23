@@ -667,6 +667,9 @@ async function loadEventsForLog(
 
 /**
  * Undelivered stored change events for every log subscription in one guild.
+ * Membership/role changes are no longer tied to a trophy period: they post
+ * once as their own event log. The existing `today` delivery key is retained
+ * so those rows from the old per-period ledger are not reposted.
  * Every read is scoped to that guild and to the log's club.
  */
 export async function loadUndeliveredClubLogEvents(
@@ -678,14 +681,10 @@ export async function loadUndeliveredClubLogEvents(
   const logs = await loadClubLogRows(parsedGuildId, { db });
   const groups: ClubLogGroup[] = [];
   for (const fullLog of logs) {
-    const periods: readonly ClubLogPeriod[] =
-      fullLog.periods.length > 0 ? fullLog.periods : ['today'];
-    for (const period of periods) {
-      const events = await loadEventsForLog(parsedGuildId, fullLog, db, period);
-      if (events.length === 0) continue;
-      const { createdAt: _createdAt, ...log } = fullLog;
-      groups.push({ log: { ...log, periods: [period] }, events });
-    }
+    const events = await loadEventsForLog(parsedGuildId, fullLog, db, 'today');
+    if (events.length === 0) continue;
+    const { createdAt: _createdAt, ...log } = fullLog;
+    groups.push({ log, events });
   }
   return groups;
 }
@@ -737,4 +736,71 @@ export async function markClubLogEventsDelivered(
     ignoreDuplicates: true,
   });
   requireOk(saved.error, 'Record club log deliveries');
+}
+
+/** One completed-window digest post, keyed by log and trophy period. */
+export interface ClubLogDigestPost {
+  readonly logId: string;
+  readonly period: ClubLogPeriod;
+  readonly periodKey: string;
+  readonly channelId: string;
+  readonly messageId: string;
+}
+
+function digestKey(logId: string, period: ClubLogPeriod, periodKey: string): string {
+  return `${logId}:${period}:${periodKey}`;
+}
+
+/** Read which completed windows this guild already posted, for restart-safe polling. */
+export async function readPostedClubLogDigests(
+  guildId: string,
+  options: ClubLogServiceOptions = {},
+): Promise<Set<string>> {
+  const parsedGuildId = requireGuildId(guildId);
+  const db = dbFor(options);
+  const result = await db
+    .from('guild_club_log_digest_posts')
+    .select('log_id, period, period_key')
+    .eq('guild_id', parsedGuildId);
+  requireOk(result.error, 'Read club log digest posts');
+  const keys = new Set<string>();
+  for (const item of result.data ?? []) {
+    const row = record(item);
+    const logId = eventId(row?.['log_id']);
+    const period = asString(row?.['period']);
+    const periodKey = asString(row?.['period_key']);
+    if (logId === null || period === null || !isClubLogPeriod(period) || periodKey === null) {
+      continue;
+    }
+    keys.add(digestKey(logId, period, periodKey));
+  }
+  return keys;
+}
+
+/** Record a posted digest. Unknown log IDs are ignored so guild scope cannot be escaped. */
+export async function markClubLogDigestPosted(
+  guildId: string,
+  posts: readonly ClubLogDigestPost[],
+  options: ClubLogServiceOptions = {},
+): Promise<void> {
+  const parsedGuildId = requireGuildId(guildId);
+  if (posts.length === 0) return;
+  const db = dbFor(options);
+  const allowedLogIds = new Set((await loadClubLogRows(parsedGuildId, { db })).map((log) => log.id));
+  const rows = posts
+    .filter((post) => allowedLogIds.has(post.logId))
+    .map((post) => ({
+      guild_id: parsedGuildId,
+      log_id: post.logId,
+      period: post.period,
+      period_key: post.periodKey,
+      channel_id: post.channelId,
+      message_id: post.messageId,
+    }));
+  if (rows.length === 0) return;
+  const saved = await db.from('guild_club_log_digest_posts').upsert(rows, {
+    onConflict: 'guild_id,log_id,period,period_key',
+    ignoreDuplicates: true,
+  });
+  requireOk(saved.error, 'Record club log digest post');
 }

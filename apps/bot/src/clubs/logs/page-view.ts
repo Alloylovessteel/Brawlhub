@@ -67,11 +67,13 @@ export async function loadClubLogView(input: {
   readonly tag?: string | undefined;
   readonly period: ClubLogPeriod;
   readonly now?: Date;
+  /** Override the season baseline, e.g. the start of a completed season digest window. */
+  readonly seasonStartIso?: string | undefined;
 }): Promise<ResolvedClubResult<ClubLogView>> {
   const result = await loadLeaderboardView({
     tag: input.tag,
     guildId: input.guildId,
-    seasonStartIso: getBotConfig().seasonStartIso,
+    seasonStartIso: input.seasonStartIso ?? getBotConfig().seasonStartIso,
     ...(input.now === undefined ? {} : { now: input.now }),
   });
   if (result.kind !== 'ok') return result;

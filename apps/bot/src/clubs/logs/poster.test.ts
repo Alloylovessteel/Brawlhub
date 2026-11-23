@@ -4,6 +4,9 @@ const GUILD_ID = '123456789012345678';
 const LOG_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const CHANNEL_ID = '111111111111111222';
 const TOKEN = 'discord-token-should-never-be-logged';
+const SEASON_START = '2026-11-05T08:00:00.000Z';
+const SEASON_END = '2026-12-03T08:00:00.000Z';
+const NOV_22 = new Date('2026-11-22T00:00:00.000Z');
 
 const mocks = vi.hoisted(() => ({
   post: vi.fn(),
@@ -13,13 +16,13 @@ const mocks = vi.hoisted(() => ({
     readClubLogGuildIds: vi.fn(),
     loadUndeliveredClubLogEvents: vi.fn(),
     markClubLogEventsDelivered: vi.fn(),
+    loadClubLogs: vi.fn(),
+    readPostedClubLogDigests: vi.fn(),
+    markClubLogDigestPosted: vi.fn(),
   },
-  pageView: {
-    CLUB_LOG_PERIOD_LABELS: { today: 'Today', week: 'This Week', season: 'This Season' },
-    isClubLogPeriod: vi.fn((value: string) => ['today', 'week', 'season'].includes(value)),
-    loadClubLogView: vi.fn(),
-  },
-  image: { buildClubLogPageImage: vi.fn() },
+  digest: { dueClubLogDigests: vi.fn() },
+  pageView: { loadClubLogView: vi.fn() },
+  image: { buildClubLogEventImage: vi.fn(), buildClubLogDigestImage: vi.fn() },
 }));
 
 vi.mock('discord.js', async (importOriginal) => {
@@ -40,14 +43,16 @@ vi.mock('discord.js', async (importOriginal) => {
 vi.mock('../../config', () => ({ getBotConfig: mocks.getBotConfig }));
 vi.mock('@brawlhub/logging', () => ({ createLogger: () => mocks.logger }));
 vi.mock('./service', () => mocks.service);
+vi.mock('./digest', () => mocks.digest);
 vi.mock('./page-view', () => mocks.pageView);
 vi.mock('./image', () => mocks.image);
 
-import { runClubLogsPost, startClubLogsSchedule } from './poster';
+import { runClubLogsPost, runClubLogDigests, startClubLogsSchedule } from './poster';
+import type { ClubLogPeriod } from '../types';
 import type { ClubLogGroup } from './types';
 import type { ClubLogView } from '../types';
 
-function group(period: 'today' | 'week' | 'season' = 'today'): ClubLogGroup {
+function group(period: ClubLogPeriod = 'today'): ClubLogGroup {
   return {
     log: {
       id: LOG_ID,
@@ -72,7 +77,19 @@ function group(period: 'today' | 'week' | 'season' = 'today'): ClubLogGroup {
   };
 }
 
-function view(): ClubLogView {
+function log(periods: readonly ClubLogPeriod[] = ['today', 'week', 'season']) {
+  return {
+    id: LOG_ID,
+    guildId: GUILD_ID,
+    clubId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    clubTag: 'ALPHA',
+    clubName: 'Alpha',
+    channelId: CHANNEL_ID,
+    periods,
+  };
+}
+
+function view(period: ClubLogPeriod = 'today'): ClubLogView {
   return {
     club: {
       id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
@@ -84,7 +101,7 @@ function view(): ClubLogView {
       memberCount: null,
       lastSyncedAt: null,
     },
-    period: 'today',
+    period,
     rows: [],
     unavailable: 0,
     latestSnapshotAt: '2026-11-20T12:00:00.000Z',
@@ -92,11 +109,27 @@ function view(): ClubLogView {
   };
 }
 
+function boundaries() {
+  return [
+    {
+      period: 'today' as const,
+      periodKey: '2026-11-21',
+      windowStart: new Date('2026-11-21T00:00:00.000Z'),
+      windowEnd: new Date('2026-11-21T23:59:59.999Z'),
+      label: 'Nov 21',
+    },
+  ];
+}
+
 beforeEach(() => {
   mocks.post.mockReset();
   mocks.post.mockResolvedValue({ id: 'message-1' });
   mocks.getBotConfig.mockReset();
-  mocks.getBotConfig.mockReturnValue({ token: TOKEN });
+  mocks.getBotConfig.mockReturnValue({
+    token: TOKEN,
+    seasonStartIso: SEASON_START,
+    seasonEndIso: SEASON_END,
+  });
   mocks.logger.info.mockReset();
   mocks.logger.warn.mockReset();
   mocks.logger.error.mockReset();
@@ -106,15 +139,24 @@ beforeEach(() => {
   mocks.service.loadUndeliveredClubLogEvents.mockResolvedValue([group()]);
   mocks.service.markClubLogEventsDelivered.mockReset();
   mocks.service.markClubLogEventsDelivered.mockResolvedValue(undefined);
+  mocks.service.loadClubLogs.mockReset();
+  mocks.service.loadClubLogs.mockResolvedValue([log()]);
+  mocks.service.readPostedClubLogDigests.mockReset();
+  mocks.service.readPostedClubLogDigests.mockResolvedValue(new Set<string>());
+  mocks.service.markClubLogDigestPosted.mockReset();
+  mocks.service.markClubLogDigestPosted.mockResolvedValue(undefined);
+  mocks.digest.dueClubLogDigests.mockReset();
+  mocks.digest.dueClubLogDigests.mockReturnValue(boundaries());
   mocks.pageView.loadClubLogView.mockReset();
   mocks.pageView.loadClubLogView.mockResolvedValue({ kind: 'ok', value: view() });
-  mocks.image.buildClubLogPageImage.mockReset();
-  mocks.image.buildClubLogPageImage.mockResolvedValue(Buffer.from('fake-png'));
+  mocks.image.buildClubLogEventImage.mockReset();
+  mocks.image.buildClubLogEventImage.mockResolvedValue(Buffer.from('fake-event-png'));
+  mocks.image.buildClubLogDigestImage.mockReset();
+  mocks.image.buildClubLogDigestImage.mockResolvedValue(Buffer.from('fake-digest-png'));
 });
 
 afterEach(() => {
   delete process.env.CLUB_LOGS_INTERVAL_MINUTES;
-  delete process.env.CLUB_LOGS_PERIOD;
   vi.restoreAllMocks();
 });
 
@@ -128,32 +170,30 @@ describe('runClubLogsPost', () => {
     expect(mocks.post).not.toHaveBeenCalled();
   });
 
-  it('posts one public PNG per subscribed period and records deliveries only after success', async () => {
+  it('posts one Members & Roles PNG and records the legacy today delivery', async () => {
     await runClubLogsPost();
 
-    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
-      guildId: GUILD_ID,
-      tag: 'ALPHA',
-      period: 'today',
-    });
-    expect(mocks.image.buildClubLogPageImage).toHaveBeenCalledWith(view(), group().events);
+    expect(mocks.pageView.loadClubLogView).not.toHaveBeenCalled();
+    expect(mocks.image.buildClubLogEventImage).toHaveBeenCalledWith(
+      { name: 'Alpha', tag: 'ALPHA' },
+      group().events,
+    );
     expect(mocks.post).toHaveBeenCalledOnce();
     const [route, request] = mocks.post.mock.calls[0] as [string, Record<string, unknown>];
     expect(route).toBe(`channels/${CHANNEL_ID}/messages`);
     const body = request['body'] as Record<string, unknown>;
-    expect(body['content']).toBe('Alpha • Club Logs / Trophy Progression / Today');
+    expect(body['content']).toBe('Alpha • Club Log / Members & Roles');
     expect(body['allowed_mentions']).toEqual({ parse: [] });
     const attachments = body['attachments'] as Array<Record<string, unknown>>;
     expect(attachments).toHaveLength(1);
-    expect(attachments[0]?.['id']).toBe('0');
     const filename = attachments[0]?.['filename'] as string;
-    expect(filename).toMatch(/^club-log-alpha-today-\d+\.png$/);
+    expect(filename).toMatch(/^club-log-alpha-changes-\d+\.png$/);
     const files = request['files'] as Array<Record<string, unknown>>;
     expect(files).toEqual([
       {
         key: 'files[0]',
         name: filename,
-        data: Buffer.from('fake-png'),
+        data: Buffer.from('fake-event-png'),
         contentType: 'image/png',
       },
     ]);
@@ -163,7 +203,7 @@ describe('runClubLogsPost', () => {
     expect(mocks.logger.warn).not.toHaveBeenCalled();
   });
 
-  it('posts every subscribed period in order with period-scoped deliveries', async () => {
+  it('posts each club once even when it subscribes to multiple trophy periods', async () => {
     mocks.service.loadUndeliveredClubLogEvents.mockResolvedValue([
       group('today'),
       group('week'),
@@ -172,42 +212,15 @@ describe('runClubLogsPost', () => {
 
     await runClubLogsPost();
 
-    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledTimes(3);
-    expect(mocks.pageView.loadClubLogView.mock.calls.map((call) => call[0])).toEqual([
-      { guildId: GUILD_ID, tag: 'ALPHA', period: 'today' },
-      { guildId: GUILD_ID, tag: 'ALPHA', period: 'week' },
-      { guildId: GUILD_ID, tag: 'ALPHA', period: 'season' },
-    ]);
     expect(mocks.post).toHaveBeenCalledTimes(3);
-    const contents = mocks.post.mock.calls.map((call) => {
-      const request = call[1] as Record<string, unknown>;
-      const body = request['body'] as Record<string, unknown>;
-      return body['content'];
-    });
-    expect(contents).toEqual([
-      'Alpha • Club Logs / Trophy Progression / Today',
-      'Alpha • Club Logs / Trophy Progression / This Week',
-      'Alpha • Club Logs / Trophy Progression / This Season',
-    ]);
-    const filenames = mocks.post.mock.calls.map((call) => {
-      const request = call[1] as Record<string, unknown>;
-      const body = request['body'] as Record<string, unknown>;
-      const attachments = body['attachments'] as Array<Record<string, unknown>>;
-      return attachments[0]?.['filename'];
-    });
-    expect(filenames[0]).toMatch(/^club-log-alpha-today-\d+\.png$/);
-    expect(filenames[1]).toMatch(/^club-log-alpha-week-\d+\.png$/);
-    expect(filenames[2]).toMatch(/^club-log-alpha-season-\d+\.png$/);
     expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledTimes(3);
-    expect(mocks.service.markClubLogEventsDelivered.mock.calls.map((call) => call[1])).toEqual([
-      [{ logId: LOG_ID, period: 'today', kind: 'role', eventId: 'r1' }],
-      [{ logId: LOG_ID, period: 'week', kind: 'role', eventId: 'r1' }],
-      [{ logId: LOG_ID, period: 'season', kind: 'role', eventId: 'r1' }],
-    ]);
+    for (const call of mocks.service.markClubLogEventsDelivered.mock.calls) {
+      expect(call[1]).toEqual([{ logId: LOG_ID, period: 'today', kind: 'role', eventId: 'r1' }]);
+    }
   });
 
-  it('marks only the periods that posted successfully', async () => {
-    mocks.service.loadUndeliveredClubLogEvents.mockResolvedValue([group('today'), group('week')]);
+  it('marks only the clubs that posted successfully', async () => {
+    mocks.service.loadUndeliveredClubLogEvents.mockResolvedValue([group(), group()]);
     mocks.post
       .mockResolvedValueOnce({ id: 'message-1' })
       .mockRejectedValueOnce(new Error('rate limited'));
@@ -216,9 +229,6 @@ describe('runClubLogsPost', () => {
 
     expect(mocks.post).toHaveBeenCalledTimes(2);
     expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledOnce();
-    expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledWith(GUILD_ID, [
-      { logId: LOG_ID, period: 'today', kind: 'role', eventId: 'r1' },
-    ]);
     expect(mocks.logger.warn).toHaveBeenCalledOnce();
   });
 
@@ -235,7 +245,7 @@ describe('runClubLogsPost', () => {
   });
 
   it('leaves events undelivered when rendering fails', async () => {
-    mocks.image.buildClubLogPageImage.mockRejectedValue(new Error('render failed'));
+    mocks.image.buildClubLogEventImage.mockRejectedValue(new Error('render failed'));
 
     await runClubLogsPost();
 
@@ -244,8 +254,112 @@ describe('runClubLogsPost', () => {
   });
 });
 
+describe('runClubLogDigests', () => {
+  it('does nothing without a Discord token', async () => {
+    mocks.getBotConfig.mockReturnValue({ token: undefined });
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.digest.dueClubLogDigests).not.toHaveBeenCalled();
+    expect(mocks.post).not.toHaveBeenCalled();
+  });
+
+  it('posts a trophy-only digest for each due subscribed window and records it once', async () => {
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.digest.dueClubLogDigests).toHaveBeenCalledWith(NOV_22, {
+      seasonStartIso: SEASON_START,
+      seasonEndIso: SEASON_END,
+    });
+    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
+      guildId: GUILD_ID,
+      tag: 'ALPHA',
+      period: 'today',
+      now: new Date('2026-11-21T23:59:59.999Z'),
+    });
+    expect(mocks.image.buildClubLogDigestImage).toHaveBeenCalledWith(view(), 'Daily');
+    expect(mocks.post).toHaveBeenCalledOnce();
+    const [route, request] = mocks.post.mock.calls[0] as [string, Record<string, unknown>];
+    expect(route).toBe(`channels/${CHANNEL_ID}/messages`);
+    const body = request['body'] as Record<string, unknown>;
+    expect(body['content']).toBe('Alpha • Club Log / Trophy Progression / Daily — Nov 21 (UTC)');
+    expect(body['allowed_mentions']).toEqual({ parse: [] });
+    expect(mocks.service.markClubLogDigestPosted).toHaveBeenCalledWith(GUILD_ID, [
+      {
+        logId: LOG_ID,
+        period: 'today',
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+    ]);
+  });
+
+  it('skips already-posted windows and periods the log does not subscribe to', async () => {
+    mocks.service.readPostedClubLogDigests.mockResolvedValue(
+      new Set([`${LOG_ID}:today:2026-11-21`]),
+    );
+    mocks.service.loadClubLogs.mockResolvedValue([log(['week'])]);
+    mocks.digest.dueClubLogDigests.mockReturnValue(boundaries());
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
+  });
+
+  it('passes the completed season baseline and label to the season renderer', async () => {
+    const seasonBoundary = {
+      period: 'season' as const,
+      periodKey: '2026-12-03',
+      windowStart: new Date(SEASON_START),
+      windowEnd: new Date('2026-12-03T07:59:59.999Z'),
+      label: 'Nov 5 – Dec 2, 2026',
+    };
+    mocks.digest.dueClubLogDigests.mockReturnValue([seasonBoundary]);
+
+    await runClubLogDigests(new Date('2026-12-04T00:00:00.000Z'));
+
+    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
+      guildId: GUILD_ID,
+      tag: 'ALPHA',
+      period: 'season',
+      now: seasonBoundary.windowEnd,
+      seasonStartIso: SEASON_START,
+    });
+    expect(mocks.image.buildClubLogDigestImage).toHaveBeenCalledWith(view(), 'Season');
+    expect(mocks.service.markClubLogDigestPosted).toHaveBeenCalledWith(GUILD_ID, [
+      {
+        logId: LOG_ID,
+        period: 'season',
+        periodKey: '2026-12-03',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+    ]);
+  });
+
+  it('keeps a window pending when a post fails', async () => {
+    mocks.post.mockRejectedValue(new Error('rate limited'));
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).toHaveBeenCalledOnce();
+  });
+
+  it('does nothing when no window is due', async () => {
+    mocks.digest.dueClubLogDigests.mockReturnValue([]);
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.service.readClubLogGuildIds).not.toHaveBeenCalled();
+    expect(mocks.post).not.toHaveBeenCalled();
+  });
+});
+
 describe('startClubLogsSchedule', () => {
-  it('polls at the configured interval after an initial delay and can be stopped', () => {
+  it('polls events and digests independently and can be stopped', () => {
     process.env.CLUB_LOGS_INTERVAL_MINUTES = '2';
     const intervalSpy = vi.spyOn(globalThis, 'setInterval');
     const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
@@ -256,12 +370,13 @@ describe('startClubLogsSchedule', () => {
 
     expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 20_000);
     expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 120_000);
+    expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 60_000);
     stop();
     expect(clearTimeoutSpy).toHaveBeenCalledOnce();
-    expect(clearIntervalSpy).toHaveBeenCalledOnce();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('clamps invalid intervals to 1..1440 minutes', () => {
+  it('clamps invalid event intervals to 1..1440 minutes', () => {
     process.env.CLUB_LOGS_INTERVAL_MINUTES = '99999';
     const intervalSpy = vi.spyOn(globalThis, 'setInterval');
 

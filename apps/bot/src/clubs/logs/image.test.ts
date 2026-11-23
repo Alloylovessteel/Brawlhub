@@ -1,6 +1,10 @@
 import sharp from 'sharp';
 import { describe, expect, it, vi } from 'vitest';
-import { buildClubLogPageImage } from './image';
+import {
+  buildClubLogDigestImage,
+  buildClubLogEventImage,
+  buildClubLogPageImage,
+} from './image';
 import type { ClubLogView } from '../types';
 import type { ClubLogEvent } from './types';
 
@@ -108,6 +112,58 @@ describe('buildClubLogPageImage', () => {
         ],
       }),
       [event({ description: '<@123456789012345678> joined & left' })],
+    );
+
+    const metadata = await sharp(image).metadata();
+    expect(metadata.format).toBe('png');
+  });
+});
+
+describe('buildClubLogDigestImage', () => {
+  it('renders trophy progression without a changes section', async () => {
+    const image = await buildClubLogDigestImage(view(), 'Daily');
+
+    expect(image.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    const metadata = await sharp(image).metadata();
+    expect(metadata.format).toBe('png');
+    expect(metadata.width).toBe(1200);
+    expect(metadata.height).toBeGreaterThanOrEqual(620);
+    expect(metadata.height).toBeLessThan(820);
+  });
+
+  it('renders an empty digest without failing', async () => {
+    const image = await buildClubLogDigestImage(
+      view({ rows: [], unavailable: 0, latestSnapshotAt: null, latestSyncAt: null }),
+    );
+
+    const metadata = await sharp(image).metadata();
+    expect(metadata.format).toBe('png');
+  });
+});
+
+describe('buildClubLogEventImage', () => {
+  it('renders membership, role and capacity changes without trophy rows', async () => {
+    const image = await buildClubLogEventImage({ name: 'Alpha Club', tag: 'ALPHA' }, [
+      event(),
+      event({
+        id: 'event-2',
+        kind: 'role',
+        description: '#PLAYER3 role changed Member → Senior',
+      }),
+      event({ id: 'event-3', kind: 'capacity', description: 'Club open (28/30)' }),
+    ]);
+
+    expect(image.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    const metadata = await sharp(image).metadata();
+    expect(metadata.format).toBe('png');
+    expect(metadata.width).toBe(1200);
+    expect(metadata.height).toBeGreaterThanOrEqual(620);
+  });
+
+  it('renders an empty event log and strips mention syntax', async () => {
+    const image = await buildClubLogEventImage(
+      { name: 'Alpha & <Club>', tag: 'ALPHA' },
+      [event({ description: '<@everyone> joined & left' })],
     );
 
     const metadata = await sharp(image).metadata();

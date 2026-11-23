@@ -48,6 +48,8 @@ export interface BotConfig {
   readonly clubProfileUrlTemplate: string | undefined;
   /** Explicit UTC season start used for Season trophy progression. */
   readonly seasonStartIso: string | undefined;
+  /** Explicit UTC season reset used to time the completed-season digest. */
+  readonly seasonEndIso: string | undefined;
 }
 
 /** Treat blank values and `.env.example` placeholders as not configured. */
@@ -81,8 +83,8 @@ function readProfileTemplateEnv(name: string): string | undefined {
 }
 
 /** Read an optional ISO timestamp without inventing a season boundary. */
-function readSeasonStartEnv(): string | undefined {
-  const value = readEnv('BRAWL_SEASON_START_ISO');
+function readIsoEnv(name: string): string | undefined {
+  const value = readEnv(name);
   if (value === undefined || Number.isNaN(Date.parse(value))) {
     return undefined;
   }
@@ -131,7 +133,8 @@ export function getBotConfig(): BotConfig {
     },
     playerProfileUrlTemplate: readProfileTemplateEnv('BRAWL_STARS_PROFILE_URL_TEMPLATE'),
     clubProfileUrlTemplate: readProfileTemplateEnv('BRAWL_STARS_CLUB_URL_TEMPLATE'),
-    seasonStartIso: readSeasonStartEnv(),
+    seasonStartIso: readIsoEnv('BRAWL_SEASON_START_ISO'),
+    seasonEndIso: readIsoEnv('BRAWL_SEASON_END_ISO'),
   };
 }
 

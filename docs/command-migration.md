@@ -7,7 +7,7 @@ BrawlHub now registers **20 top-level slash commands** instead of **42**. The ch
 - Retired top-level names no longer appear in Discord’s slash-command picker. Use the replacement paths below.
 - Buttons and select menus on existing messages still work. Their custom IDs—including guild IDs, nonces, pagination state and the `club-overview` toggle/done controls—are unchanged, so old messages do not need to be reposted.
 - Reports remain scheduled auto-posts. They are not posted immediately when the bot starts.
-- Scheduled club logs now post one full-page PNG from stored official-API history; `/clubs clublogs preview` can post the same page on demand.
+- Scheduled club logs now post two distinct outputs from stored official-API history: trophy-progression digests once per completed window (daily/weekly/season at 00:00 UTC) and a separate Members & Roles event log for joins, leaves and leadership changes. `/clubs clublogs preview` can still post the combined full-page PNG on demand.
 - Sync and verification completion notices are posted as mention-safe embeds to the guild’s configured announcement or verification channel.
 - Blacklist commands remain disabled and unregistered.
 
@@ -98,10 +98,11 @@ BrawlHub now registers **20 top-level slash commands** instead of **42**. The ch
 
 ## Automation added with this build
 
-- `/clubs clublogs preview club:<club-uuid> [period:today|week|season]` requires `clubs:write` and only accepts a log configured for the current guild. It acknowledges privately, then posts the full-page PNG publicly in that channel without components.
-- Scheduled club-log posts use the existing configured log channels. Stored history is included, so a newly added log backfills past changes. The delivery ledger is scoped per period: an event is marked delivered after that period's PNG posts successfully, so adding a period later reposts history once and a failed period stays queued for retry.
-- Club-log PNGs combine the selected stored trophy-progression period with recent stored membership, role and capacity changes. They are not live and never use BrawlAPI event rotation data.
+- `/clubs clublogs preview club:<club-uuid> [period:today|week|season]` requires `clubs:write` and only accepts a log configured for the current guild. It acknowledges privately, then posts the combined full-page PNG publicly in that channel without components.
+- Scheduled club-log posts use the existing configured log channels. Stored history is included, so a newly added Members & Roles log backfills past changes once. Change events are marked delivered under the legacy `today` key after their PNG posts successfully, so failures stay queued for retry without republishing old ledger rows.
+- Trophy digests are separate, trophy-only PNGs posted once per completed UTC window: Daily at 00:00, Weekly on Monday 00:00, Season at the first midnight after `BRAWL_SEASON_END_ISO`. Migration `0033_club_log_digest_posts.sql` adds the per-guild/per-log/per-period/per-window ledger that makes the 60-second digest poll restart-safe. Members without a baseline are never shown as `+0`.
+- Club-log PNGs are not live and never use BrawlAPI/Brawlify as a data source.
 - Operator notices reuse guild settings: sync uses the announcement channel with verification fallback; verification uses the verification channel with announcement fallback. All notices disable Discord mentions and are best-effort so they cannot fail a sync or verification.
-- Report posts remain scheduled-only (`REPORTS_IMMEDIATE_ON_START=false`). No new migration or database schema is required for these features.
+- Report posts remain scheduled-only (`REPORTS_IMMEDIATE_ON_START=false`). Migrations `0032` (period-scoped deliveries) and `0033` (digest posts) must be applied before the split schedule is live.
 
 All other top-level commands keep the same name, options and permissions.

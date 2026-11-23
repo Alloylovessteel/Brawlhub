@@ -5,9 +5,12 @@ import { CLUB_LOG_PERIOD_LABELS } from './page-view';
 import type { ClubLogEvent } from './types';
 
 /**
- * Render the full stored club-log page as one long PNG. Every visible value
- * comes from the guild's stored official-API snapshots and change events; no
- * live Brawl Stars request is made here.
+ * Render stored club-log data as PNG bytes. Every visible value comes from the
+ * guild's stored official-API snapshots and change events; no live Brawl Stars
+ * request is made here. Three layouts are available:
+ *  - buildClubLogPageImage: combined page used by `/clubs log preview`
+ *  - buildClubLogDigestImage: trophy progression only (scheduled digest)
+ *  - buildClubLogEventImage: joins/leaves/roles/capacity only (scheduled event log)
  */
 
 const WIDTH = 1200;
@@ -122,7 +125,44 @@ function eventMarkup(event: ClubLogEvent, y: number): string {
     <text x="1116" y="${y + 33}" text-anchor="end" font-size="13" fill="#8e88bd">${timestamp}</text>`;
 }
 
-/** Render BrawlHub's stored full-page club log as PNG bytes. */
+/** Shared background/frame markup for all club-log layouts. */
+function frame(height: number): string {
+  return `<defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#11102b"/>
+      <stop offset="58%" stop-color="#1b1645"/>
+      <stop offset="100%" stop-color="#39226f"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#292353"/>
+      <stop offset="100%" stop-color="#1a1639"/>
+    </linearGradient>
+  </defs>
+  <rect width="${WIDTH}" height="${height}" fill="url(#background)"/>
+  <circle cx="1120" cy="30" r="260" fill="#9a7dff" fill-opacity="0.11"/>
+  <circle cx="1090" cy="${height - 40}" r="190" fill="#46d6ff" fill-opacity="0.07"/>`;
+}
+
+function header(title: string, rightLabel: string): string {
+  return `<rect x="42" y="34" width="344" height="44" rx="22" fill="#ffffff" fill-opacity="0.08"/>
+  <text x="64" y="63" font-size="17" font-weight="700" letter-spacing="2.2" fill="#dcd6ff">${escapeXml(title)}</text>
+  <text x="1158" y="63" text-anchor="end" font-size="14" font-weight="700" letter-spacing="1.4" fill="#aaa5d6">${escapeXml(rightLabel)}</text>`;
+}
+
+function clubHeading(tag: string, name: string, subtitle: string): string {
+  return `<rect x="60" y="96" width="72" height="72" rx="20" fill="#8f82ff" fill-opacity="0.22" stroke="#8f82ff" stroke-opacity="0.7"/>
+  <text x="96" y="142" text-anchor="middle" font-size="27" font-weight="700" fill="#dcd6ff">${escapeXml(initials(tag))}</text>
+  <text x="154" y="126" font-size="38" font-weight="700" fill="#f7f6ff">${clean(name, 34, 'Unnamed club')}</text>
+  <text x="155" y="157" font-size="19" font-weight="600" fill="#aaa5d6">${clean(`#${cleanTag(tag)}`, 14)} • ${clean(subtitle, 52)}</text>`;
+}
+
+function toPng(svg: string): Promise<Buffer> {
+  return sharp(Buffer.from(svg), { limitInputPixels: MAX_INPUT_PIXELS })
+    .png()
+    .toBuffer();
+}
+
+/** Render BrawlHub's stored full-page club log as PNG bytes (preview layout). */
 export async function buildClubLogPageImage(
   view: ClubLogView,
   events: readonly ClubLogEvent[] = [],
@@ -149,30 +189,11 @@ export async function buildClubLogPageImage(
       : changes.map((event, index) => eventMarkup(event, eventsTop + index * EVENT_HEIGHT)).join('');
 
   const clubName = clean(view.club.name, 34, 'Unnamed club');
-  const clubTag = clean(`#${cleanTag(view.club.tag)}`, 14);
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}">
-  <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#11102b"/>
-      <stop offset="58%" stop-color="#1b1645"/>
-      <stop offset="100%" stop-color="#39226f"/>
-    </linearGradient>
-    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#292353"/>
-      <stop offset="100%" stop-color="#1a1639"/>
-    </linearGradient>
-  </defs>
-  <rect width="${WIDTH}" height="${height}" fill="url(#background)"/>
-  <circle cx="1120" cy="30" r="260" fill="#9a7dff" fill-opacity="0.11"/>
-  <circle cx="1090" cy="${height - 40}" r="190" fill="#46d6ff" fill-opacity="0.07"/>
-  <rect x="42" y="34" width="344" height="44" rx="22" fill="#ffffff" fill-opacity="0.08"/>
-  <text x="64" y="63" font-size="17" font-weight="700" letter-spacing="2.2" fill="#dcd6ff">BRAWLHUB • CLUB LOGS</text>
-  <text x="1158" y="63" text-anchor="end" font-size="14" font-weight="700" letter-spacing="1.4" fill="#aaa5d6">STORED OFFICIAL DATA</text>
-  <rect x="60" y="96" width="72" height="72" rx="20" fill="#8f82ff" fill-opacity="0.22" stroke="#8f82ff" stroke-opacity="0.7"/>
-  <text x="96" y="142" text-anchor="middle" font-size="27" font-weight="700" fill="#dcd6ff">${escapeXml(initials(view.club.tag))}</text>
-  <text x="154" y="126" font-size="38" font-weight="700" fill="#f7f6ff">${clubName}</text>
-  <text x="155" y="157" font-size="19" font-weight="600" fill="#aaa5d6">${clubTag} • Trophy Progression / ${escapeXml(periodLabel)}</text>
+  ${frame(height)}
+  ${header('BRAWLHUB • CLUB LOGS', 'STORED OFFICIAL DATA')}
+  ${clubHeading(view.club.tag, view.club.name, `Trophy Progression / ${periodLabel}`)}
   ${stat(60, 'Period', periodLabel, '#8f82ff')}
   ${stat(338, 'Members in page', String(rows.length), '#46d6ff')}
   ${stat(616, 'Snapshot', formatDate(view.latestSnapshotAt), '#ffd166')}
@@ -188,7 +209,85 @@ export async function buildClubLogPageImage(
   <text x="1158" y="${footerY}" text-anchor="end" font-size="13" fill="#8e88bd">Made for ${clubName}</text>
 </svg>`;
 
-  return sharp(Buffer.from(svg), { limitInputPixels: MAX_INPUT_PIXELS })
-    .png()
-    .toBuffer();
+  return toPng(svg);
+}
+
+/**
+ * Scheduled trophy digest: progression rows only, with no membership/role/capacity
+ * events. The period label is supplied by the caller so completed windows can be
+ * named "Daily"/"Weekly"/"Season" rather than the running "Today"/"This Week".
+ */
+export async function buildClubLogDigestImage(
+  view: ClubLogView,
+  labelOverride?: string,
+): Promise<Buffer> {
+  const periodLabel = labelOverride ?? CLUB_LOG_PERIOD_LABELS[view.period];
+  const rows = view.rows.slice(0, MAX_ROWS);
+  const rowsTop = 308;
+  const footerY = rowsTop + Math.max(rows.length, 1) * ROW_HEIGHT + 48;
+  const height = Math.max(620, footerY + 62);
+
+  const rowsMarkup =
+    rows.length === 0
+      ? `<rect x="60" y="${rowsTop}" width="1080" height="38" rx="12" fill="#ffffff" fill-opacity="0.035"/>
+         <text x="80" y="${rowsTop + 25}" font-size="16" fill="#aaa5d6">No stored trophy progression is available for this window yet.</text>`
+      : rows.map((row, index) => rowMarkup(row, rowsTop + index * ROW_HEIGHT)).join('');
+
+  const clubName = clean(view.club.name, 34, 'Unnamed club');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}">
+  ${frame(height)}
+  ${header('BRAWLHUB • CLUB LOGS', 'TROPHY DIGEST')}
+  ${clubHeading(view.club.tag, view.club.name, `Trophy Progression / ${periodLabel}`)}
+  ${stat(60, 'Period', periodLabel, '#8f82ff')}
+  ${stat(338, 'Members in page', String(rows.length), '#46d6ff')}
+  ${stat(616, 'Snapshot', formatDate(view.latestSnapshotAt), '#ffd166')}
+  ${stat(894, 'Synced', formatDate(view.latestSyncAt), '#7de2a0')}
+  <rect x="42" y="250" width="1116" height="${height - 300}" rx="30" fill="url(#panel)" stroke="#ffffff" stroke-opacity="0.12"/>
+  <text x="60" y="${rowsTop - 18}" font-size="15" font-weight="700" letter-spacing="1.7" fill="#aaa5d6">TROPHY PROGRESSION • ${escapeXml(periodLabel.toUpperCase())}</text>
+  <text x="1116" y="${rowsTop - 18}" text-anchor="end" font-size="13" fill="#8e88bd">${view.unavailable} WITHOUT BASELINE</text>
+  ${rowsMarkup}
+  <text x="42" y="${footerY}" font-size="13" fill="#8e88bd">Completed window • official Brawl Stars sync history • stored, not live • missing baselines are never shown as +0</text>
+  <text x="1158" y="${footerY}" text-anchor="end" font-size="13" fill="#8e88bd">Made for ${clubName}</text>
+</svg>`;
+
+  return toPng(svg);
+}
+
+/** Scheduled event log: joins, leaves, transfers, role/capacity changes only. */
+export async function buildClubLogEventImage(
+  club: { readonly name: string; readonly tag: string },
+  events: readonly ClubLogEvent[],
+): Promise<Buffer> {
+  const changes = events.slice(0, MAX_EVENTS);
+  const eventsTop = 308;
+  const footerY = eventsTop + Math.max(changes.length, 1) * EVENT_HEIGHT + 34;
+  const height = Math.max(620, footerY + 62);
+
+  const changesMarkup =
+    changes.length === 0
+      ? `<rect x="60" y="${eventsTop}" width="1080" height="56" rx="14" fill="#ffffff" fill-opacity="0.035"/>
+         <text x="80" y="${eventsTop + 34}" font-size="16" fill="#aaa5d6">No stored changes since the last event log.</text>`
+      : changes.map((event, index) => eventMarkup(event, eventsTop + index * EVENT_HEIGHT)).join('');
+
+  const membershipCount = changes.filter((event) => event.kind === 'membership').length;
+  const roleCount = changes.filter((event) => event.kind === 'role').length;
+  const capacityCount = changes.filter((event) => event.kind === 'capacity').length;
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}">
+  ${frame(height)}
+  ${header('BRAWLHUB • CLUB LOGS', 'MEMBERS & ROLES')}
+  ${clubHeading(club.tag, club.name, 'Members & Roles / Stored Changes')}
+  ${stat(60, 'Changes', String(changes.length), '#8f82ff')}
+  ${stat(338, 'Membership', String(membershipCount), '#46d6ff')}
+  ${stat(616, 'Role updates', String(roleCount), '#ffd166')}
+  ${stat(894, 'Capacity', String(capacityCount), '#7de2a0')}
+  <rect x="42" y="250" width="1116" height="${height - 300}" rx="30" fill="url(#panel)" stroke="#ffffff" stroke-opacity="0.12"/>
+  <text x="60" y="${eventsTop - 18}" font-size="15" font-weight="700" letter-spacing="1.7" fill="#aaa5d6">RECENT STORED CHANGES</text>
+  <text x="1116" y="${eventsTop - 18}" text-anchor="end" font-size="13" fill="#8e88bd">${changes.length} SHOWN</text>
+  ${changesMarkup}
+  <text x="42" y="${footerY}" font-size="13" fill="#8e88bd">Official Brawl Stars sync history • stored, not live • no trophy data is shown here</text>
+  <text x="1158" y="${footerY}" text-anchor="end" font-size="13" fill="#8e88bd">Made for ${clean(club.name, 34, 'club')}</text>
+</svg>`;
+
+  return toPng(svg);
 }

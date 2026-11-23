@@ -137,7 +137,9 @@ import {
   addClubLog,
   loadClubLogs,
   loadUndeliveredClubLogEvents,
+  markClubLogDigestPosted,
   markClubLogEventsDelivered,
+  readPostedClubLogDigests,
   removeClubLog,
 } from './service';
 
@@ -416,19 +418,18 @@ describe('loadUndeliveredClubLogEvents', () => {
     ]);
   });
 
-  it('reposts an event for a newly added period even when another period delivered it', async () => {
+  it('loads changes once under the today key even when several trophy periods are subscribed', async () => {
     setHandler('guild_club_log_periods:select', () => ({
       data: [
         { log_id: LOG_ID, period: 'today' },
         { log_id: LOG_ID, period: 'week' },
+        { log_id: LOG_ID, period: 'season' },
       ],
     }));
-    setHandler('guild_club_log_deliveries:select', (call) => ({
-      data:
-        call.filters['period'] === 'today'
-          ? [{ event_kind: 'membership', event_id: 'm1' }]
-          : [],
-    }));
+    setHandler('guild_club_log_deliveries:select', (call) => {
+      expect(call.filters['period']).toBe('today');
+      return { data: [] };
+    });
     setHandler('membership_events:select', () => ({
       data: [
         {
@@ -447,8 +448,9 @@ describe('loadUndeliveredClubLogEvents', () => {
     const groups = await loadUndeliveredClubLogEvents(GUILD_ID);
 
     expect(groups).toHaveLength(1);
-    expect(groups[0]?.log.periods).toEqual(['week']);
+    expect(groups[0]?.log.periods).toEqual(['today', 'week', 'season']);
     expect(groups[0]?.events.map((event) => event.id)).toEqual(['m1']);
+    expect(callsFor('guild_club_log_deliveries', 'select')).toHaveLength(1);
   });
 
   it('caps each log at the 20 most recent events', async () => {
@@ -667,5 +669,71 @@ describe('removeClubLog and delivery marking', () => {
       },
     ]);
     expect(callsFor('guild_club_log_deliveries', 'upsert')).toHaveLength(1);
+  });
+});
+
+describe('digest post ledger', () => {
+  it('reads only this guild’s posted windows and ignores invalid rows', async () => {
+    setHandler('guild_club_log_digest_posts:select', (call) => {
+      expect(call.filters['guild_id']).toBe(GUILD_ID);
+      return {
+        data: [
+          { log_id: LOG_ID, period: 'today', period_key: '2026-11-21' },
+          { log_id: LOG_ID, period: 'week', period_key: '2026-11-16' },
+          { log_id: LOG_ID, period: 'month', period_key: '2026-11-01' },
+          { log_id: LOG_ID, period: 'nonsense', period_key: '2026-11-01' },
+          { period: 'today', period_key: '2026-11-20' },
+        ],
+      };
+    });
+
+    const posted = await readPostedClubLogDigests(GUILD_ID);
+
+    expect([...posted]).toEqual([
+      `${LOG_ID}:today:2026-11-21`,
+      `${LOG_ID}:week:2026-11-16`,
+    ]);
+  });
+
+  it('writes digest rows with the guild id and ignores foreign logs', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [] }));
+    setHandler('guild_club_log_digest_posts:upsert', (call) => {
+      expect(call.options).toEqual({
+        onConflict: 'guild_id,log_id,period,period_key',
+        ignoreDuplicates: true,
+      });
+      expect(call.payload).toEqual([
+        {
+          guild_id: GUILD_ID,
+          log_id: LOG_ID,
+          period: 'season',
+          period_key: '2026-12-03',
+          channel_id: CHANNEL_ID,
+          message_id: 'message-1',
+        },
+      ]);
+      return { data: [] };
+    });
+
+    await markClubLogDigestPosted(GUILD_ID, [
+      {
+        logId: LOG_ID,
+        period: 'season',
+        periodKey: '2026-12-03',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+      {
+        logId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        period: 'today',
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'message-2',
+      },
+    ]);
+
+    expect(callsFor('guild_club_log_digest_posts', 'upsert')).toHaveLength(1);
   });
 });
