@@ -547,34 +547,58 @@ export async function revokeAllLinksForDiscordUser(
  * Irreversibly erase a Discord user's BrawlHub identity data. Player statistics
  * themselves are not deleted — they are official game data, not user data.
  */
+type DeleteUserDataResult =
+  | { readonly kind: 'ok' }
+  | { readonly kind: 'not-found' }
+  | { readonly kind: 'auth-delete-failed' }
+  | { readonly kind: 'db-error'; readonly message: string };
+
+function isMissingAuthUser(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'object' && error !== null && 'message' in error
+        ? String((error as { message: unknown }).message ?? '')
+        : String(error ?? '');
+  return /user not found/i.test(message);
+}
+
+/** Delete the shadow Auth user before local rows so a failure stays retryable. */
+async function deleteAuthUser(db: SupabaseClient, profileId: string): Promise<boolean> {
+  const admin = (db as unknown as {
+    auth?: { admin?: { deleteUser: (id: string) => Promise<unknown> } };
+  }).auth?.admin;
+  if (admin === undefined || typeof admin.deleteUser !== 'function') return true;
+  try {
+    const result = (await admin.deleteUser(profileId)) as { readonly error?: unknown } | null | undefined;
+    if (result !== null && typeof result === 'object' && result.error !== null && result.error !== undefined) {
+      return isMissingAuthUser(result.error);
+    }
+    return true;
+  } catch (error) {
+    return isMissingAuthUser(error);
+  }
+}
+
 export async function deleteUserDataForDiscordUser(
   discordUserId: string,
   options: { db?: SupabaseClient } = {},
-): Promise<{ readonly kind: 'ok' } | { readonly kind: 'not-found' } | { readonly kind: 'db-error'; readonly message: string }> {
+): Promise<DeleteUserDataResult> {
   const trimmed = discordUserId.trim();
   if (!/^\d{17,20}$/.test(trimmed)) return { kind: 'not-found' };
   const db = options.db ?? createTrustedClient();
   const profileId = await resolveProfileId(trimmed, db);
   if (profileId === null) return { kind: 'not-found' };
 
+  // Auth cleanup happens first: if it fails, the profile is still present and a
+  // retry can finish the deletion instead of reporting a false success.
+  if (!(await deleteAuthUser(db, profileId))) return { kind: 'auth-delete-failed' };
+
   try {
     const removedDiscord = await db.from('discord_users').delete().eq('discord_user_id', trimmed);
     requireOk(removedDiscord.error, 'Delete Discord identity');
     const removedProfile = await db.from('profiles').delete().eq('id', profileId);
     requireOk(removedProfile.error, 'Delete profile');
-
-    // The shadow auth user is separate from the profile row. Best-effort cleanup:
-    // the profile is already gone, so a failed auth delete leaves no usable data.
-    const admin = (db as unknown as {
-      auth?: { admin?: { deleteUser: (id: string) => Promise<unknown> } };
-    }).auth?.admin;
-    if (admin !== undefined && typeof admin.deleteUser === 'function') {
-      try {
-        await admin.deleteUser(profileId);
-      } catch {
-        // Intentionally ignored: profile and link rows have already been erased.
-      }
-    }
     return { kind: 'ok' };
   } catch (error) {
     return { kind: 'db-error', message: error instanceof Error ? error.message : String(error) };
@@ -1166,22 +1190,23 @@ export async function checkVerification(
   };
 }
 
-export function cancelVerification(input: {
+export async function cancelVerification(input: {
   readonly discordUserId: string;
   readonly guildId?: string | null;
-}): CancelVerificationResult {
+}): Promise<CancelVerificationResult> {
   const guildId = normalizeGuildId(input.guildId);
   const challenge = getChallenge(guildId, input.discordUserId);
   if (challenge === null) return { ok: true, hadChallenge: false };
-  challenges.delete(mirrorKey(guildId, input.discordUserId));
-  persistVoid(
-    cancelVerificationChallenge({
+  try {
+    await cancelVerificationChallenge({
       guildId,
       discordUserId: input.discordUserId,
       targetTag: challenge.playerTag,
-    }),
-    'cancel verification challenge',
-  );
+    });
+  } catch {
+    return { ok: false, message: 'Could not cancel verification right now.' };
+  }
+  challenges.delete(mirrorKey(guildId, input.discordUserId));
   return { ok: true, hadChallenge: true };
 }
 

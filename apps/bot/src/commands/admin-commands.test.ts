@@ -755,6 +755,19 @@ describe('/clubs remove archival', () => {
     expect(payload(confirmation, 'editReply').embeds).toEqual([{ kind: 'archived' }]);
   });
 
+  it('rechecks permission at confirmation time', async () => {
+    const start = chat(null, { club: CLUB_ID });
+    await handleRemoveClub(start);
+    const confirmId = buttons(payload(start, 'editReply'))[0]!.data.custom_id;
+    const confirmation = button(confirmId);
+    mocks.service.requireGlobalPermission.mockRejectedValueOnce(forbidden());
+
+    await handleRemoveClubComponent(confirmation);
+
+    expect(mocks.archival.archiveGuildClub).not.toHaveBeenCalled();
+    expect(payload(confirmation, 'editReply').content).toContain('You do not have permission.');
+  });
+
   it('cancels archival without calling the archive service', async () => {
     const start = chat(null, { club: CLUB_ID });
     await handleRemoveClub(start);

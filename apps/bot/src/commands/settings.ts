@@ -600,7 +600,7 @@ async function handleSettingsConfirmation(interaction: CommandComponentInteracti
   if (action === null) return false;
 
   await interaction.deferUpdate();
-  const pending = pendingChanges.take(action.nonce, interaction.user.id, interaction.guildId);
+  const pending = await pendingChanges.take(action.nonce, interaction.user.id, interaction.guildId);
 
   if (action.kind === 'cancel') {
     await interaction.editReply({ content: 'Guild settings change cancelled.', embeds: [], components: [] });

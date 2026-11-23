@@ -460,7 +460,7 @@ describe('/verify tag command', () => {
   });
 
   it('cancels an active challenge', async () => {
-    mocks.verificationService.cancelVerification.mockReturnValue({ ok: true, hadChallenge: true });
+    mocks.verificationService.cancelVerification.mockResolvedValue({ ok: true, hadChallenge: true });
     const interaction = chatInteraction({}, 'cancel');
 
     await handleMemberVerify(interaction);

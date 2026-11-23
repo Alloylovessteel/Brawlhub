@@ -483,8 +483,9 @@ export interface PlayerSearchOptions {
   readonly guildId?: string | null;
 }
 
-async function readGuildClubIds(guildId: string | null | undefined, db: DatabaseClient): Promise<string[] | null> {
-  if (guildId === undefined || guildId === null || guildId.trim() === '') return null;
+/** Missing guild context is not a global pass: it resolves to an empty scope. */
+async function readGuildClubIds(guildId: string | null | undefined, db: DatabaseClient): Promise<string[]> {
+  if (guildId === undefined || guildId === null || guildId.trim() === '') return [];
   const { data, error } = await db
     .from('clubs')
     .select('id')
@@ -522,7 +523,7 @@ async function isPlayerInGuildScope(
   const guildClubIds = knownClubIds !== undefined
     ? knownClubIds
     : await readGuildClubIds(guildId, db);
-  if (guildClubIds === null) return true;
+  if (guildClubIds === null) return false;
   if (player.id === null || guildClubIds.length === 0) return false;
   const allowed = await readPlayerIdsInClubs(guildClubIds, db);
   return allowed.has(player.id);

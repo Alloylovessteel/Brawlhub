@@ -244,6 +244,17 @@ describe('requireGlobalPermission', () => {
     );
   });
 
+  it('does not grant global identity management from Discord admin flags without a guild context', async () => {
+    staffMocks.resolveStaffActor.mockResolvedValue(actor(null));
+    await expect(
+      requireGlobalPermission('111111111111111111', 'members:verify', {
+        discordUsername: 'AdminUser',
+        memberPermissions: discordPerms([PermissionFlagsBits.Administrator]),
+        isGuildOwner: true,
+      }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
   it('accepts Discord guild administrators for admin actions', async () => {
     staffMocks.resolveStaffActor.mockResolvedValue(actor(null));
     await expect(

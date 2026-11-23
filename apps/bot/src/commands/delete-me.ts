@@ -40,7 +40,7 @@ export async function handleDeleteMeComponent(interaction: CommandComponentInter
   const action = parseConfirmationCustomId(interaction.customId, COMMAND_NAME);
   if (action === null) return;
   await interaction.deferUpdate();
-  const payload = pending.take(action.nonce, interaction.user.id, interaction.guildId);
+  const payload = await pending.take(action.nonce, interaction.user.id, interaction.guildId);
   if (action.kind === 'cancel') {
     await interaction.editReply({ content: 'Cancelled.', components: [], embeds: [] });
     return;
@@ -51,6 +51,8 @@ export async function handleDeleteMeComponent(interaction: CommandComponentInter
       ? 'Your BrawlHub identity data has been deleted.'
       : result.kind === 'not-found'
         ? 'You did not have any stored BrawlHub identity data.'
-        : 'Could not delete your data right now. Please try again later.';
+        : result.kind === 'auth-delete-failed'
+          ? 'Could not delete your sign-in record right now. Nothing was removed; please try again later.'
+          : 'Could not delete your data right now. Please try again later.';
   await interaction.editReply({ content: message, components: [], embeds: [] });
 }

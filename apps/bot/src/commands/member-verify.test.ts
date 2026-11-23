@@ -29,7 +29,12 @@ const mocks = vi.hoisted(() => ({
     targetIconUrl: challenge.targetIconUrl,
     currentIconId: challenge.targetIconId,
   })),
-  cancelVerification: vi.fn(async () => ({ ok: true as const, hadChallenge: true })),
+  cancelVerification: vi.fn(
+    async (): Promise<{ ok: true; hadChallenge: boolean } | { ok: false; message: string }> => ({
+      ok: true,
+      hadChallenge: true,
+    }),
+  ),
   getVerificationChallenge: vi.fn(() => challenge),
   checkBotRateLimit: vi.fn(() => ({ allowed: true, retryAfterSeconds: 0 })),
   notifyVerificationCompleted: vi.fn(async () => undefined),
@@ -114,6 +119,17 @@ describe('member verification guild scoping', () => {
     expect(mocks.cancelVerification).toHaveBeenCalledWith({
       discordUserId: 'user-1',
       guildId: 'guild-1',
+    });
+  });
+
+  it('reports a failed persistent cancellation', async () => {
+    mocks.cancelVerification.mockResolvedValueOnce({ ok: false, message: 'db failed' });
+    const interaction = interactionFor('cancel');
+
+    await handleMemberVerify(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: 'Could not cancel verification right now. Please try again later.',
     });
   });
 

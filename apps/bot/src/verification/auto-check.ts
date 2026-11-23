@@ -69,6 +69,13 @@ export interface VerificationAutoCheckDeps {
 /** One poll at a time, and never two checks for the same challenge. */
 let pollRunning = false;
 const inFlightChallenges = new Set<string>();
+/** Rotate the bounded batch so a pending challenge cannot starve later ones. */
+let rotationOffset = 0;
+
+/** Reset the in-memory rotation cursor (used by isolated tests). */
+export function resetVerificationAutoCheckRotationForTests(): void {
+  rotationOffset = 0;
+}
 
 function readBoundedInt(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
@@ -248,8 +255,10 @@ export async function runVerificationAutoCheck(
     const batchSize = deps.batchSize ?? readAutoCheckBatchSize();
     const active = records
       .filter((record) => record.status === 'active' && record.expiresAt > now)
-      .sort((a, b) => a.expiresAt - b.expiresAt);
-    const candidates = active.slice(0, batchSize);
+      .sort((a, b) => a.expiresAt - b.expiresAt || challengeKey(a).localeCompare(challengeKey(b)));
+    const offset = active.length === 0 ? 0 : rotationOffset % active.length;
+    const candidates = [...active.slice(offset), ...active.slice(0, offset)].slice(0, batchSize);
+    rotationOffset = active.length === 0 ? 0 : (rotationOffset + candidates.length) % active.length;
     const summary: MutableSummary = { ...EMPTY_SUMMARY, candidates: active.length };
 
     for (const record of candidates) {

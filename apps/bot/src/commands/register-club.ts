@@ -162,7 +162,7 @@ export async function handleRegisterClubComponent(interaction: CommandComponentI
 
   try {
     await interaction.deferUpdate();
-    const pending = pendingRegistrations.take(action.nonce, interaction.user.id, interaction.guildId);
+    const pending = await pendingRegistrations.take(action.nonce, interaction.user.id, interaction.guildId);
 
     if (action.kind === 'cancel') {
       await interaction.editReply({ content: CANCELLED_MESSAGE, embeds: [], components: [] });

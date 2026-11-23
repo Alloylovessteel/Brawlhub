@@ -125,6 +125,50 @@ describe('persistent verification challenges (memory fallback)', () => {
     expect(await readVerificationChallenge({ guildId: 'guild-1', discordUserId: 'actor-1' })).toBeNull();
   });
 
+  it('replaces challenge details when the same tag is verified again after cancellation', async () => {
+    await createVerificationChallenge(challenge('YQPQ0Q2CL'));
+    expect(
+      await cancelVerificationChallenge({
+        guildId: 'guild-1',
+        discordUserId: 'actor-1',
+        targetTag: 'YQPQ0Q2CL',
+      }),
+    ).toBe(true);
+
+    const restarted = challenge('YQPQ0Q2CL');
+    await createVerificationChallenge({
+      ...restarted,
+      details: { ...restarted.details, targetIconId: 28000099, targetIconName: 'New Icon' },
+    });
+
+    const active = await readVerificationChallenge({
+      guildId: 'guild-1',
+      discordUserId: 'actor-1',
+      targetTag: 'YQPQ0Q2CL',
+    });
+    expect(active?.details.targetIconId).toBe(28000099);
+    expect(active?.details.targetIconName).toBe('New Icon');
+  });
+
+  it('clears challenge details on terminal transitions', async () => {
+    await createVerificationChallenge(challenge('YQPQ0Q2CL'));
+    expect(
+      await consumeVerificationChallenge({
+        guildId: 'guild-1',
+        discordUserId: 'actor-1',
+        targetTag: 'YQPQ0Q2CL',
+      }),
+    ).toBe(true);
+
+    const restarted = challenge('YQPQ0Q2CL');
+    await createVerificationChallenge({
+      ...restarted,
+      details: { ...restarted.details, targetIconId: 123456 },
+    });
+    const active = await readVerificationChallenge({ guildId: 'guild-1', discordUserId: 'actor-1' });
+    expect(active?.details.targetIconId).toBe(123456);
+  });
+
   it('allows only one active challenge per guild and Discord user', async () => {
     await createVerificationChallenge(challenge('YQPQ0Q2CL'));
 

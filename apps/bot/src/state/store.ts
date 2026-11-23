@@ -681,29 +681,11 @@ export async function createVerificationChallenge(
     );
     if (existing !== undefined) throw new ChallengeConflictError();
     challenges.set(challengeKey(record), record);
-    await createPersistentSession({
-      guildId: record.guildId,
-      command: CHALLENGE_DETAILS_COMMAND,
-      kind: CHALLENGE_DETAILS_KIND,
-      actorDiscordUserId: record.discordUserId,
-      nonce: record.targetTag,
-      payload: { details: record.details as unknown as StatePayload },
-      expiresAt: record.expiresAt,
-      createdAt: record.createdAt,
-    });
+    await writeChallengeDetails(record);
     return record;
   }
 
-  await createPersistentSession({
-    guildId: record.guildId,
-    command: CHALLENGE_DETAILS_COMMAND,
-    kind: CHALLENGE_DETAILS_KIND,
-    actorDiscordUserId: record.discordUserId,
-    nonce: record.targetTag,
-    payload: { details: record.details as unknown as StatePayload },
-    expiresAt: record.expiresAt,
-    createdAt: record.createdAt,
-  });
+  await writeChallengeDetails(record);
 
   try {
     const { error } = await db.from('verification_challenges').upsert(challengeToRow(record), {
@@ -723,6 +705,34 @@ export async function createVerificationChallenge(
   }
   challenges.set(challengeKey(record), record);
   return record;
+}
+
+async function writeChallengeDetails(record: VerificationChallengeRecord): Promise<void> {
+  await deletePersistentSession({
+    guildId: record.guildId,
+    command: CHALLENGE_DETAILS_COMMAND,
+    actorDiscordUserId: record.discordUserId,
+    nonce: record.targetTag,
+  });
+  await createPersistentSession({
+    guildId: record.guildId,
+    command: CHALLENGE_DETAILS_COMMAND,
+    kind: CHALLENGE_DETAILS_KIND,
+    actorDiscordUserId: record.discordUserId,
+    nonce: record.targetTag,
+    payload: { details: record.details as unknown as StatePayload },
+    expiresAt: record.expiresAt,
+    createdAt: record.createdAt,
+  });
+}
+
+async function clearChallengeDetails(key: VerificationChallengeKey): Promise<void> {
+  await deletePersistentSession({
+    guildId: key.guildId,
+    command: CHALLENGE_DETAILS_COMMAND,
+    actorDiscordUserId: key.discordUserId,
+    nonce: key.targetTag,
+  });
 }
 
 export async function readVerificationChallenge(
@@ -808,6 +818,7 @@ async function markVerificationChallenge(
   if (db === null) {
     if (local === undefined || local.status !== 'active') return false;
     challenges.set(challengeKey(key), { ...local, status, updatedAt: Date.now() });
+    await clearChallengeDetails(key);
     return true;
   }
 
@@ -821,8 +832,12 @@ async function markVerificationChallenge(
     .select('target_tag')
     .maybeSingle();
   requireOk(error, 'Update verification challenge');
-  if (local !== undefined) challenges.set(challengeKey(key), { ...local, status, updatedAt: Date.now() });
-  return data !== null && typeof data === 'object';
+  const changed = data !== null && typeof data === 'object';
+  if (changed) {
+    if (local !== undefined) challenges.set(challengeKey(key), { ...local, status, updatedAt: Date.now() });
+    await clearChallengeDetails(key);
+  }
+  return changed;
 }
 
 export async function consumeVerificationChallenge(key: VerificationChallengeKey): Promise<boolean> {

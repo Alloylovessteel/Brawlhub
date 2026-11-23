@@ -51,7 +51,7 @@ export const removeClubCommandData = new SlashCommandBuilder()
   );
 
 async function permissionContext(
-  interaction: ChatInputCommandInteraction | AutocompleteInteraction,
+  interaction: ChatInputCommandInteraction | AutocompleteInteraction | CommandComponentInteraction,
 ) {
   return requireGlobalPermission(interaction.user.id, 'clubs:write', {
     guildId: interaction.guildId,
@@ -111,16 +111,17 @@ export async function handleRemoveClubComponent(interaction: CommandComponentInt
     const guildId = interaction.guildId;
     if (guildId === null) return;
 
-    const pending = pendingArchives.take(action.nonce, interaction.user.id, guildId);
+    const pending = await pendingArchives.take(action.nonce, interaction.user.id, guildId);
     if (action.kind === 'cancel') {
       await interaction.editReply({ content: CANCELLED_MESSAGE, embeds: [], components: [] });
       return;
     }
 
+    const actor = await permissionContext(interaction);
     const result = await archiveGuildClub({
       clubId: pending.clubId,
       guildId,
-      actor: pending.actor,
+      actor,
       clubTag: pending.clubTag,
       clubName: pending.clubName,
     });

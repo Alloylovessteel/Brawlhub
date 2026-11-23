@@ -187,6 +187,7 @@ const MEMBERSHIPS: Row[] = [
   { id: 'm2', player_id: 'p1', club_id: 'club-b', role: 'member', valid_from: '2026-10-01T00:00:00.000Z', valid_to: '2026-11-01T00:00:00.000Z', club: CLUB_B },
   { id: 'm3', player_id: 'p2', club_id: 'club-b', role: 'member', valid_from: '2026-11-10T00:00:00.000Z', valid_to: null, club: CLUB_B },
   { id: 'm4', player_id: 'p3', club_id: 'club-a', role: null, valid_from: null, valid_to: null, club: CLUB_A },
+  { id: 'm5', player_id: 'p1', club_id: 'club-a', role: 'member', valid_from: '2026-10-01T00:00:00.000Z', valid_to: '2026-11-01T00:00:00.000Z', club: CLUB_A },
 ];
 
 const EVENTS: Row[] = [
@@ -247,7 +248,7 @@ describe('player service', () => {
     const client = api();
 
     const result = await loadPlayerProfile(
-      { tag: ' #2c0y ', now: NOW },
+      { tag: ' #2c0y ', now: NOW, guildId: 'guild-1' },
       { db: db as never, api: client as never },
     );
 
@@ -296,7 +297,7 @@ describe('player service', () => {
     data['players']![0] = { ...PLAYERS[0]!, last_synced_at: OLD };
 
     const result = await loadPlayerProfile(
-      { tag: '2C0Y', now: NOW },
+      { tag: '2C0Y', now: NOW, guildId: 'guild-1' },
       { db: createFakeDb(data) as never, api: client as never },
     );
 
@@ -314,8 +315,8 @@ describe('player service', () => {
     const client = api();
     const options = { db: db as never, api: client as never };
 
-    const first = await loadPlayerProfile({ tag: '2C0Y', now: NOW }, options);
-    const second = await loadPlayerProfile({ tag: '2C0Y', now: NOW }, options);
+    const first = await loadPlayerProfile({ tag: '2C0Y', now: NOW, guildId: 'guild-1' }, options);
+    const second = await loadPlayerProfile({ tag: '2C0Y', now: NOW, guildId: 'guild-1' }, options);
 
     expect(first.kind).toBe('ok');
     expect(second.kind).toBe('ok');
@@ -338,7 +339,7 @@ describe('player service', () => {
     })));
 
     const result = await loadPlayerProfile(
-      { tag: 'G2P9', now: NOW },
+      { tag: 'G2P9', now: NOW, guildId: 'guild-1' },
       { db: createFakeDb(data) as never, api: client as never },
     );
 
@@ -353,7 +354,7 @@ describe('player service', () => {
     const db = createFakeDb(tables());
 
     const short = await loadPlayerHistory(
-      { tag: '2C0Y', period: '7d', now: NOW },
+      { tag: '2C0Y', period: '7d', now: NOW, guildId: 'guild-1' },
       { db: db as never },
     );
     expect(short.kind).toBe('ok');
@@ -363,7 +364,7 @@ describe('player service', () => {
     expect(short.value.firstSnapshotAt).toBe('2026-11-17T00:00:00.000Z');
 
     const full = await loadPlayerHistory(
-      { tag: '2C0Y', period: '30d', now: NOW },
+      { tag: '2C0Y', period: '30d', now: NOW, guildId: 'guild-1' },
       { db: createFakeDb(tables()) as never },
     );
     expect(full.kind).toBe('ok');
@@ -378,7 +379,7 @@ describe('player service', () => {
     const data = tables();
     data['player_snapshots'] = [];
     const result = await loadPlayerHistory(
-      { tag: 'G2P9', period: '30d', now: NOW },
+      { tag: 'G2P9', period: '30d', now: NOW, guildId: 'guild-1' },
       { db: createFakeDb(data) as never },
     );
 
@@ -391,7 +392,7 @@ describe('player service', () => {
 
   it('distinguishes current, past, stale and incomplete membership records', async () => {
     const result = await loadPlayerClubs(
-      { tag: '2C0Y', now: NOW },
+      { tag: '2C0Y', now: NOW, guildId: 'guild-1' },
       { db: createFakeDb(tables()) as never },
     );
     expect(result.kind).toBe('ok');
@@ -402,7 +403,7 @@ describe('player service', () => {
     expect(result.value.events.some((event) => event.eventType === 'transfer')).toBe(true);
 
     const stale = await loadPlayerClubs(
-      { tag: 'G2P9', now: NOW },
+      { tag: 'G2P9', now: NOW, guildId: 'guild-1' },
       { db: createFakeDb(tables()) as never },
     );
     expect(stale.kind).toBe('ok');
@@ -506,9 +507,31 @@ describe('player service', () => {
     ).resolves.toEqual({ kind: 'not-found', tag: 'Q8VR' });
   });
 
+  it('denies stored player history when no guild context is available', async () => {
+    const battleDb = createFakeDb(tables());
+    await expect(
+      loadPlayerBattles(
+        { tag: '2C0Y', period: '30d', now: NOW, guildId: null },
+        { db: battleDb as never },
+      ),
+    ).resolves.toEqual({ kind: 'not-found', tag: '2C0Y' });
+    expect(battleDb.calls.some((call) => call.table === 'player_battles')).toBe(false);
+
+    const historyDb = createFakeDb(tables());
+    await expect(
+      loadPlayerHistory(
+        { tag: '2C0Y', period: '30d', now: NOW, guildId: '' },
+        { db: historyDb as never },
+      ),
+    ).resolves.toEqual({ kind: 'not-found', tag: '2C0Y' });
+    expect(historyDb.calls.some((call) => call.table === 'player_snapshots')).toBe(false);
+
+    expect(await searchPlayers('alp', { db: createFakeDb(tables()) as never, guildId: null })).toEqual([]);
+  });
+
   it('compares aligned players and warns when snapshot windows differ', async () => {
     const aligned = await loadPlayerCompare(
-      { firstTag: '2C0Y', secondTag: 'Q8VR', period: '30d', now: NOW },
+      { firstTag: '2C0Y', secondTag: 'Q8VR', period: '30d', now: NOW, guildId: 'guild-2' },
       { db: createFakeDb(tables()) as never },
     );
     expect(aligned.kind).toBe('ok');
@@ -518,7 +541,7 @@ describe('player service', () => {
     expect(aligned.value.first.currentTrophies).toBeGreaterThan(aligned.value.second.currentTrophies ?? 0);
 
     const unaligned = await loadPlayerCompare(
-      { firstTag: '2C0Y', secondTag: 'G2P9', period: '30d', now: NOW },
+      { firstTag: '2C0Y', secondTag: 'G2P9', period: '30d', now: NOW, guildId: 'guild-1' },
       { db: createFakeDb(tables()) as never },
     );
     expect(unaligned.kind).toBe('ok');
@@ -539,7 +562,7 @@ describe('player service', () => {
 
   it('supports stored-player autocomplete search', async () => {
     const db = createFakeDb(tables());
-    const result = await searchPlayers('alp', db as never);
+    const result = await searchPlayers('alp', { db: db as never, guildId: 'guild-1' });
     expect(result.map((player) => player.tag)).toEqual(['2C0Y']);
     expect(db.calls[0]?.or).toContain('name.ilike.%alp%');
   });
@@ -547,7 +570,7 @@ describe('player service', () => {
   it('surfaces database and API-unavailable errors safely', async () => {
     const db = createFakeDb(tables(), ['players']);
     await expect(
-      loadPlayerProfile({ tag: '2C0Y', now: NOW }, { db: db as never, api: api() as never }),
+      loadPlayerProfile({ tag: '2C0Y', now: NOW, guildId: 'guild-1' }, { db: db as never, api: api() as never }),
     ).rejects.toThrow('Read player failed');
 
     const emptyDb = createFakeDb({ ...tables(), players: [] });
@@ -555,7 +578,7 @@ describe('player service', () => {
       throw new BrawlStarsApiError('server error', 500);
     }));
     await expect(
-      loadPlayerProfile({ tag: 'G2P9', now: NOW }, { db: emptyDb as never, api: failingApi as never }),
+      loadPlayerProfile({ tag: 'G2P9', now: NOW, guildId: 'guild-1' }, { db: emptyDb as never, api: failingApi as never }),
     ).resolves.toEqual({ kind: 'api-unavailable', tag: 'G2P9', issue: 'error' });
   });
 });

@@ -20,10 +20,16 @@ interface TableResponse {
 interface FakeDb {
   readonly client: SupabaseClient;
   readonly updates: Array<{ readonly table: string; readonly payload: Record<string, unknown> }>;
+  readonly authDeletes: string[];
+  setAuthDeleteResult(result: unknown): void;
+  setAuthDeleteError(error: unknown): void;
 }
 
 function fakeDb(tables: Record<string, TableResponse>): FakeDb {
   const updates: FakeDb['updates'] = [];
+  const authDeletes: string[] = [];
+  let authDeleteResult: unknown = { data: { user: {} }, error: null };
+  let authDeleteError: unknown = undefined;
   const selectCursors: Record<string, number> = {};
 
   function nextSelect(table: string): Response {
@@ -105,8 +111,24 @@ function fakeDb(tables: Record<string, TableResponse>): FakeDb {
       from(table: string) {
         return new Query(table);
       },
+      auth: {
+        admin: {
+          async deleteUser(id: string) {
+            authDeletes.push(id);
+            if (authDeleteError !== undefined) throw authDeleteError;
+            return authDeleteResult;
+          },
+        },
+      },
     } as unknown as SupabaseClient,
     updates,
+    authDeletes,
+    setAuthDeleteResult(result: unknown) {
+      authDeleteResult = result;
+    },
+    setAuthDeleteError(error: unknown) {
+      authDeleteError = error;
+    },
   };
 }
 
@@ -309,10 +331,39 @@ describe('deleteUserDataForDiscordUser', () => {
     });
 
     expect(result).toEqual({ kind: 'ok' });
+    expect(db.authDeletes).toHaveLength(1);
     expect(db.updates).toEqual([
       { table: 'discord_users', payload: { delete: true } },
       { table: 'profiles', payload: { delete: true } },
     ]);
+  });
+
+  it('keeps identity rows and reports failure when Auth deletion returns an error', async () => {
+    const db = fakeDb(profile);
+    db.setAuthDeleteResult({ data: null, error: { message: 'auth unavailable' } });
+
+    const result = await deleteUserDataForDiscordUser('983248496884875286', {
+      db: db.client,
+    });
+
+    expect(result).toEqual({ kind: 'auth-delete-failed' });
+    expect(db.updates).toEqual([]);
+  });
+
+  it('reports failure when Auth deletion throws and allows a later retry', async () => {
+    const db = fakeDb(profile);
+    db.setAuthDeleteError(new Error('auth unavailable'));
+
+    await expect(
+      deleteUserDataForDiscordUser('983248496884875286', { db: db.client }),
+    ).resolves.toEqual({ kind: 'auth-delete-failed' });
+    expect(db.updates).toEqual([]);
+
+    db.setAuthDeleteError(undefined);
+    await expect(
+      deleteUserDataForDiscordUser('983248496884875286', { db: db.client }),
+    ).resolves.toEqual({ kind: 'ok' });
+    expect(db.updates).toHaveLength(2);
   });
 
   it('reports when there is no stored identity', async () => {

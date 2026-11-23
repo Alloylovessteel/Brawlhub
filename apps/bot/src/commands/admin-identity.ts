@@ -147,6 +147,15 @@ function permissionContext(interaction: ChatInputCommandInteraction | CommandCom
   };
 }
 
+/** Global identity changes must not be authorized by a single server's roles. */
+function requireTrueGlobalPermission(
+  interaction: ChatInputCommandInteraction | CommandComponentInteraction,
+): Promise<AdminActor> {
+  return requireGlobalPermission(interaction.user.id, 'members:verify', {
+    discordUsername: interaction.user.username,
+  });
+}
+
 function linksEmbed(links: RegisteredLinkView[], title: string): EmbedBuilder {
   const lines = links.slice(0, 25).map((link) => {
     const label = link.isMain ? mdBold('MAIN') : 'Alt';
@@ -163,11 +172,7 @@ function linksEmbed(links: RegisteredLinkView[], title: string): EmbedBuilder {
 export async function handleTag(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: 64 });
   try {
-    const actor = await requireGlobalPermission(
-      interaction.user.id,
-      'members:verify',
-      permissionContext(interaction),
-    );
+    const actor = await requireTrueGlobalPermission(interaction);
     const user = interaction.options.getUser('user', true);
     const tag = interaction.options.getString('tag', true);
     const reason = interaction.options.getString('reason');
@@ -298,7 +303,7 @@ export async function handleUnverifyOneComponent(interaction: CommandComponentIn
   if (action === null) return;
   await interaction.deferUpdate();
   try {
-    const pending = pendingOne.take(action.nonce, interaction.user.id, interaction.guildId);
+    const pending = await pendingOne.take(action.nonce, interaction.user.id, interaction.guildId);
     await requireGlobalPermission(interaction.user.id, 'members:verify', permissionContext(interaction));
     if (action.kind === 'cancel') {
       await interaction.editReply({ content: 'Cancelled.', components: [], embeds: [] });
@@ -331,11 +336,7 @@ export async function handleUnverifyOneComponent(interaction: CommandComponentIn
 export async function handleUnverifyAll(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: 64 });
   try {
-    const actor = await requireGlobalPermission(
-      interaction.user.id,
-      'members:verify',
-      permissionContext(interaction),
-    );
+    const actor = await requireTrueGlobalPermission(interaction);
     const user = interaction.options.getUser('user', true);
     const links = await listGuildVerifiedLinks(interaction.guildId ?? '');
     if (!links.some((link) => link.discordUserId === user.id)) {
@@ -369,8 +370,8 @@ export async function handleUnverifyAllComponent(interaction: CommandComponentIn
   if (action === null) return;
   await interaction.deferUpdate();
   try {
-    const pending = pendingAll.take(action.nonce, interaction.user.id, interaction.guildId);
-    await requireGlobalPermission(interaction.user.id, 'members:verify', permissionContext(interaction));
+    const pending = await pendingAll.take(action.nonce, interaction.user.id, interaction.guildId);
+    await requireTrueGlobalPermission(interaction);
     if (action.kind === 'cancel') {
       await interaction.editReply({ content: 'Cancelled.', components: [], embeds: [] });
       return;

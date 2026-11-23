@@ -285,7 +285,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
 }
 
 async function handleCancel(interaction: ChatInputCommandInteraction): Promise<void> {
-  const result = cancelVerification({
+  const result = await cancelVerification({
     discordUserId: interaction.user.id,
     guildId: interaction.guildId,
   });

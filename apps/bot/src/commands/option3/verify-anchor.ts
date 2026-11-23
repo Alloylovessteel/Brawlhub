@@ -157,8 +157,8 @@ export async function handleVerifyAnchor(interaction: ChatInputCommandInteractio
   const group = interaction.options.getSubcommandGroup(false);
   const subcommand = interaction.options.getSubcommand(false);
 
-  if (subcommand !== null) {
-    const playerRoute = playerVerificationRoutes[subcommand];
+  if (group === null) {
+    const playerRoute = subcommand === null ? undefined : playerVerificationRoutes[subcommand];
     if (playerRoute !== undefined) {
       await handleMemberVerify(
         asLegacyChatInput(interaction, { group: 'verify', subcommand: playerRoute }),

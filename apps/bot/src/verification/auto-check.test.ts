@@ -28,7 +28,10 @@ vi.mock('../role-automation/index.js', () => ({
   reconcileGuildRolesForPlayer: mocks.reconcileRoles,
 }));
 
-import { runVerificationAutoCheck } from './auto-check.js';
+import {
+  resetVerificationAutoCheckRotationForTests,
+  runVerificationAutoCheck,
+} from './auto-check.js';
 
 const NOW = 1_700_000_000_000;
 const GUILD_ONE = '111111111111111111';
@@ -109,6 +112,7 @@ function fakeClient(): {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetVerificationAutoCheckRotationForTests();
   mocks.listChallenges.mockResolvedValue([makeRecord()]);
   mocks.checkVerification.mockResolvedValue(verifiedResult());
   mocks.notifyUser.mockResolvedValue(undefined);
@@ -276,6 +280,32 @@ describe('runVerificationAutoCheck', () => {
 
     expect(summary).toMatchObject({ candidates: 3, checked: 1, verified: 1 });
     expect(mocks.checkVerification).toHaveBeenCalledTimes(1);
+  });
+
+  it('rotates the bounded batch so a pending challenge cannot starve newer ones', async () => {
+    const { client } = fakeClient();
+    mocks.listChallenges.mockResolvedValue([
+      makeRecord({ targetTag: 'OLDEST', discordUserId: 'user-oldest', expiresAt: NOW + 1000 }),
+      makeRecord({ targetTag: 'SECOND', discordUserId: 'user-second', expiresAt: NOW + 2000 }),
+      makeRecord({ targetTag: 'NEWEST', discordUserId: 'user-newest', expiresAt: NOW + 3000 }),
+    ]);
+    mocks.checkVerification.mockResolvedValue(pendingResult());
+
+    const deps = {
+      now: () => NOW,
+      batchSize: 1,
+      notifyUser: mocks.notifyUser,
+      loadUsername: mocks.loadUsername,
+      notifyOperator: mocks.notifyOperator,
+      reconcileRoles: mocks.reconcileRoles,
+    };
+    for (let poll = 0; poll < 4; poll += 1) {
+      await runVerificationAutoCheck(client, deps);
+    }
+
+    expect(
+      mocks.checkVerification.mock.calls.map(([input]) => (input as { discordUserId: string }).discordUserId),
+    ).toEqual(['user-oldest', 'user-second', 'user-newest', 'user-oldest']);
   });
 
   it('sends the automatic DM with mentions disabled', async () => {
