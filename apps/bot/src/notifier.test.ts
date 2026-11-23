@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SyncNotificationInput } from '@brawlhub/sync';
-import { buildClubMembershipNoticeEmbed } from './notifier';
+import { buildClubMembershipNoticeContent } from './notifier';
 
 function input(overrides: Partial<SyncNotificationInput> = {}): SyncNotificationInput {
   return {
@@ -11,45 +11,47 @@ function input(overrides: Partial<SyncNotificationInput> = {}): SyncNotification
     clubName: 'Kuromi Nek',
     fromClubName: 'Kuromi Nek',
     toClubName: undefined,
+    occurredAt: '2026-11-23T23:18:00.000Z',
+    remainingMembers: 29,
     ...overrides,
   };
 }
 
-describe('buildClubMembershipNoticeEmbed', () => {
-  it('uses Unicode detail lines for a club leave', () => {
-    const json = buildClubMembershipNoticeEmbed(input()).toJSON();
+const WHEN = '23:18 UTC, 23 Nov 2026';
 
-    expect(json.title).toBe('👥 Club membership update');
-    expect(json.description).toBe(
-      '🏷️ gynophobe (`2QGGRYQQRR`)\n📝 left **Kuromi Nek**.',
+describe('buildClubMembershipNoticeContent', () => {
+  it('states the leave time/date and remaining members as plain text', () => {
+    expect(buildClubMembershipNoticeContent(input())).toBe(
+      `gynophobe (#2QGGRYQQRR) left the club at ${WHEN}\nremaining members: 29`,
     );
   });
 
   it('formats joins and transfers the same way', () => {
-    const join = buildClubMembershipNoticeEmbed(
+    const join = buildClubMembershipNoticeContent(
       input({ eventType: 'join', fromClubName: undefined }),
-    ).toJSON();
-    expect(join.description).toContain('📝 joined **Kuromi Nek**.');
+    );
+    expect(join).toContain(`gynophobe (#2QGGRYQQRR) joined the club at ${WHEN}`);
 
-    const transfer = buildClubMembershipNoticeEmbed(
+    const transfer = buildClubMembershipNoticeContent(
       input({
         eventType: 'transfer',
         fromClubName: 'Kuromi Nek',
         toClubName: 'Kuromi Krew',
       }),
-    ).toJSON();
-    expect(transfer.description).toContain(
-      '📝 transferred from **Kuromi Nek** to **Kuromi Krew**.',
     );
+    expect(transfer).toContain(
+      `gynophobe (#2QGGRYQQRR) transferred from Kuromi Nek to Kuromi Krew at ${WHEN}`,
+    );
+    expect(transfer).toContain('remaining members: 29');
   });
 
   it('strips mention syntax from names', () => {
-    const json = buildClubMembershipNoticeEmbed(
+    const content = buildClubMembershipNoticeContent(
       input({ playerName: '<@everyone> gynophobe', clubName: '<#123> Kuromi Nek' }),
-    ).toJSON();
+    );
 
-    expect(json.description).not.toContain('<@');
-    expect(json.description).not.toContain('<#');
-    expect(json.description).toContain('gynophobe');
+    expect(content).not.toContain('<@');
+    expect(content).not.toContain('<#');
+    expect(content).toContain('gynophobe');
   });
 });

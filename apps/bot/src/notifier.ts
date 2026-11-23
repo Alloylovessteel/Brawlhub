@@ -1,9 +1,7 @@
-import { mdBold, mdCode } from './discord/embed-format';
-import { EMBED_COLORS } from './discord/embed-style';
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
-import type { SyncNotifier, SyncNotifierWithChannel } from '@brawlhub/sync';
-import { EmbedBuilder, REST, Routes } from 'discord.js';
+import type { SyncNotificationInput, SyncNotifier, SyncNotifierWithChannel } from '@brawlhub/sync';
+import { REST, Routes } from 'discord.js';
 import { getBotConfig } from './config.js';
 
 const logger = createLogger('bot/notifier');
@@ -24,31 +22,55 @@ function clean(value: string | undefined, maxLength: number): string {
   return sanitized.slice(0, maxLength);
 }
 
-/** Build the public, mention-safe join/leave/transfer notification embed. */
-export function buildClubMembershipNoticeEmbed(
-  input: Parameters<SyncNotifier['send']>[0],
-): EmbedBuilder {
-  const player = `${clean(input.playerName, 60)} (${mdCode(clean(input.playerTag, 24))})`;
-  const embed = new EmbedBuilder()
-    .setColor(EMBED_COLORS.neutral)
-    .setTitle('👥 Club membership update');
+function formatPlayer(input: SyncNotificationInput): string {
+  const name = clean(input.playerName, 60);
+  const tag = clean(input.playerTag, 24).replace(/^#+/, '');
+  return tag === '' || tag === 'unknown' ? name : `${name} (#${tag})`;
+}
 
-  let action: string;
+function formatOccurredAt(value: string | undefined): string {
+  if (value === undefined) return 'an unknown time';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'an unknown time';
+  const time = new Intl.DateTimeFormat('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'UTC',
+  }).format(parsed);
+  const date = new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(parsed);
+  return `${time} UTC, ${date}`;
+}
+
+function formatRemainingMembers(value: number | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown';
+  return Math.trunc(value).toLocaleString('en-US');
+}
+
+function formatAction(input: SyncNotificationInput): string {
   switch (input.eventType) {
     case 'join':
-      action = `joined ${mdBold(clean(input.clubName, 60))}`;
-      break;
+      return 'joined the club';
     case 'leave':
-      action = `left ${mdBold(clean(input.clubName, 60))}`;
-      break;
+      return 'left the club';
     case 'transfer':
-      action = `transferred from ${mdBold(clean(input.fromClubName, 60))} to ${mdBold(clean(input.toClubName, 60))}`;
-      break;
+      return `transferred from ${clean(input.fromClubName, 60)} to ${clean(input.toClubName, 60)}`;
     default:
-      action = 'updated club membership';
+      return 'updated club membership';
   }
+}
 
-  return embed.setDescription([`🏷️ ${player}`, `📝 ${action}.`].join('\n'));
+/** Build the public, mention-safe plain-text membership notice. */
+export function buildClubMembershipNoticeContent(input: SyncNotificationInput): string {
+  return [
+    `${formatPlayer(input)} ${formatAction(input)} at ${formatOccurredAt(input.occurredAt)}`,
+    `remaining members: ${formatRemainingMembers(input.remainingMembers)}`,
+  ].join('\n');
 }
 
 function readFallbackChannelId(): string | undefined {
@@ -122,9 +144,12 @@ export async function createDiscordNotifier(
     channelId,
     async send(input) {
       try {
-        const embed = buildClubMembershipNoticeEmbed(input);
+        const content = buildClubMembershipNoticeContent(input);
         const message = (await rest.post(Routes.channelMessages(channelId), {
-          body: { embeds: [embed.toJSON()] },
+          body: {
+            content,
+            allowed_mentions: { parse: [] },
+          },
         })) as { id?: string } | undefined;
         return message?.id;
       } catch (error: unknown) {

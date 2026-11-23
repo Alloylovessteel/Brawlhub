@@ -533,7 +533,12 @@ describe('runSync', () => {
 
     let claimAttempts = 0;
     let sends = 0;
-    const delivered: Array<{ clubName: string; toClubName: string | undefined }> = [];
+    const delivered: Array<{
+      clubName: string;
+      toClubName: string | undefined;
+      occurredAt: string | undefined;
+      remainingMembers: number | undefined;
+    }> = [];
     fake.state.handlers['notifications:insert'] = () => {
       claimAttempts += 1;
       if (claimAttempts > 1) {
@@ -545,9 +550,19 @@ describe('runSync', () => {
 
     const notifier = {
       channelId: 'channel-1',
-      send: async (input: { clubName: string; toClubName: string | undefined }) => {
+      send: async (input: {
+        clubName: string;
+        toClubName: string | undefined;
+        occurredAt?: string;
+        remainingMembers?: number;
+      }) => {
         sends += 1;
-        delivered.push({ clubName: input.clubName, toClubName: input.toClubName });
+        delivered.push({
+          clubName: input.clubName,
+          toClubName: input.toClubName,
+          occurredAt: input.occurredAt,
+          remainingMembers: input.remainingMembers,
+        });
         return `message-${sends}`;
       },
     };
@@ -563,6 +578,8 @@ describe('runSync', () => {
     expect(claimAttempts).toBe(2);
     expect(delivered[0]?.clubName).toBe('Alpha');
     expect(delivered[0]?.toClubName).toBe('Alpha');
+    expect(delivered[0]?.occurredAt).toBe(T0.toISOString());
+    expect(delivered[0]?.remainingMembers).toBe(1);
   });
 
   it('announces an event committed by a failed run when a later run gets a new run id', async () => {

@@ -277,6 +277,10 @@ export interface SyncNotifier {
     clubName: string;
     fromClubName: string | undefined;
     toClubName: string | undefined;
+    /** Stored event detection time (ISO), used by the public notice for its date/time line. */
+    occurredAt?: string;
+    /** Latest official member count for the club involved in the event. */
+    remainingMembers?: number;
   }): Promise<string | undefined>;
 }
 
@@ -606,6 +610,8 @@ function buildNotification(
   clubNames: ReadonlyMap<string, string>,
   fromClubId: string | undefined,
   toClubId: string | undefined,
+  occurredAt: string,
+  remainingMembers: number | undefined,
 ): SyncNotificationInput {
   const fromName = fromClubId === undefined ? undefined : clubNames.get(fromClubId) ?? '';
   const toName = toClubId === undefined ? undefined : clubNames.get(toClubId) ?? '';
@@ -617,6 +623,8 @@ function buildNotification(
     clubName: toName ?? fromName ?? '',
     fromClubName: fromName,
     toClubName: toName,
+    occurredAt,
+    ...(remainingMembers === undefined ? {} : { remainingMembers }),
   };
 }
 
@@ -1534,6 +1542,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       fetched.push(await fetchClubData(apiClient, row, apiTimeoutMs));
     }
     counters.clubsProcessed = fetched.length;
+    const memberCountsById = new Map(fetched.map((club) => [club.row.id, club.memberCount]));
 
     const roster = buildGlobalRoster(fetched);
 
@@ -1643,6 +1652,9 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         }
         const tag = event.player?.tag;
         const name = event.player?.name;
+        const relevantClubId = toClubId ?? fromClubId;
+        const remainingMembers =
+          relevantClubId === undefined ? undefined : memberCountsById.get(relevantClubId);
         return buildNotification(
           event.id,
           event.event_type as EventType,
@@ -1653,6 +1665,8 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
           new Map([...fallbackNames, ...clubNames]),
           fromClubId,
           toClubId,
+          event.detected_at,
+          remainingMembers,
         );
       });
 
