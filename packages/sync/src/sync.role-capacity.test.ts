@@ -441,7 +441,7 @@ describe('runSync guild scoping', () => {
     expect(touched).not.toContain(OUT_OF_SCOPE_CLUB_ROW.id);
   });
 
-  it('refuses an open membership in a club outside the sync scope', async () => {
+  it('ignores an open membership in another guild and writes a scoped join', async () => {
     setup({
       clubs: [CLUB_ROW],
       openClubId: OUT_OF_SCOPE_CLUB_ROW.id,
@@ -451,10 +451,21 @@ describe('runSync guild scoping', () => {
 
     const result = await runSync({ now: T0, guildId: 'guild-test' });
 
-    expect(result.status).toBe('failed');
-    expect(result.error).toMatch(/outside this sync scope/i);
+    expect(result.status).toBe('completed');
     expect(callsFor('rpc:apply_club_role_change', 'select')).toHaveLength(0);
-    expect(callsFor('rpc:apply_membership_transition', 'select')).toHaveLength(0);
-    expect(callsFor('club_capacity_events', 'upsert')).toHaveLength(0);
+    const transitions = callsFor('rpc:apply_membership_transition', 'select');
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]?.payload).toMatchObject({
+      p_event_type: 'join',
+      p_from_club_id: null,
+      p_to_club_id: CLUB_ROW.id,
+      p_close_membership_id: null,
+    });
+    expect(callsFor('club_memberships', 'update')).toHaveLength(0);
+    expect(
+      callsFor('club_capacity_events', 'upsert').every(
+        (call) => call.payload.club_id === CLUB_ROW.id,
+      ),
+    ).toBe(true);
   });
 });

@@ -1105,20 +1105,6 @@ async function upsertPlayer(
   return requireRow<IdRow>(result.data, `Upsert player ${entry.tag}`).id;
 }
 
-async function readOpenMembership(
-  db: SupabaseClient,
-  playerId: string,
-): Promise<OpenMembershipRow | undefined> {
-  const result = await db
-    .from('club_memberships')
-    .select('id, club_id, player_id, role')
-    .eq('player_id', playerId)
-    .is('valid_to', null)
-    .maybeSingle();
-  requireOk(result.error, `Read open membership for ${playerId}`);
-  return (result.data ?? undefined) as OpenMembershipRow | undefined;
-}
-
 async function readOpenMembershipsForClubs(
   db: SupabaseClient,
   clubIds: readonly string[],
@@ -1507,7 +1493,6 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
   }
 
   const clubIds = clubRows.map((club) => club.id);
-  const clubIdSet = new Set(clubIds);
   const clubTags = clubRows.map((club) => club.tag);
   const clubNames = new Map(clubRows.map((club) => [club.id, club.name]));
 
@@ -1582,10 +1567,25 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     const presentPlayerIds = new Set(states.map((state) => state.playerId));
 
     // 3. Joins, transfers and same-club role changes, computed against the
-    //    synced guild roster. Each event + membership change is committed
-    //    atomically by Postgres.
+    //    synced guild roster. Open memberships are scoped to the clubs being
+    //    synced: another guild can independently track the same player in its
+    //    own club row. Each event + membership change is committed atomically
+    //    by Postgres.
+    const openRowsBefore = await readOpenMembershipsForClubs(db, clubIds);
+    const openByPlayer = new Map<string, OpenMembershipRow[]>();
+    for (const row of openRowsBefore) {
+      const rows = openByPlayer.get(row.player_id) ?? [];
+      rows.push(row);
+      openByPlayer.set(row.player_id, rows);
+    }
     for (const state of states) {
-      const open = await readOpenMembership(db, state.playerId);
+      const scopedOpen = openByPlayer.get(state.playerId) ?? [];
+      if (scopedOpen.length > 1) {
+        throw new Error(
+          `Player ${state.tag} has multiple open memberships in this sync scope; refusing to guess which one to close`,
+        );
+      }
+      const open = scopedOpen[0];
       if (open !== undefined && open.club_id === state.clubId) {
         const fromRole = normalizeRole(open.role);
         const toRole = normalizeRole(state.role);
@@ -1602,11 +1602,6 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
           counters.roleChanges += 1;
         }
         continue;
-      }
-      if (open !== undefined && !clubIdSet.has(open.club_id)) {
-        throw new Error(
-          `Player ${state.tag} has an open membership in a club outside this sync scope; refusing to mutate cross-guild membership state`,
-        );
       }
       const eventType: EventType = open === undefined ? 'join' : 'transfer';
       await applyMembershipTransition(db, {
