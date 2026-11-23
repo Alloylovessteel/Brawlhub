@@ -284,6 +284,19 @@ describe('/me command', () => {
     expect(optionsBySubcommand.get('live')).toEqual(['tag']);
     expect(optionsBySubcommand.get('live-stop')).toEqual([]);
     expect(optionsBySubcommand.get('chart')).toEqual(['option', 'tag', 'period']);
+
+    const imageOption = (json.options ?? []).find((option: any) => option.name === 'image');
+    const modeOption = imageOption.options.find((option: any) => option.name === 'mode');
+    expect(modeOption.type).toBe(3);
+    expect(modeOption.choices.map((choice: any) => choice.value)).toEqual([
+      'profile',
+      'brawler',
+      'rank',
+      'trophies',
+      'highest',
+      'season',
+      'history',
+    ]);
   });
 
   it('dispatches live, live-stop and chart subcommands without new anchors', async () => {

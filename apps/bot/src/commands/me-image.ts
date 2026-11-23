@@ -3,6 +3,8 @@ import { AttachmentBuilder, type ChatInputCommandInteraction } from 'discord.js'
 import { getBotConfig } from '../config.js';
 import { replyWithSafeError } from '../discord/errors';
 import { cleanTag, escapeMarkdown } from '../discord/format';
+import { loadOrRenderChart } from '../images/chart-service.js';
+import { buildSeasonProgressImage } from '../images/season-card.js';
 import { resolveBrawlerPortraitUrl, resolvePlayerIconUrl } from '../metadata/assets.js';
 import {
   buildPlayerCardImage,
@@ -106,16 +108,44 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
       badges: badgesFor(linkedAccounts, profile.player.tag),
     };
     let options: PlayerCardOptions = { mode };
+    let seasonImage: Buffer | null = null;
 
     if (mode === 'season') {
       const config = getBotConfig();
-      options = {
-        mode,
-        seasonWindow: {
-          start: config.seasonStartIso ?? null,
-          end: config.seasonEndIso ?? null,
-        },
+      const seasonWindow = {
+        start: config.seasonStartIso ?? null,
+        end: config.seasonEndIso ?? null,
       };
+      options = { mode, seasonWindow };
+
+      // Stored history is guild-scoped. Without a guild we can only show the
+      // current official snapshot, never cross-guild graph data.
+      if (interaction.guildId !== null) {
+        const [trophyChart, activityChart] = await Promise.all([
+          loadOrRenderChart({
+            guildId: interaction.guildId,
+            kind: 'player',
+            tag: resolved.tag,
+            option: 'trophies',
+            period: '30d',
+          }),
+          loadOrRenderChart({
+            guildId: interaction.guildId,
+            kind: 'player',
+            tag: resolved.tag,
+            option: 'activity',
+            period: '30d',
+          }),
+        ]);
+        if (trophyChart.kind === 'ok' && activityChart.kind === 'ok') {
+          seasonImage = await buildSeasonProgressImage({
+            profile,
+            seasonWindow,
+            trophyChartPng: trophyChart.image.png,
+            activityChartPng: activityChart.image.png,
+          });
+        }
+      }
     } else if (mode === 'history') {
       options = { mode, history: await loadHistorySummary(resolved.tag, interaction.guildId) };
     } else if (mode !== 'profile') {
@@ -125,10 +155,15 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
       };
     }
 
-    const image = await buildPlayerCardImage(profile, assets, options);
+    const image = seasonImage ?? (await buildPlayerCardImage(profile, assets, options));
     const clean = cleanTag(profile.player.tag);
     const fileName = mode === 'profile' ? `brawlhub-${clean}.png` : `brawlhub-${clean}-${mode}.png`;
-    const label = mode === 'profile' ? 'Player card' : `${mode.replaceAll('_', ' ')} card`;
+    const label =
+      mode === 'profile'
+        ? 'Player card'
+        : seasonImage !== null
+          ? 'Season progress with stored graphs'
+          : `${mode.replaceAll('_', ' ')} card`;
 
     const attachment = new AttachmentBuilder(image, { name: fileName });
     await interaction.editReply({

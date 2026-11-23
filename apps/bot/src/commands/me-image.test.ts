@@ -20,6 +20,12 @@ const mocks = vi.hoisted(() => ({
     buildPlayerCardImage: vi.fn(async (): Promise<Buffer> => Buffer.from('fake-png')),
     selectTopBrawlers: vi.fn(),
   },
+  charts: {
+    loadOrRenderChart: vi.fn(),
+  },
+  seasonCard: {
+    buildSeasonProgressImage: vi.fn(async (): Promise<Buffer> => Buffer.from('season-png')),
+  },
 }));
 
 vi.mock('../players/service', () => mocks.service);
@@ -32,6 +38,8 @@ vi.mock('../config.js', () => ({
 vi.mock('../verification/index', () => mocks.verification);
 vi.mock('../metadata/assets.js', () => mocks.assets);
 vi.mock('../players/card.js', () => mocks.card);
+vi.mock('../images/chart-service.js', () => mocks.charts);
+vi.mock('../images/season-card.js', () => mocks.seasonCard);
 
 import { handleMeImage } from './me-image';
 
@@ -108,6 +116,8 @@ beforeEach(() => {
   mocks.assets.resolveBrawlerPortraitUrl.mockResolvedValue(null);
   mocks.card.buildPlayerCardImage.mockResolvedValue(Buffer.from('fake-png'));
   mocks.card.selectTopBrawlers.mockImplementation((profile: any) => profile.brawlers.slice(0, 3));
+  mocks.charts.loadOrRenderChart.mockResolvedValue({ kind: 'not-found', tag: '2C0Y' });
+  mocks.seasonCard.buildSeasonProgressImage.mockResolvedValue(Buffer.from('season-png'));
 });
 
 describe('/me image', () => {
@@ -253,6 +263,34 @@ describe('/me image', () => {
         },
       },
     );
+  });
+
+  it('builds a graph-heavy season image when stored charts are available', async () => {
+    mocks.charts.loadOrRenderChart
+      .mockResolvedValueOnce({ kind: 'ok', image: { png: Buffer.from('trophy-chart') } })
+      .mockResolvedValueOnce({ kind: 'ok', image: { png: Buffer.from('activity-chart') } });
+    const interaction = chatInteraction({ tag: '#2c0y', mode: 'season' });
+
+    await handleMeImage(interaction);
+
+    expect(mocks.charts.loadOrRenderChart).toHaveBeenCalledTimes(2);
+    expect(mocks.charts.loadOrRenderChart.mock.calls.map((call) => call[0].option)).toEqual([
+      'trophies',
+      'activity',
+    ]);
+    expect(mocks.seasonCard.buildSeasonProgressImage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trophyChartPng: Buffer.from('trophy-chart'),
+        activityChartPng: Buffer.from('activity-chart'),
+        seasonWindow: {
+          start: '2026-11-05T08:00:00.000Z',
+          end: '2026-12-03T08:00:00.000Z',
+        },
+      }),
+    );
+    expect(mocks.card.buildPlayerCardImage).not.toHaveBeenCalled();
+    expect(payload(interaction).content).toContain('Season progress with stored graphs');
+    expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y-season.png');
   });
 
   it('loads stored snapshots for the history preset', async () => {
