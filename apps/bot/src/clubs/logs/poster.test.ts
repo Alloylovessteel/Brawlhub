@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
     markClubLogEventsDelivered: vi.fn(),
     loadClubLogs: vi.fn(),
     readPostedClubLogDigests: vi.fn(),
+    claimClubLogDigestWindows: vi.fn(),
+    releaseClubLogDigestClaims: vi.fn(),
     markClubLogDigestPosted: vi.fn(),
   },
   digest: { dueClubLogDigests: vi.fn() },
@@ -143,6 +145,13 @@ beforeEach(() => {
   mocks.service.loadClubLogs.mockResolvedValue([log()]);
   mocks.service.readPostedClubLogDigests.mockReset();
   mocks.service.readPostedClubLogDigests.mockResolvedValue(new Set<string>());
+  mocks.service.claimClubLogDigestWindows.mockReset();
+  mocks.service.claimClubLogDigestWindows.mockResolvedValue({
+    claimId: 'claim-1',
+    keys: new Set([`${LOG_ID}:today:2026-11-21`]),
+  });
+  mocks.service.releaseClubLogDigestClaims.mockReset();
+  mocks.service.releaseClubLogDigestClaims.mockResolvedValue(undefined);
   mocks.service.markClubLogDigestPosted.mockReset();
   mocks.service.markClubLogDigestPosted.mockResolvedValue(undefined);
   mocks.digest.dueClubLogDigests.mockReset();
@@ -271,6 +280,18 @@ describe('runClubLogDigests', () => {
       seasonStartIso: SEASON_START,
       seasonEndIso: SEASON_END,
     });
+    expect(mocks.service.claimClubLogDigestWindows).toHaveBeenCalledWith(
+      GUILD_ID,
+      [
+        {
+          logId: LOG_ID,
+          period: 'today',
+          periodKey: '2026-11-21',
+          channelId: CHANNEL_ID,
+        },
+      ],
+      { now: NOV_22 },
+    );
     expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
       guildId: GUILD_ID,
       tag: 'ALPHA',
@@ -304,6 +325,7 @@ describe('runClubLogDigests', () => {
 
     await runClubLogDigests(NOV_22);
 
+    expect(mocks.service.claimClubLogDigestWindows).not.toHaveBeenCalled();
     expect(mocks.post).not.toHaveBeenCalled();
     expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
   });
@@ -317,6 +339,10 @@ describe('runClubLogDigests', () => {
       label: 'Nov 5 – Dec 2, 2026',
     };
     mocks.digest.dueClubLogDigests.mockReturnValue([seasonBoundary]);
+    mocks.service.claimClubLogDigestWindows.mockResolvedValue({
+      claimId: 'claim-season',
+      keys: new Set([`${LOG_ID}:season:2026-12-03`]),
+    });
 
     await runClubLogDigests(new Date('2026-12-04T00:00:00.000Z'));
 
@@ -339,13 +365,42 @@ describe('runClubLogDigests', () => {
     ]);
   });
 
-  it('keeps a window pending when a post fails', async () => {
+  it('releases the claim when a post fails so the window stays retryable', async () => {
     mocks.post.mockRejectedValue(new Error('rate limited'));
 
     await runClubLogDigests(NOV_22);
 
+    expect(mocks.service.releaseClubLogDigestClaims).toHaveBeenCalledWith(GUILD_ID, 'claim-1', [
+      `${LOG_ID}:today:2026-11-21`,
+    ]);
     expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
     expect(mocks.logger.warn).toHaveBeenCalledOnce();
+  });
+
+  it('does not post or render a window it did not win', async () => {
+    mocks.service.claimClubLogDigestWindows.mockResolvedValue({
+      claimId: 'claim-lost',
+      keys: new Set<string>(),
+    });
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.pageView.loadClubLogView).not.toHaveBeenCalled();
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
+    expect(mocks.service.releaseClubLogDigestClaims).not.toHaveBeenCalled();
+  });
+
+  it('keeps the claim when the Discord post succeeded but the ledger write failed', async () => {
+    mocks.service.markClubLogDigestPosted.mockRejectedValue(new Error('ledger down'));
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.post).toHaveBeenCalledOnce();
+    expect(mocks.service.releaseClubLogDigestClaims).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).toHaveBeenCalledOnce();
+    const warning = mocks.logger.warn.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(warning['keys']).toEqual([`${LOG_ID}:today:2026-11-21`]);
   });
 
   it('does nothing when no window is due', async () => {

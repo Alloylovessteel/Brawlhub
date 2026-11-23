@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createTrustedClient } from '@brawlhub/database';
 import { recordAdminAudit, AdminServiceError } from '../../admin/service';
 import type { AdminActor } from '../../admin/types';
@@ -30,6 +31,13 @@ const MAX_EVENTS_PER_LOG = 20;
 const EVENT_SCAN_PAGE_SIZE = 500;
 const CLUB_CAPACITY = 30;
 const EVENT_KINDS: readonly ClubLogEventKind[] = ['membership', 'role', 'capacity'];
+/**
+ * Pending digests are claimed with an invisible sentinel in the same ledger row.
+ * Claims older than this are reclaimed so a crashed process cannot block a
+ * window forever; a live render/post normally finishes in seconds.
+ */
+const DIGEST_CLAIM_PREFIX = 'claim:';
+const DIGEST_CLAIM_TTL_MS = 10 * 60_000;
 const INTEGER_FORMATTER = new Intl.NumberFormat('en-US');
 
 export interface ClubLogServiceOptions {
@@ -803,8 +811,122 @@ export interface ClubLogDigestPost {
   readonly messageId: string;
 }
 
+/** The minimum information needed to claim one completed digest window. */
+export interface ClubLogDigestClaimInput {
+  readonly logId: string;
+  readonly period: ClubLogPeriod;
+  readonly periodKey: string;
+  readonly channelId: string;
+}
+
+export interface ClubLogDigestClaimResult {
+  /** Identifies this process's sentinels so failed posts can release only their own claims. */
+  readonly claimId: string;
+  /** Ledger keys this caller won; every other key is already owned by another poll. */
+  readonly keys: ReadonlySet<string>;
+}
+
+export interface ClubLogDigestClaimOptions extends ClubLogServiceOptions {
+  /** Clock used to reclaim abandoned claims in tests and scheduling code. */
+  readonly now?: Date;
+}
+
 function digestKey(logId: string, period: ClubLogPeriod, periodKey: string): string {
   return `${logId}:${period}:${periodKey}`;
+}
+
+function digestClaimMessageId(claimId: string, key: string): string {
+  return `${DIGEST_CLAIM_PREFIX}${claimId}:${key}`;
+}
+
+function isDigestClaimMessageId(messageId: string | null): boolean {
+  return messageId !== null && messageId.startsWith(DIGEST_CLAIM_PREFIX);
+}
+
+/**
+ * Atomically claim the completed windows this poll may post. Duplicate-key
+ * inserts lose silently, so only one worker ever wins a given ledger key.
+ * Sentinels are deliberately invisible to `readPostedClubLogDigests`.
+ */
+export async function claimClubLogDigestWindows(
+  guildId: string,
+  windows: readonly ClubLogDigestClaimInput[],
+  options: ClubLogDigestClaimOptions = {},
+): Promise<ClubLogDigestClaimResult> {
+  const parsedGuildId = requireGuildId(guildId);
+  if (windows.length === 0) return { claimId: '', keys: new Set() };
+  const db = dbFor(options);
+
+  const now = options.now;
+  const nowMs = now instanceof Date && Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
+  const staleBefore = new Date(nowMs - DIGEST_CLAIM_TTL_MS).toISOString();
+  const reclaimed = await db
+    .from('guild_club_log_digest_posts')
+    .delete()
+    .eq('guild_id', parsedGuildId)
+    .like('message_id', `${DIGEST_CLAIM_PREFIX}%`)
+    .lt('created_at', staleBefore);
+  requireOk(reclaimed.error, 'Reclaim stale club log digest claims');
+
+  const allowedLogIds = new Set((await loadClubLogRows(parsedGuildId, { db })).map((log) => log.id));
+  const unique = new Map<string, ClubLogDigestClaimInput>();
+  for (const window of windows) {
+    if (!allowedLogIds.has(window.logId)) continue;
+    unique.set(digestKey(window.logId, window.period, window.periodKey), window);
+  }
+  if (unique.size === 0) return { claimId: '', keys: new Set() };
+
+  const claimId = randomUUID();
+  const rows = [...unique].map(([key, window]) => ({
+    guild_id: parsedGuildId,
+    log_id: window.logId,
+    period: window.period,
+    period_key: window.periodKey,
+    channel_id: window.channelId,
+    message_id: digestClaimMessageId(claimId, key),
+  }));
+  const inserted = await db
+    .from('guild_club_log_digest_posts')
+    .upsert(rows, {
+      onConflict: 'guild_id,log_id,period,period_key',
+      ignoreDuplicates: true,
+    })
+    .select('log_id, period, period_key, message_id');
+  requireOk(inserted.error, 'Claim club log digest windows');
+
+  const keys = new Set<string>();
+  for (const item of inserted.data ?? []) {
+    const row = record(item);
+    const logId = eventId(row?.['log_id']);
+    const period = asString(row?.['period']);
+    const periodKey = asString(row?.['period_key']);
+    if (logId === null || period === null || !isClubLogPeriod(period) || periodKey === null) {
+      continue;
+    }
+    const key = digestKey(logId, period, periodKey);
+    if (asString(row?.['message_id']) !== digestClaimMessageId(claimId, key)) continue;
+    keys.add(key);
+  }
+  return { claimId, keys };
+}
+
+/** Release only this caller's sentinels after a failed post, leaving real posts untouched. */
+export async function releaseClubLogDigestClaims(
+  guildId: string,
+  claimId: string,
+  keys: readonly string[],
+  options: ClubLogServiceOptions = {},
+): Promise<void> {
+  const parsedGuildId = requireGuildId(guildId);
+  if (claimId === '' || keys.length === 0) return;
+  const db = dbFor(options);
+  const messageIds = [...new Set(keys)].map((key) => digestClaimMessageId(claimId, key));
+  const released = await db
+    .from('guild_club_log_digest_posts')
+    .delete()
+    .eq('guild_id', parsedGuildId)
+    .in('message_id', messageIds);
+  requireOk(released.error, 'Release club log digest claims');
 }
 
 /** Read which completed windows this guild already posted, for restart-safe polling. */
@@ -816,7 +938,7 @@ export async function readPostedClubLogDigests(
   const db = dbFor(options);
   const result = await db
     .from('guild_club_log_digest_posts')
-    .select('log_id, period, period_key')
+    .select('log_id, period, period_key, message_id')
     .eq('guild_id', parsedGuildId);
   requireOk(result.error, 'Read club log digest posts');
   const keys = new Set<string>();
@@ -825,6 +947,7 @@ export async function readPostedClubLogDigests(
     const logId = eventId(row?.['log_id']);
     const period = asString(row?.['period']);
     const periodKey = asString(row?.['period_key']);
+    if (isDigestClaimMessageId(asString(row?.['message_id']))) continue;
     if (logId === null || period === null || !isClubLogPeriod(period) || periodKey === null) {
       continue;
     }
@@ -833,7 +956,11 @@ export async function readPostedClubLogDigests(
   return keys;
 }
 
-/** Record a posted digest. Unknown log IDs are ignored so guild scope cannot be escaped. */
+/**
+ * Overwrite a claim sentinel with the real Discord message ID. Duplicate
+ * inserts are intentionally not ignored here, or a pending claim would block
+ * its own completion forever.
+ */
 export async function markClubLogDigestPosted(
   guildId: string,
   posts: readonly ClubLogDigestPost[],
@@ -856,7 +983,7 @@ export async function markClubLogDigestPosted(
   if (rows.length === 0) return;
   const saved = await db.from('guild_club_log_digest_posts').upsert(rows, {
     onConflict: 'guild_id,log_id,period,period_key',
-    ignoreDuplicates: true,
+    ignoreDuplicates: false,
   });
   requireOk(saved.error, 'Record club log digest post');
 }

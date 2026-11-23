@@ -7,12 +7,15 @@ import { dueClubLogDigests, type ClubLogDigestBoundary } from './digest';
 import { buildClubLogDigestImage, buildClubLogEventImage } from './image';
 import { loadClubLogView } from './page-view';
 import {
+  claimClubLogDigestWindows,
   loadClubLogs,
   loadUndeliveredClubLogEvents,
   markClubLogDigestPosted,
   markClubLogEventsDelivered,
   readClubLogGuildIds,
   readPostedClubLogDigests,
+  releaseClubLogDigestClaims,
+  type ClubLogDigestClaimInput,
   type ClubLogDigestPost,
 } from './service';
 
@@ -166,8 +169,33 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
         }
       }
 
+      if (pending.size === 0) continue;
+      const claimInputs: ClubLogDigestClaimInput[] = [...pending.values()].map(
+        ({ log, boundary }) => ({
+          logId: log.id,
+          period: boundary.period,
+          periodKey: boundary.periodKey,
+          channelId: log.channelId,
+        }),
+      );
+      let claim: Awaited<ReturnType<typeof claimClubLogDigestWindows>>;
+      try {
+        // Claim before any Discord call so overlapping polls and restarts cannot
+        // both render the same completed window.
+        claim = await claimClubLogDigestWindows(guildId, claimInputs, { now });
+      } catch (error) {
+        logger.warn('Club trophy digest claims could not be acquired', {
+          guildId,
+          error: safeError(error, token),
+        });
+        continue;
+      }
+      if (claim.keys.size === 0) continue;
+
       const saved: ClubLogDigestPost[] = [];
-      for (const { log, boundary } of pending.values()) {
+      const failedKeys: string[] = [];
+      for (const [key, { log, boundary }] of pending) {
+        if (!claim.keys.has(key)) continue;
         try {
           const page = await loadClubLogView({
             guildId,
@@ -201,7 +229,8 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
             messageId,
           });
         } catch (error) {
-          logger.warn('Club trophy digest post failed; window stays pending for retry', {
+          failedKeys.push(key);
+          logger.warn('Club trophy digest post failed; claim is released for retry', {
             guildId,
             logId: log.id,
             period: boundary.period,
@@ -211,7 +240,30 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
           });
         }
       }
-      if (saved.length > 0) await markClubLogDigestPosted(guildId, saved);
+      if (failedKeys.length > 0) {
+        try {
+          await releaseClubLogDigestClaims(guildId, claim.claimId, failedKeys);
+        } catch (error) {
+          logger.warn('Club trophy digest claims could not be released', {
+            guildId,
+            keys: failedKeys,
+            error: safeError(error, token),
+          });
+        }
+      }
+      if (saved.length > 0) {
+        try {
+          await markClubLogDigestPosted(guildId, saved);
+        } catch (error) {
+          // The messages are already live. Keep the claim sentinel so stale
+          // recovery is the only path that can revisit this window.
+          logger.warn('Club trophy digest ledger write failed; claim kept for recovery', {
+            guildId,
+            keys: saved.map((post) => `${post.logId}:${post.period}:${post.periodKey}`),
+            error: safeError(error, token),
+          });
+        }
+      }
     } catch (error) {
       logger.warn('Club digests could not be processed for guild', {
         guildId,

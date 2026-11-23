@@ -20,6 +20,8 @@ vi.mock('@brawlhub/database', () => {
     private filters: Record<string, unknown> = {};
     private inValues: Call['inValues'] = null;
     private orValue: string | null = null;
+    private likeValue: Call['likeValue'] = null;
+    private ltValue: Call['ltValue'] = null;
     private gteValue: Call['gteValue'] = null;
     private orderBy: Call['orderBy'] = null;
     private limitValue: number | null = null;
@@ -76,6 +78,16 @@ vi.mock('@brawlhub/database', () => {
       return this;
     }
 
+    like(column: string, value: string): this {
+      this.likeValue = { column, value };
+      return this;
+    }
+
+    lt(column: string, value: unknown): this {
+      this.ltValue = { column, value };
+      return this;
+    }
+
     order(column: string, options?: unknown): this {
       this.orderBy = { column, options };
       return this;
@@ -109,6 +121,8 @@ vi.mock('@brawlhub/database', () => {
         filters: { ...this.filters },
         inValues: this.inValues,
         orValue: this.orValue,
+        likeValue: this.likeValue,
+        ltValue: this.ltValue,
         gteValue: this.gteValue,
         orderBy: this.orderBy,
         limit: this.limitValue,
@@ -142,11 +156,13 @@ vi.mock('../../admin/service', () => {
 
 import {
   addClubLog,
+  claimClubLogDigestWindows,
   loadClubLogs,
   loadUndeliveredClubLogEvents,
   markClubLogDigestPosted,
   markClubLogEventsDelivered,
   readPostedClubLogDigests,
+  releaseClubLogDigestClaims,
   removeClubLog,
 } from './service';
 
@@ -158,6 +174,8 @@ interface Call {
   readonly filters: Record<string, unknown>;
   readonly inValues: { column: string; values: unknown[] } | null;
   readonly orValue: string | null;
+  readonly likeValue: { column: string; value: string } | null;
+  readonly ltValue: { column: string; value: unknown } | null;
   readonly gteValue: { column: string; value: unknown } | null;
   readonly orderBy: { column: string; options: unknown } | null;
   readonly limit: number | null;
@@ -709,11 +727,12 @@ describe('digest post ledger', () => {
       expect(call.filters['guild_id']).toBe(GUILD_ID);
       return {
         data: [
-          { log_id: LOG_ID, period: 'today', period_key: '2026-11-21' },
-          { log_id: LOG_ID, period: 'week', period_key: '2026-11-16' },
-          { log_id: LOG_ID, period: 'month', period_key: '2026-11-01' },
-          { log_id: LOG_ID, period: 'nonsense', period_key: '2026-11-01' },
-          { period: 'today', period_key: '2026-11-20' },
+          { log_id: LOG_ID, period: 'today', period_key: '2026-11-21', message_id: 'message-1' },
+          { log_id: LOG_ID, period: 'week', period_key: '2026-11-16', message_id: 'message-2' },
+          { log_id: LOG_ID, period: 'today', period_key: '2026-11-22', message_id: 'claim:abc' },
+          { log_id: LOG_ID, period: 'month', period_key: '2026-11-01', message_id: 'message-3' },
+          { log_id: LOG_ID, period: 'nonsense', period_key: '2026-11-01', message_id: 'message-4' },
+          { period: 'today', period_key: '2026-11-20', message_id: 'message-5' },
         ],
       };
     });
@@ -733,7 +752,7 @@ describe('digest post ledger', () => {
     setHandler('guild_club_log_digest_posts:upsert', (call) => {
       expect(call.options).toEqual({
         onConflict: 'guild_id,log_id,period,period_key',
-        ignoreDuplicates: true,
+        ignoreDuplicates: false,
       });
       expect(call.payload).toEqual([
         {
@@ -766,5 +785,86 @@ describe('digest post ledger', () => {
     ]);
 
     expect(callsFor('guild_club_log_digest_posts', 'upsert')).toHaveLength(1);
+  });
+
+  it('claims only winning windows with invisible sentinels and reclaims stale ones', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [] }));
+    setHandler('guild_club_log_digest_posts:delete', () => ({ data: [] }));
+    setHandler('guild_club_log_digest_posts:upsert', (call) => ({
+      data: (call.payload as Array<Record<string, unknown>>).map((row) => ({ ...row })),
+    }));
+
+    const result = await claimClubLogDigestWindows(
+      GUILD_ID,
+      [
+        { logId: LOG_ID, period: 'today', periodKey: '2026-11-21', channelId: CHANNEL_ID },
+        { logId: LOG_ID, period: 'week', periodKey: '2026-11-16', channelId: CHANNEL_ID },
+        {
+          logId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          period: 'today',
+          periodKey: '2026-11-21',
+          channelId: CHANNEL_ID,
+        },
+      ],
+      { now: new Date('2026-11-22T00:10:00.000Z') },
+    );
+
+    expect(result.claimId).not.toBe('');
+    expect([...result.keys].sort()).toEqual([
+      `${LOG_ID}:today:2026-11-21`,
+      `${LOG_ID}:week:2026-11-16`,
+    ]);
+    const stale = callsFor('guild_club_log_digest_posts', 'delete')[0];
+    expect(stale?.filters['guild_id']).toBe(GUILD_ID);
+    expect(stale?.likeValue).toEqual({ column: 'message_id', value: 'claim:%' });
+    expect(stale?.ltValue).toEqual({
+      column: 'created_at',
+      value: '2026-11-22T00:00:00.000Z',
+    });
+    const insert = callsFor('guild_club_log_digest_posts', 'upsert')[0];
+    expect(insert?.options).toEqual({
+      onConflict: 'guild_id,log_id,period,period_key',
+      ignoreDuplicates: true,
+    });
+    const rows = insert?.payload as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => String(row['message_id']).startsWith('claim:'))).toBe(true);
+    expect(rows.every((row) => row['guild_id'] === GUILD_ID)).toBe(true);
+  });
+
+  it('returns only keys this caller actually inserted', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [] }));
+    setHandler('guild_club_log_digest_posts:delete', () => ({ data: [] }));
+    setHandler('guild_club_log_digest_posts:upsert', (call) => ({
+      data: (call.payload as Array<Record<string, unknown>>)
+        .slice(0, 1)
+        .map((row) => ({ ...row })),
+    }));
+
+    const result = await claimClubLogDigestWindows(GUILD_ID, [
+      { logId: LOG_ID, period: 'today', periodKey: '2026-11-21', channelId: CHANNEL_ID },
+      { logId: LOG_ID, period: 'week', periodKey: '2026-11-16', channelId: CHANNEL_ID },
+    ]);
+
+    expect([...result.keys]).toEqual([`${LOG_ID}:today:2026-11-21`]);
+  });
+
+  it('releases only the exact sentinels owned by this claim', async () => {
+    setHandler('guild_club_log_digest_posts:delete', () => ({ data: [] }));
+    const firstKey = `${LOG_ID}:today:2026-11-21`;
+    const secondKey = `${LOG_ID}:week:2026-11-16`;
+
+    await releaseClubLogDigestClaims(GUILD_ID, 'claim-1', [firstKey, secondKey]);
+
+    const released = callsFor('guild_club_log_digest_posts', 'delete')[0];
+    expect(released?.filters['guild_id']).toBe(GUILD_ID);
+    expect(released?.inValues).toEqual({
+      column: 'message_id',
+      values: [`claim:claim-1:${firstKey}`, `claim:claim-1:${secondKey}`],
+    });
   });
 });
