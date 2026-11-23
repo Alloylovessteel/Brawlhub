@@ -89,17 +89,17 @@ export const competitionCommandData = new SlashCommandBuilder()
       )
       .addStringOption((option) =>
         option
+          .setName('club')
+          .setDescription('Registered club restriction')
+          .setAutocomplete(true)
+          .setRequired(true),
+      )
+      .addStringOption((option) =>
+        option
           .setName('description')
           .setDescription('Rules shown on the competition')
           .setRequired(false)
           .setMaxLength(1000),
-      )
-      .addStringOption((option) =>
-        option
-          .setName('club')
-          .setDescription('Optional registered club restriction')
-          .setAutocomplete(true)
-          .setRequired(false),
       )
       .addIntegerOption((option) =>
         option
@@ -268,6 +268,8 @@ async function requirePlayer(playerId: string): Promise<PlayerIdentity> {
 export async function handleCompetition(interaction: ChatInputCommandInteraction): Promise<void> {
   const subcommand = interaction.options.getSubcommand(false);
   try {
+    // All service calls below can exceed Discord's initial-response window.
+    await interaction.deferReply();
     if (subcommand === 'create') {
       const competition = await createCompetition({
         discordUserId: interaction.user.id,
@@ -278,7 +280,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
         clubId: optionString(interaction, 'club') || null,
         goal: optionInteger(interaction, 'goal'),
       }, { guildId: interaction.guildId });
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [buildCompetitionCreatedEmbed(competition)],
         allowedMentions: { parse: [] },
       });
@@ -300,7 +302,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
       if (competition === null) {
         throw new CompetitionServiceError('not_found', 'That competition could not be found.');
       }
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [buildCompetitionJoinedEmbed(competition, player, result, getBotConfig())],
         allowedMentions: { parse: [] },
       });
@@ -327,7 +329,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
       if (competition === null) {
         throw new CompetitionServiceError('not_found', 'That competition could not be found.');
       }
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [buildCompetitionSubmittedEmbed(competition, player, result, getBotConfig())],
         allowedMentions: { parse: [] },
       });
@@ -340,7 +342,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
         interaction.guildId,
         1,
       );
-      await interaction.reply({ ...payload, allowedMentions: { parse: [] } });
+      await interaction.editReply({ ...payload, allowedMentions: { parse: [] } });
       return;
     }
 
@@ -349,7 +351,7 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
         discordUserId: interaction.user.id,
         competitionId: optionString(interaction, 'competition'),
       }, { guildId: interaction.guildId });
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [buildCompetitionEndedEmbed(competition, interaction.user.id)],
         allowedMentions: { parse: [] },
       });
@@ -357,11 +359,16 @@ export async function handleCompetition(interaction: ChatInputCommandInteraction
     }
 
     if (subcommand === 'list') {
-      await interaction.reply({ ...(await loadListPage(interaction.guildId, 1)), allowedMentions: { parse: [] } });
+      await interaction.editReply({ ...(await loadListPage(interaction.guildId, 1)), allowedMentions: { parse: [] } });
       return;
     }
 
-    await interaction.reply({ content: 'Choose a competition subcommand.', flags: 64 });
+    // Discord's editReply typings omit the ephemeral flag, but the interaction
+    // was deferred without it; 64 keeps this fallback private as before.
+    await interaction.editReply({
+      content: 'Choose a competition subcommand.',
+      flags: 64 as never,
+    });
   } catch (error) {
     try {
       await replyCompetitionError(interaction, error);

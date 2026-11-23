@@ -257,6 +257,36 @@ describe('membership service — player search', () => {
     expect(byTag.value.entries).toHaveLength(1);
   });
 
+  it('applies guild scope before the tracked-player row cap', async () => {
+    const alpha = playerRow({ name: 'Alpha In Guild' });
+    const foreign = Array.from({ length: 30 }, (_, index) =>
+      playerRow({
+        id: `foreign-${index}`,
+        tag: `F${index}`,
+        name: `Alpha Foreign ${String(index).padStart(2, '0')}`,
+      }),
+    );
+    const db = createFakeDb(baseTables());
+    db.tables.clubs = [
+      clubRef(CLUB_A, { guild_id: 'guild-1' }),
+      clubRef(CLUB_B, { guild_id: 'guild-other' }),
+    ];
+    db.tables.players = [...foreign, alpha];
+    db.tables.club_memberships = [
+      membershipRow(alpha, CLUB_A),
+      ...foreign.map((player) => membershipRow(player, CLUB_B)),
+    ];
+
+    const result = await searchTrackedMembersByPlayer('alpha', {
+      ...options(db),
+      guildId: 'guild-1',
+    });
+
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.entries.map((entry) => entry.playerTag)).toEqual(['2C0Y']);
+  });
+
   it('prefers the current club when a player has multiple memberships', async () => {
     const alpha = playerRow();
     const db = createFakeDb(baseTables());

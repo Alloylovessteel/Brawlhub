@@ -502,8 +502,7 @@ async function readPlayerIdsInClubs(clubIds: readonly string[], db: DatabaseClie
   const { data, error } = await db
     .from('club_memberships')
     .select('player_id')
-    .in('club_id', [...new Set(clubIds)])
-    .limit(10000);
+    .in('club_id', [...new Set(clubIds)]);
   requireOk(error, 'Read guild members');
   const ids = new Set<string>();
   for (const row of data ?? []) {
@@ -554,23 +553,29 @@ export async function searchPlayers(
 
   const cleaned = query.trim().replace(/^#+/, '');
   const escaped = escapeIlike(cleaned);
-  let builder = db.from('players').select(PLAYER_COLUMNS).order('name', { ascending: true }).limit(25);
+
+  // Guild visibility must be applied before the row cap: otherwise 25 earlier
+  // matches from other guilds can hide every player this guild can actually see.
+  const guildClubIds = await readGuildClubIds(guildId, db);
+  if (guildClubIds.length === 0) return [];
+  const allowedPlayerIds = [...await readPlayerIdsInClubs(guildClubIds, db)];
+  if (allowedPlayerIds.length === 0) return [];
+
+  let builder = db
+    .from('players')
+    .select(PLAYER_COLUMNS)
+    .in('id', allowedPlayerIds)
+    .order('name', { ascending: true })
+    .limit(25);
   if (escaped !== '') {
     builder = builder.or(`tag.ilike.%${escaped}%,name.ilike.%${escaped}%`);
   }
 
   const { data, error } = await builder;
   requireOk(error, 'Search players');
-  let players = (data ?? [])
+  return (data ?? [])
     .map((row: unknown) => parsePlayerRow(row))
     .filter((row): row is PlayerIdentity => row !== null);
-
-  const guildClubIds = await readGuildClubIds(guildId, db);
-  if (guildClubIds !== null) {
-    const allowedPlayerIds = await readPlayerIdsInClubs(guildClubIds, db);
-    players = players.filter((player) => player.id !== null && allowedPlayerIds.has(player.id));
-  }
-  return players;
 }
 
 async function readCompletedSnapshots(

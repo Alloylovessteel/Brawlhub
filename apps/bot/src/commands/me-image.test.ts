@@ -366,7 +366,7 @@ describe('/me image', () => {
     expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y-brawler.png');
   });
 
-  it('builds the season graph from all stored ranked and trophy battles', async () => {
+  it('passes all stored battles through while filtering mode stats to the season', async () => {
     mocks.service.loadPlayerHistory.mockResolvedValue({
       kind: 'ok',
       value: {
@@ -376,6 +376,12 @@ describe('/me image', () => {
       },
     });
     const battles = [
+      {
+        id: 'before-season',
+        battleTime: '2026-11-04T23:59:00.000Z',
+        mode: 'heist',
+        result: 'victory',
+      },
       {
         id: 'b1',
         battleTime: '2026-11-05T09:00:00.000Z',
@@ -398,6 +404,12 @@ describe('/me image', () => {
         id: 'b4',
         battleTime: '2026-11-08T09:00:00.000Z',
         mode: 'brawlBall',
+        result: 'victory',
+      },
+      {
+        id: 'after-season',
+        battleTime: '2026-12-04T00:00:00.000Z',
+        mode: 'knockout',
         result: 'victory',
       },
     ];

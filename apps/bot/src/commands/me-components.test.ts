@@ -161,6 +161,21 @@ describe('interactive /me', () => {
     expect(editPayload(rotatedClick).content).toBeNull();
   });
 
+  it('never embeds the player tag in component custom IDs', async () => {
+    const command = chatInteraction();
+    await handleMe(command);
+
+    const sectionIds = customIds(editPayload(command));
+    expect(sectionIds.length).toBeGreaterThan(0);
+    expect(sectionIds.every((id) => !id.toLowerCase().includes('2c0y'))).toBe(true);
+    expect(nonceFrom(editPayload(command))).toMatch(/^[a-f0-9]{16}$/);
+
+    const brawlersClick = componentInteraction(`me:section:brawlers:${nonceFrom(editPayload(command))}`);
+    await handleMeComponent(brawlersClick);
+    const allIds = [...sectionIds, ...customIds(editPayload(brawlersClick))];
+    expect(allIds.every((id) => !id.toLowerCase().includes('2c0y'))).toBe(true);
+  });
+
   it('ignores an identical double-click without expiring the view', async () => {
     const command = chatInteraction();
     await handleMe(command);

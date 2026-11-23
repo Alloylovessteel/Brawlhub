@@ -31,7 +31,8 @@ export type ChartFailure =
   | { readonly kind: 'invalid-tag' }
   | { readonly kind: 'not-found'; readonly tag: string }
   | { readonly kind: 'unregistered'; readonly tag: string }
-  | { readonly kind: 'no-default' };
+  | { readonly kind: 'no-default' }
+  | { readonly kind: 'no-data' };
 
 export interface GeneratedChartImage {
   readonly png: Buffer;
@@ -165,6 +166,9 @@ async function buildPlayerModel(
   const losses = battleView?.losses ?? 0;
   const draws = battleView?.draws ?? 0;
   const battleCount = battleView?.battles.length ?? 0;
+  if (history.value.points.length === 0 && battleCount === 0) {
+    return { failure: { kind: 'no-data' }, clubId: null };
+  }
 
   let series: readonly ChartDatum[] = [];
   switch (input.option) {
@@ -260,6 +264,7 @@ async function buildClubModel(
   if (result.kind !== 'ok') return { failure: clubFailure(result), clubId: null };
 
   const view = result.value;
+  if (view.points.length === 0) return { failure: { kind: 'no-data' }, clubId: null };
   const subject = `#${cleanTag(view.club.tag)}`;
   const storedRange = periodLabel(period);
   let series: readonly ChartDatum[] = [];
@@ -453,5 +458,7 @@ export function chartFailureMessage(failure: ChartFailure): string {
       return `Club #${failure.tag} is not registered in this server.`;
     case 'no-default':
       return 'There is no default club in this server. Pass a club tag.';
+    case 'no-data':
+      return 'No stored chart data yet for this selection — syncs populate these charts.';
   }
 }

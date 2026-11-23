@@ -20,7 +20,7 @@ vi.mock('./chart-render.js', () => ({
 import { loadHistoryView } from '../clubs/service.js';
 import { loadPlayerBattles, loadPlayerHistory } from '../players/service.js';
 import { renderChart } from './chart-render.js';
-import { loadOrRenderChart } from './chart-service.js';
+import { chartFailureMessage, loadOrRenderChart } from './chart-service.js';
 
 type QueryResult = { readonly data: unknown[] | null; readonly error: { message: string } | null };
 
@@ -169,6 +169,51 @@ describe('loadOrRenderChart', () => {
     expect(secondResult.kind).toBe('ok');
     expect(renderChart).toHaveBeenCalledTimes(1);
     expect(second.insert).not.toHaveBeenCalled();
+  });
+
+  it('reports no stored data without rendering or caching an empty player chart', async () => {
+    vi.mocked(loadPlayerHistory).mockResolvedValue({
+      ...PLAYER_HISTORY,
+      value: { ...PLAYER_HISTORY.value, points: [] },
+    } as never);
+    vi.mocked(loadPlayerBattles).mockResolvedValue({
+      ...PLAYER_BATTLES,
+      value: { ...PLAYER_BATTLES.value, battles: [] },
+    } as never);
+    const { db, insert } = makeDb();
+
+    const result = await loadOrRenderChart({
+      db,
+      guildId: 'guild-1',
+      kind: 'player',
+      tag: 'PLAYER1',
+      option: 'trophies',
+    });
+
+    expect(result).toEqual({ kind: 'failure', failure: { kind: 'no-data' } });
+    expect(chartFailureMessage({ kind: 'no-data' })).toContain('No stored chart data');
+    expect(renderChart).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it('reports no stored data for a club with empty history', async () => {
+    vi.mocked(loadHistoryView).mockResolvedValue({
+      kind: 'ok',
+      value: { club: { id: 'club-1', tag: 'CLUB1', name: 'Club' }, points: [] },
+    } as never);
+    const { db, insert } = makeDb();
+
+    const result = await loadOrRenderChart({
+      db,
+      guildId: 'guild-1',
+      kind: 'club',
+      tag: 'CLUB1',
+      option: 'trophies',
+    });
+
+    expect(result).toEqual({ kind: 'failure', failure: { kind: 'no-data' } });
+    expect(renderChart).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
   });
 
   it('maps a stored player lookup failure without calling the renderer', async () => {

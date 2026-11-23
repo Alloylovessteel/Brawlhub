@@ -122,7 +122,7 @@ function chatInteraction(
   subcommand: string | null,
   options: Record<string, string | number | null> = {},
 ) {
-  return {
+  const interaction = {
     user: { id: DISCORD_ID },
     guildId: 'guild-1',
     options: {
@@ -132,9 +132,14 @@ function chatInteraction(
     },
     replied: false,
     deferred: false,
+    deferReply: vi.fn(async () => {
+      interaction.deferred = true;
+    }),
+    editReply: vi.fn(async () => undefined),
     reply: vi.fn(async () => undefined),
     followUp: vi.fn(async () => undefined),
-  } as unknown as ChatInputCommandInteraction;
+  };
+  return interaction as unknown as ChatInputCommandInteraction;
 }
 
 function buttonInteraction(customId: string) {
@@ -199,8 +204,9 @@ describe('/competition command registration', () => {
 
     const create = json.options.find((option: any) => option.name === 'create');
     expect(create.options.map((option: any) => option.name)).toEqual([
-      'name', 'start', 'end', 'description', 'club', 'goal',
+      'name', 'start', 'end', 'club', 'description', 'goal',
     ]);
+    expect(create.options.find((option: any) => option.name === 'club').required).toBe(true);
     const submit = json.options.find((option: any) => option.name === 'submit');
     expect(submit.options.find((option: any) => option.name === 'trophies').min_value).toBe(0);
   });
@@ -214,16 +220,18 @@ describe('/competition command handlers', () => {
       description: 'No camping',
       start: '2026-11-20T00:00Z',
       end: '2026-11-22T00:00Z',
+      club: 'club-1',
       goal: 10_000,
     });
 
     await handleCompetition(interaction);
 
     expect(mocks.service.createCompetition).toHaveBeenCalledWith(
-      expect.objectContaining({ discordUserId: DISCORD_ID, name: 'Midseason Climb' }),
+      expect.objectContaining({ discordUserId: DISCORD_ID, name: 'Midseason Climb', clubId: 'club-1' }),
       { guildId: 'guild-1' },
     );
-    expect(embedText(payload(interaction, 'reply').embeds[0])).toContain('No camping');
+    expect(interaction.deferred).toBe(true);
+    expect(embedText(payload(interaction, 'editReply').embeds[0])).toContain('No camping');
   });
 
   it('replies ephemerally when staff permission is missing', async () => {
@@ -238,8 +246,8 @@ describe('/competition command handlers', () => {
 
     await handleCompetition(interaction);
 
-    expect(payload(interaction, 'reply')).toMatchObject({ flags: 64 });
-    expect(payload(interaction, 'reply').content).toContain('permission');
+    expect(payload(interaction, 'followUp')).toMatchObject({ flags: 64 });
+    expect(payload(interaction, 'followUp').content).toContain('permission');
   });
 
   it('keeps join and submit tied to the interacting user', async () => {
@@ -277,7 +285,7 @@ describe('/competition command handlers', () => {
       playerId: PLAYER_ID,
       trophies: 5_000,
     }, { guildId: 'guild-1' });
-    expect(embedText(payload(submit, 'reply').embeds[0])).toContain('Unverified user submission');
+    expect(embedText(payload(submit, 'editReply').embeds[0])).toContain('Unverified user submission');
   });
 
   it('ends a competition and shows who ended it', async () => {
@@ -292,7 +300,7 @@ describe('/competition command handlers', () => {
       discordUserId: DISCORD_ID,
       competitionId: COMPETITION_ID,
     }, { guildId: 'guild-1' });
-    expect(embedText(payload(interaction, 'reply').embeds[0])).toContain(`<@${DISCORD_ID}>`);
+    expect(embedText(payload(interaction, 'editReply').embeds[0])).toContain(`<@${DISCORD_ID}>`);
   });
 
   it('paginates leaderboards and preserves the competition state', async () => {
@@ -300,7 +308,7 @@ describe('/competition command handlers', () => {
     const initial = chatInteraction('leaderboard', { competition: COMPETITION_ID });
     await handleCompetition(initial);
 
-    const first = payload(initial, 'reply');
+    const first = payload(initial, 'editReply');
     expect(embedText(first.embeds[0])).toContain('Player 1');
     expect(first.components[0].components[0].data.custom_id).toContain(
       `leaderboard|${COMPETITION_ID}`,
@@ -320,12 +328,12 @@ describe('/competition command handlers', () => {
     ]);
     const list = chatInteraction('list');
     await handleCompetition(list);
-    expect(embedText(payload(list, 'reply').embeds[0])).toContain('Midseason Climb');
+    expect(embedText(payload(list, 'editReply').embeds[0])).toContain('Midseason Climb');
 
     mocks.service.listCompetitions.mockResolvedValue([]);
     const empty = chatInteraction('list');
     await handleCompetition(empty);
-    expect(embedText(payload(empty, 'reply').embeds[0])).toContain(
+    expect(embedText(payload(empty, 'editReply').embeds[0])).toContain(
       'No competitions have been created yet.',
     );
   });

@@ -3,6 +3,7 @@ import { AttachmentBuilder, type ChatInputCommandInteraction } from 'discord.js'
 import { getBotConfig } from '../config.js';
 import { replyWithSafeError } from '../discord/errors';
 import { cleanTag, escapeMarkdown } from '../discord/format';
+import { resolveSeasonWindow } from '../images/brawltools-style.js';
 import { resolveBrawlerPortraitUrl, resolvePlayerIconUrl } from '../metadata/assets.js';
 import {
   buildPlayerCardImage,
@@ -10,6 +11,7 @@ import {
   type PlayerCardAssets,
   type PlayerCardOptions,
   type PlayerHistorySummary,
+  type PlayerSeasonWindow,
   type PlayerSnapshotPoint,
 } from '../players/card.js';
 import {
@@ -120,13 +122,15 @@ interface LoadedBattles {
 
 /**
  * Load every stored official battle for the season preset. The raw records are
- * needed for the date/match bars, while mode rates are aggregated from the
- * same ranked and trophy battles.
+ * passed through unchanged for the date/match bars, while mode rates are
+ * aggregated only from battles inside the same window as the season graph.
  */
 async function loadBattleData(
   tag: string,
   guildId: string | null,
   now: Date,
+  seasonWindow: PlayerSeasonWindow,
+  snapshots: readonly PlayerSnapshotPoint[],
 ): Promise<LoadedBattles> {
   const empty: LoadedBattles = { battles: [], modeStats: [] };
   if (guildId === null) return empty;
@@ -134,8 +138,17 @@ async function loadBattleData(
     const result = await loadPlayerBattles({ tag, guildId, period: 'all', now });
     if (result.kind !== 'ok') return empty;
     const battles = result.value.battles;
+    const dataTimes = [
+      ...battles.map((battle) => Date.parse(battle.battleTime)),
+      ...snapshots.map((snapshot) => Date.parse(snapshot.date)),
+    ].filter((time) => Number.isFinite(time));
+    const { startMs, endMs } = resolveSeasonWindow(seasonWindow, now, dataTimes);
+    const seasonBattles = battles.filter((battle) => {
+      const time = Date.parse(battle.battleTime);
+      return Number.isFinite(time) && time >= startMs && time <= endMs;
+    });
     const counts = new Map<string, { wins: number; matches: number }>();
-    for (const battle of battles) {
+    for (const battle of seasonBattles) {
       const label = modeLabel(battle.mode);
       const entry = counts.get(label) ?? { wins: 0, matches: 0 };
       entry.matches += 1;
@@ -251,10 +264,14 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
       // Stored history is guild-scoped. Without a guild we can only show the
       // official current trophy point, never cross-guild graph data.
       if (interaction.guildId !== null) {
-        const [history, battleData] = await Promise.all([
-          loadHistoryData(resolved.tag, interaction.guildId, 'all', now),
-          loadBattleData(resolved.tag, interaction.guildId, now),
-        ]);
+        const history = await loadHistoryData(resolved.tag, interaction.guildId, 'all', now);
+        const battleData = await loadBattleData(
+          resolved.tag,
+          interaction.guildId,
+          now,
+          seasonWindow,
+          history.snapshots,
+        );
         snapshots = history.snapshots;
         battles = battleData.battles;
         modeStats = battleData.modeStats;

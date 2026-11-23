@@ -609,7 +609,33 @@ describe('player service', () => {
     const db = createFakeDb(tables());
     const result = await searchPlayers('alp', { db: db as never, guildId: 'guild-1' });
     expect(result.map((player) => player.tag)).toEqual(['2C0Y']);
-    expect(db.calls[0]?.or).toContain('name.ilike.%alp%');
+    const playerQuery = db.calls.find((call) => call.table === 'players');
+    expect(playerQuery?.or).toContain('name.ilike.%alp%');
+    expect(playerQuery?.ins['id']).toEqual(['p1', 'p3']);
+  });
+
+  it('applies guild scope before the autocomplete row cap', async () => {
+    const data = tables();
+    data.players = [
+      ...Array.from({ length: 30 }, (_, index) => ({
+        id: `foreign-${index}`,
+        tag: `F${index}`,
+        name: `Alpha Foreign ${String(index).padStart(2, '0')}`,
+        trophies: 1000 + index,
+        highest_trophies: null,
+        exp_level: null,
+        last_synced_at: null,
+      })),
+      ...(data.players ?? []),
+    ];
+    const db = createFakeDb(data);
+
+    const result = await searchPlayers('alp', { db: db as never, guildId: 'guild-1' });
+
+    expect(result.map((player) => player.tag)).toEqual(['2C0Y']);
+    const playerQuery = db.calls.find((call) => call.table === 'players');
+    expect(playerQuery?.ins['id']).toEqual(['p1', 'p3']);
+    expect(playerQuery?.limit).toBe(25);
   });
 
   it('surfaces database and API-unavailable errors safely', async () => {

@@ -285,46 +285,49 @@ export async function searchTrackedMembersByPlayer(
   const guildClubIds = await readGuildClubIds(options.guildId, db);
   const cleaned = query.replace(/^#+/, '');
   const escaped = escapeIlike(cleaned);
-  const { data, error } = await db
-    .from('players')
-    .select(PLAYER_COLUMNS)
-    .or(`tag.ilike.%${escaped}%,name.ilike.%${escaped}%`)
-    .order('name', { ascending: true })
-    .limit(200);
-  requireOk(error, 'Search tracked players');
 
-  let players = dedupePlayers(
-    (data ?? [])
-      .map((value: unknown) => parsePlayerRow(value))
-      .filter((player): player is PlayerIdentity => player !== null),
-  );
+  let allowedPlayerIds: string[] | null = null;
   if (guildClubIds !== null) {
     if (guildClubIds.length === 0) {
-      players = [];
+      allowedPlayerIds = [];
     } else {
-      const playerIds = players.map((p) => p.id).filter((id): id is string => id !== null);
-      if (playerIds.length === 0) {
-        players = [];
-      } else {
-        const { data: memberRows, error: memberError } = await db
-          .from('club_memberships')
-          .select('player_id')
-          .in('club_id', guildClubIds)
-          .in('player_id', playerIds)
-          .limit(10000);
-        requireOk(memberError, 'Read guild member players');
-        const allowed = new Set(
+      const { data: memberRows, error: memberError } = await db
+        .from('club_memberships')
+        .select('player_id')
+        .in('club_id', guildClubIds);
+      requireOk(memberError, 'Read guild member players');
+      allowedPlayerIds = [
+        ...new Set(
           (memberRows ?? [])
             .map((row: unknown) => {
               const rec = record(row);
               return typeof rec?.['player_id'] === 'string' ? (rec['player_id'] as string) : null;
             })
             .filter((id): id is string => id !== null),
-        );
-        players = players.filter((player) => player.id !== null && allowed.has(player.id));
-      }
+        ),
+      ];
+    }
+    if (allowedPlayerIds.length === 0) {
+      return { kind: 'ok', value: { mode: 'player', query, entries: [], identityContext: false } };
     }
   }
+
+  // Guild scope is applied by the query, before the row cap, so a page of
+  // alphabetically earlier players from other guilds cannot hide this guild's
+  // matches. A null guild scope remains intentionally unscoped.
+  let builder = db
+    .from('players')
+    .select(PLAYER_COLUMNS)
+    .or(`tag.ilike.%${escaped}%,name.ilike.%${escaped}%`);
+  if (allowedPlayerIds !== null) builder = builder.in('id', allowedPlayerIds);
+  const { data, error } = await builder.order('name', { ascending: true }).limit(200);
+  requireOk(error, 'Search tracked players');
+
+  const players = dedupePlayers(
+    (data ?? [])
+      .map((value: unknown) => parsePlayerRow(value))
+      .filter((player): player is PlayerIdentity => player !== null),
+  );
   return {
     kind: 'ok',
     value: {

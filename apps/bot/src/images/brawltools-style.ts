@@ -467,12 +467,28 @@ function signedNumber(value: number | null): string {
  * being dropped. Trophy points come only from stored snapshots plus the
  * current official profile trophy count on today's date.
  */
+/** Resolve the exact UTC millisecond window used by the season progress graph. */
+export function resolveSeasonWindow(
+  seasonWindow: PlayerCardOptions['seasonWindow'],
+  now: Date | undefined,
+  dataTimes: readonly number[],
+): { readonly startMs: number; readonly endMs: number; readonly nowMs: number } {
+  const nowMs = now instanceof Date && Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
+  const configuredStart = parseTime(seasonWindow?.start);
+  const configuredEnd = parseTime(seasonWindow?.end);
+  const startMs = configuredStart ?? (dataTimes.length > 0 ? Math.min(...dataTimes) : nowMs);
+  let endMs = configuredEnd === null ? nowMs : Math.min(configuredEnd, nowMs);
+  if (configuredStart === null && dataTimes.length > 0) {
+    endMs = Math.min(endMs, Math.max(...dataTimes));
+  }
+  if (endMs < startMs) endMs = startMs;
+  return { startMs, endMs, nowMs };
+}
+
 export function buildSeasonProgressPoints(
   profile: PlayerProfileView,
   options: PlayerCardOptions,
 ): readonly SeasonProgressPoint[] {
-  const now = options.now;
-  const nowMs = now instanceof Date && Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
   const battles: readonly PlayerBattleRecord[] = options.battles ?? [];
   const snapshots = options.snapshots ?? [];
   const dataTimes = [
@@ -480,14 +496,7 @@ export function buildSeasonProgressPoints(
     ...snapshots.map((snapshot) => parseTime(snapshot.date)),
   ].filter((value): value is number => value !== null);
 
-  const configuredStart = parseTime(options.seasonWindow?.start);
-  const configuredEnd = parseTime(options.seasonWindow?.end);
-  const startMs = configuredStart ?? (dataTimes.length > 0 ? Math.min(...dataTimes) : nowMs);
-  let endMs = configuredEnd === null ? nowMs : Math.min(configuredEnd, nowMs);
-  if (configuredStart === null && dataTimes.length > 0) {
-    endMs = Math.min(endMs, Math.max(...dataTimes));
-  }
-  if (endMs < startMs) endMs = startMs;
+  const { startMs, endMs, nowMs } = resolveSeasonWindow(options.seasonWindow, options.now, dataTimes);
 
   const matchesByDay = new Map<string, number>();
   const winsByDay = new Map<string, number>();

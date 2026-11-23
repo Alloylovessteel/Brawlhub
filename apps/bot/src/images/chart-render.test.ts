@@ -26,4 +26,21 @@ describe('chart renderer', () => {
     expect(result.height).toBe(700);
     expect(result.png.subarray(1, 4).toString()).toBe('PNG');
   });
+
+  it('keeps a defensive empty-series state in the PNG renderer', async () => {
+    const result = await renderChart({
+      kind: 'player',
+      subject: '#PLAYER1',
+      title: 'Tester · trophies',
+      subtitle: 'Stored player data',
+      option: 'trophies',
+      series: [],
+      stats: [],
+      footer: 'Stored data only',
+    });
+
+    expect(result.width).toBe(1200);
+    expect(result.height).toBe(700);
+    expect(result.png.subarray(1, 4).toString()).toBe('PNG');
+  });
 });
