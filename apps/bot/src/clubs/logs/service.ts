@@ -493,6 +493,7 @@ export async function readClubLogGuildIds(
 async function readDeliveredKeys(
   guildId: string,
   logId: string,
+  period: ClubLogPeriod,
   db: DatabaseClient,
 ): Promise<Set<string>> {
   const result = await db
@@ -500,6 +501,7 @@ async function readDeliveredKeys(
     .select('event_kind, event_id')
     .eq('guild_id', guildId)
     .eq('log_id', logId)
+    .eq('period', period)
     .in('event_kind', [...EVENT_KINDS]);
   requireOk(result.error, 'Read club log deliveries');
   const keys = new Set<string>();
@@ -605,9 +607,12 @@ async function loadEventsForLog(
   guildId: string,
   log: ClubLogRow,
   db: DatabaseClient,
+  period: ClubLogPeriod,
   onlyUndelivered = true,
 ): Promise<ClubLogEvent[]> {
-  const delivered = onlyUndelivered ? await readDeliveredKeys(guildId, log.id, db) : new Set<string>();
+  const delivered = onlyUndelivered
+    ? await readDeliveredKeys(guildId, log.id, period, db)
+    : new Set<string>();
 
   // No subscription-time watermark: stored history is included so a newly added log
   // can backfill past joins, leaves, transfers, role and capacity changes. The delivery
@@ -673,10 +678,14 @@ export async function loadUndeliveredClubLogEvents(
   const logs = await loadClubLogRows(parsedGuildId, { db });
   const groups: ClubLogGroup[] = [];
   for (const fullLog of logs) {
-    const events = await loadEventsForLog(parsedGuildId, fullLog, db);
-    if (events.length === 0) continue;
-    const { createdAt: _createdAt, ...log } = fullLog;
-    groups.push({ log, events });
+    const periods: readonly ClubLogPeriod[] =
+      fullLog.periods.length > 0 ? fullLog.periods : ['today'];
+    for (const period of periods) {
+      const events = await loadEventsForLog(parsedGuildId, fullLog, db, period);
+      if (events.length === 0) continue;
+      const { createdAt: _createdAt, ...log } = fullLog;
+      groups.push({ log: { ...log, periods: [period] }, events });
+    }
   }
   return groups;
 }
@@ -695,7 +704,7 @@ export async function loadRecentClubLogEvents(
   const logs = await loadClubLogRows(parsedGuildId, { db });
   const log = logs.find((candidate) => candidate.id === logId);
   if (log === undefined) return [];
-  const events = await loadEventsForLog(parsedGuildId, log, db, false);
+  const events = await loadEventsForLog(parsedGuildId, log, db, 'today', false);
   if (events.length === 0) return [];
   const { createdAt: _createdAt, ...config } = log;
   return [{ log: config, events }];
@@ -717,13 +726,14 @@ export async function markClubLogEventsDelivered(
     .map((delivery) => ({
       guild_id: parsedGuildId,
       log_id: delivery.logId,
+      period: delivery.period,
       event_kind: delivery.kind,
       event_id: delivery.eventId,
     }));
   if (rows.length === 0) return;
 
   const saved = await db.from('guild_club_log_deliveries').upsert(rows, {
-    onConflict: 'guild_id,log_id,event_kind,event_id',
+    onConflict: 'guild_id,log_id,period,event_kind,event_id',
     ignoreDuplicates: true,
   });
   requireOk(saved.error, 'Record club log deliveries');

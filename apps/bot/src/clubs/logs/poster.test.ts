@@ -47,7 +47,7 @@ import { runClubLogsPost, startClubLogsSchedule } from './poster';
 import type { ClubLogGroup } from './types';
 import type { ClubLogView } from '../types';
 
-function group(periods: ClubLogGroup['log']['periods'] = ['today']): ClubLogGroup {
+function group(period: 'today' | 'week' | 'season' = 'today'): ClubLogGroup {
   return {
     log: {
       id: LOG_ID,
@@ -56,7 +56,7 @@ function group(periods: ClubLogGroup['log']['periods'] = ['today']): ClubLogGrou
       clubTag: 'ALPHA',
       clubName: 'Alpha',
       channelId: CHANNEL_ID,
-      periods,
+      periods: [period],
     },
     events: [
       {
@@ -158,14 +158,16 @@ describe('runClubLogsPost', () => {
       },
     ]);
     expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledWith(GUILD_ID, [
-      { logId: LOG_ID, kind: 'role', eventId: 'r1' },
+      { logId: LOG_ID, period: 'today', kind: 'role', eventId: 'r1' },
     ]);
     expect(mocks.logger.warn).not.toHaveBeenCalled();
   });
 
-  it('posts every period stored on the subscription in order', async () => {
+  it('posts every subscribed period in order with period-scoped deliveries', async () => {
     mocks.service.loadUndeliveredClubLogEvents.mockResolvedValue([
-      group(['today', 'week', 'season']),
+      group('today'),
+      group('week'),
+      group('season'),
     ]);
 
     await runClubLogsPost();
@@ -196,9 +198,28 @@ describe('runClubLogsPost', () => {
     expect(filenames[0]).toMatch(/^club-log-alpha-today-\d+\.png$/);
     expect(filenames[1]).toMatch(/^club-log-alpha-week-\d+\.png$/);
     expect(filenames[2]).toMatch(/^club-log-alpha-season-\d+\.png$/);
-    expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledWith(GUILD_ID, [
-      { logId: LOG_ID, kind: 'role', eventId: 'r1' },
+    expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledTimes(3);
+    expect(mocks.service.markClubLogEventsDelivered.mock.calls.map((call) => call[1])).toEqual([
+      [{ logId: LOG_ID, period: 'today', kind: 'role', eventId: 'r1' }],
+      [{ logId: LOG_ID, period: 'week', kind: 'role', eventId: 'r1' }],
+      [{ logId: LOG_ID, period: 'season', kind: 'role', eventId: 'r1' }],
     ]);
+  });
+
+  it('marks only the periods that posted successfully', async () => {
+    mocks.service.loadUndeliveredClubLogEvents.mockResolvedValue([group('today'), group('week')]);
+    mocks.post
+      .mockResolvedValueOnce({ id: 'message-1' })
+      .mockRejectedValueOnce(new Error('rate limited'));
+
+    await runClubLogsPost();
+
+    expect(mocks.post).toHaveBeenCalledTimes(2);
+    expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledOnce();
+    expect(mocks.service.markClubLogEventsDelivered).toHaveBeenCalledWith(GUILD_ID, [
+      { logId: LOG_ID, period: 'today', kind: 'role', eventId: 'r1' },
+    ]);
+    expect(mocks.logger.warn).toHaveBeenCalledOnce();
   });
 
   it('leaves events undelivered and redacts the token when posting fails', async () => {

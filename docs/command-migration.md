@@ -99,7 +99,7 @@ BrawlHub now registers **20 top-level slash commands** instead of **42**. The ch
 ## Automation added with this build
 
 - `/clubs clublogs preview club:<club-uuid> [period:today|week|season]` requires `clubs:write` and only accepts a log configured for the current guild. It acknowledges privately, then posts the full-page PNG publicly in that channel without components.
-- Scheduled club-log posts use the existing configured log channels. Stored history is included, so a newly added log backfills past changes; the delivery ledger prevents reposts. A change is marked delivered only after its PNG is posted successfully; failures remain queued for retry.
+- Scheduled club-log posts use the existing configured log channels. Stored history is included, so a newly added log backfills past changes. The delivery ledger is scoped per period: an event is marked delivered after that period's PNG posts successfully, so adding a period later reposts history once and a failed period stays queued for retry.
 - Club-log PNGs combine the selected stored trophy-progression period with recent stored membership, role and capacity changes. They are not live and never use BrawlAPI event rotation data.
 - Operator notices reuse guild settings: sync uses the announcement channel with verification fallback; verification uses the verification channel with announcement fallback. All notices disable Discord mentions and are best-effort so they cannot fail a sync or verification.
 - Report posts remain scheduled-only (`REPORTS_IMMEDIATE_ON_START=false`). No new migration or database schema is required for these features.

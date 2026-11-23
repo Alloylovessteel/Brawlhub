@@ -4,7 +4,6 @@ import { getBotConfig } from '../../config';
 import { cleanTag } from '../../discord/format';
 import { buildClubLogPageImage } from './image';
 import { CLUB_LOG_PERIOD_LABELS, loadClubLogView } from './page-view';
-import type { ClubLogPeriod } from '../types';
 import {
   loadUndeliveredClubLogEvents,
   markClubLogEventsDelivered,
@@ -52,28 +51,31 @@ export async function runClubLogsPost(): Promise<void> {
       const groups = await loadUndeliveredClubLogEvents(guildId);
       for (const { log, events } of groups) {
         if (events.length === 0) continue;
-        const periods: readonly ClubLogPeriod[] = log.periods.length > 0 ? log.periods : ['today'];
+        const period = log.periods[0] ?? 'today';
         try {
-          for (const period of periods) {
-            const periodLabel = CLUB_LOG_PERIOD_LABELS[period];
-            const page = await loadClubLogView({ guildId, tag: log.clubTag, period });
-            if (page.kind !== 'ok') {
-              throw new Error('Club lookup failed');
-            }
-            const image = await buildClubLogPageImage(page.value, events);
-            const filename = `club-log-${cleanTag(log.clubTag).toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'club'}-${period}-${Date.now()}.png`;
-            await rest.post(Routes.channelMessages(log.channelId), {
-              body: {
-                content: `${safeText(log.clubName, 60)} • Club Logs / Trophy Progression / ${periodLabel}`,
-                allowed_mentions: { parse: [] },
-                attachments: [{ id: '0', filename }],
-              },
-              files: [{ key: 'files[0]', name: filename, data: image, contentType: 'image/png' }],
-            });
+          const periodLabel = CLUB_LOG_PERIOD_LABELS[period];
+          const page = await loadClubLogView({ guildId, tag: log.clubTag, period });
+          if (page.kind !== 'ok') {
+            throw new Error('Club lookup failed');
           }
+          const image = await buildClubLogPageImage(page.value, events);
+          const filename = `club-log-${cleanTag(log.clubTag).toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'club'}-${period}-${Date.now()}.png`;
+          await rest.post(Routes.channelMessages(log.channelId), {
+            body: {
+              content: `${safeText(log.clubName, 60)} • Club Logs / Trophy Progression / ${periodLabel}`,
+              allowed_mentions: { parse: [] },
+              attachments: [{ id: '0', filename }],
+            },
+            files: [{ key: 'files[0]', name: filename, data: image, contentType: 'image/png' }],
+          });
           await markClubLogEventsDelivered(
             guildId,
-            events.map((event) => ({ logId: log.id, kind: event.kind, eventId: event.id })),
+            events.map((event) => ({
+              logId: log.id,
+              period,
+              kind: event.kind,
+              eventId: event.id,
+            })),
           );
         } catch (error) {
           logger.warn('Club log post failed; leaving events undelivered for retry', {

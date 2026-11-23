@@ -280,6 +280,7 @@ describe('loadUndeliveredClubLogEvents', () => {
     setHandler('guild_club_log_deliveries:select', (call) => {
       expect(call.filters['guild_id']).toBe(GUILD_ID);
       expect(call.filters['log_id']).toBe(LOG_ID);
+      expect(call.filters['period']).toBe('today');
       return {
         data: [
           { event_kind: 'membership', event_id: 'm1' },
@@ -413,6 +414,41 @@ describe('loadUndeliveredClubLogEvents', () => {
     expect(groups[0]?.events.map((event) => event.description)).toEqual([
       '#OLDMEMBER joined #ALPHA',
     ]);
+  });
+
+  it('reposts an event for a newly added period even when another period delivered it', async () => {
+    setHandler('guild_club_log_periods:select', () => ({
+      data: [
+        { log_id: LOG_ID, period: 'today' },
+        { log_id: LOG_ID, period: 'week' },
+      ],
+    }));
+    setHandler('guild_club_log_deliveries:select', (call) => ({
+      data:
+        call.filters['period'] === 'today'
+          ? [{ event_kind: 'membership', event_id: 'm1' }]
+          : [],
+    }));
+    setHandler('membership_events:select', () => ({
+      data: [
+        {
+          id: 'm1',
+          event_type: 'join',
+          detected_at: '2026-11-01T08:00:00.000Z',
+          from_club_id: null,
+          to_club_id: CLUB_ID,
+          player: { tag: '#JOINER', name: 'Joiner' },
+        },
+      ],
+    }));
+    setHandler('club_role_changes:select', () => ({ data: [] }));
+    setHandler('club_capacity_events:select', () => ({ data: [] }));
+
+    const groups = await loadUndeliveredClubLogEvents(GUILD_ID);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.log.periods).toEqual(['week']);
+    expect(groups[0]?.events.map((event) => event.id)).toEqual(['m1']);
   });
 
   it('caps each log at the 20 most recent events', async () => {
@@ -606,18 +642,29 @@ describe('removeClubLog and delivery marking', () => {
     setHandler('clubs:select', () => ({ data: [clubRow()] }));
     setHandler('guild_club_log_deliveries:upsert', (call) => {
       expect(call.options).toEqual({
-        onConflict: 'guild_id,log_id,event_kind,event_id',
+        onConflict: 'guild_id,log_id,period,event_kind,event_id',
         ignoreDuplicates: true,
       });
       expect(call.payload).toEqual([
-        { guild_id: GUILD_ID, log_id: LOG_ID, event_kind: 'role', event_id: 'r1' },
+        {
+          guild_id: GUILD_ID,
+          log_id: LOG_ID,
+          period: 'week',
+          event_kind: 'role',
+          event_id: 'r1',
+        },
       ]);
       return { data: [] };
     });
 
     await markClubLogEventsDelivered(GUILD_ID, [
-      { logId: LOG_ID, kind: 'role', eventId: 'r1' },
-      { logId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', kind: 'membership', eventId: 'm1' },
+      { logId: LOG_ID, period: 'week', kind: 'role', eventId: 'r1' },
+      {
+        logId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        period: 'today',
+        kind: 'membership',
+        eventId: 'm1',
+      },
     ]);
     expect(callsFor('guild_club_log_deliveries', 'upsert')).toHaveLength(1);
   });

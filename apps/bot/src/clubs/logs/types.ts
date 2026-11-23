@@ -32,6 +32,8 @@ export interface ClubLogEvent {
 
 export interface ClubLogDelivery {
   readonly logId: string;
+  /** Delivery is tracked per trophy period so adding a period reposts history once. */
+  readonly period: ClubLogPeriod;
   readonly kind: ClubLogEventKind;
   readonly eventId: string;
 }
