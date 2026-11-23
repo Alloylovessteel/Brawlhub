@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   service: {
     loadPlayerProfile: vi.fn(),
     loadPlayerHistory: vi.fn(),
+    loadPlayerBrawlers: vi.fn(),
     searchPlayers: vi.fn(),
   },
   verification: {
@@ -110,6 +111,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.service.loadPlayerProfile.mockResolvedValue(profileResult());
   mocks.service.loadPlayerHistory.mockResolvedValue({ kind: 'not-found', tag: '2C0Y' });
+  mocks.service.loadPlayerBrawlers.mockResolvedValue({ kind: 'not-found', tag: '2C0Y' });
   mocks.verification.findVerifiedPlayerForDiscordUser.mockResolvedValue(null);
   mocks.verification.listLinkedAccounts.mockResolvedValue(null);
   mocks.assets.resolvePlayerIconUrl.mockResolvedValue(null);
@@ -265,6 +267,40 @@ describe('/me image', () => {
     );
   });
 
+  it('loads accessory names for the brawler preset', async () => {
+    mocks.service.loadPlayerBrawlers.mockResolvedValue({
+      kind: 'ok',
+      value: {
+        brawlers: [
+          {
+            name: 'Shelly',
+            gadgets: [{ id: 1, name: 'Clay Pigeon', level: null }],
+            starPowers: [{ id: 2, name: 'Shell Shock', level: null }],
+            gears: [{ id: 3, name: 'Damage', level: null }],
+            hyperCharges: [{ id: 4, name: 'Overcharged', level: null }],
+          },
+        ],
+      },
+    });
+    const interaction = chatInteraction({ tag: '#2c0y', mode: 'brawler' });
+
+    await handleMeImage(interaction);
+
+    expect(mocks.service.loadPlayerBrawlers).toHaveBeenCalledWith({
+      tag: '#2c0y',
+      guildId: 'guild-1',
+    });
+    expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        mode: 'brawler',
+        brawlerDetail: expect.objectContaining({ name: 'Shelly' }),
+      }),
+    );
+    expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y-brawler.png');
+  });
+
   it('builds a graph-heavy season image when stored charts are available', async () => {
     mocks.charts.loadOrRenderChart
       .mockResolvedValueOnce({ kind: 'ok', image: { png: Buffer.from('trophy-chart') } })
@@ -301,7 +337,11 @@ describe('/me image', () => {
           { capturedAt: '2026-11-01T00:00:00.000Z', trophies: 4800 },
           { capturedAt: '2026-11-20T00:00:00.000Z', trophies: 5000 },
         ],
-        events: [{ eventType: 'join' }, { eventType: 'leave' }],
+        events: [
+          { eventType: 'join', toClub: { name: 'Alpha Club' }, detectedAt: '2026-11-02T00:00:00.000Z' },
+          { eventType: 'leave', fromClub: { name: 'Old Club' }, detectedAt: '2026-11-10T00:00:00.000Z' },
+        ],
+        player: { megaPig: { date: '2026-11-01T00:00:00.000Z', wins: 5, draws: 1, losses: 2, ticketsUsed: 4 } },
       },
     });
     const interaction = chatInteraction({ tag: '#2c0y', mode: 'history' });
@@ -326,6 +366,17 @@ describe('/me image', () => {
           latestTrophies: 5000,
           clubChanges: 2,
           nameChanges: null,
+          events: [
+            { type: 'join', label: 'Joined Alpha Club', date: '2026-11-02T00:00:00.000Z' },
+            { type: 'leave', label: 'Left Old Club', date: '2026-11-10T00:00:00.000Z' },
+          ],
+          megaPig: {
+            date: '2026-11-01T00:00:00.000Z',
+            wins: 5,
+            draws: 1,
+            losses: 2,
+            ticketsUsed: 4,
+          },
         },
       },
     );

@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import type { PlayerBrawler, PlayerProfileView } from './types';
+import type { PlayerBrawler, PlayerBrawlerDetail, PlayerProfileView } from './types';
 
 /**
  * Static image assets passed in by the command layer. URLs come only from the
@@ -32,6 +32,20 @@ export interface PlayerSeasonWindow {
   readonly end: string | null;
 }
 
+export interface PlayerHistoryEvent {
+  readonly type: 'join' | 'leave' | 'transfer';
+  readonly label: string;
+  readonly date: string | null;
+}
+
+export interface PlayerHistoryMegaPig {
+  readonly date: string | null;
+  readonly wins: number | null;
+  readonly draws: number | null;
+  readonly losses: number | null;
+  readonly ticketsUsed: number | null;
+}
+
 export interface PlayerHistorySummary {
   readonly points: number;
   readonly firstAt: string | null;
@@ -40,11 +54,14 @@ export interface PlayerHistorySummary {
   readonly latestTrophies: number | null;
   readonly clubChanges: number | null;
   readonly nameChanges: number | null;
+  readonly events: readonly PlayerHistoryEvent[];
+  readonly megaPig: PlayerHistoryMegaPig | null;
 }
 
 export interface PlayerCardOptions {
   readonly mode?: PlayerCardMode;
   readonly brawlerName?: string | null;
+  readonly brawlerDetail?: PlayerBrawlerDetail | null;
   readonly seasonWindow?: PlayerSeasonWindow;
   readonly history?: PlayerHistorySummary | null;
 }
@@ -308,6 +325,7 @@ function pill(x: number, y: number, label: string, value: string, color: string)
 function focusMarkup(
   brawler: PlayerBrawler | undefined,
   portrait: string | null,
+  detail: PlayerBrawlerDetail | null | undefined,
 ): string {
   if (brawler === undefined) {
     return `<text x="64" y="400" font-size="24" fill="#aaa5d6">No brawler data available for this player.</text>`;
@@ -318,18 +336,29 @@ function focusMarkup(
          <text x="80" y="102" text-anchor="middle" font-size="48" font-weight="700" fill="#dcd6ff">${escapeXml(initials(brawler.name))}</text>`
       : `<image href="${portrait}" width="160" height="160" preserveAspectRatio="xMidYMid slice"/>`;
   const chips = [
-    pill(270, 458, 'POWER', formatNumber(brawler.power ?? null), '#8f82ff'),
-    pill(406, 458, 'RANK', brawler.rank === null ? '—' : `R${brawler.rank}`, '#ff8fab'),
-    pill(270, 504, 'GADGETS', formatNumber(brawler.gadgets ?? null), '#46d6ff'),
-    pill(406, 504, 'STAR POWERS', formatNumber(brawler.starPowers ?? null), '#ffd166'),
-    pill(542, 458, 'GEARS', formatNumber(brawler.gears ?? null), '#7de2a0'),
-    pill(542, 504, 'HYPER', formatNumber(brawler.hyperCharges ?? null), '#c58cff'),
+    pill(270, 452, 'POWER', formatNumber(brawler.power ?? null), '#8f82ff'),
+    pill(406, 452, 'RANK', brawler.rank === null ? '—' : `R${brawler.rank}`, '#ff8fab'),
+    pill(542, 452, 'GEARS', detail?.gears.length === undefined ? formatNumber(brawler.gears ?? null) : String(detail.gears.length), '#7de2a0'),
   ].join('');
+
+  const names = (items: readonly { readonly name: string | null }[] | undefined, fallback: number | null): string => {
+    const labels = (items ?? []).flatMap((item) =>
+      item.name === null || item.name === undefined || item.name.trim() === '' ? [] : [item.name],
+    );
+    if (labels.length > 0) return labels.slice(0, 2).map((label) => escapeXml(truncate(label, 18))).join(' • ');
+    return formatNumber(fallback);
+  };
+  const accessoryLines = `
+    <text x="270" y="524" font-size="14" fill="#cfc9ff">Gadgets: ${names(detail?.gadgets, brawler.gadgets ?? null)}</text>
+    <text x="270" y="550" font-size="14" fill="#cfc9ff">Star Powers: ${names(detail?.starPowers, brawler.starPowers ?? null)}</text>
+    <text x="270" y="576" font-size="14" fill="#cfc9ff">Hypercharge: ${names(detail?.hyperCharges, brawler.hyperCharges ?? null)}</text>`;
+
   return `<g transform="translate(76 360)" clip-path="url(#focusClip)">${portraitMarkup}</g>
     <text x="270" y="396" font-size="40" font-weight="700" fill="#f7f6ff">${escapeXml(truncate(brawler.name, 22))}</text>
     <text x="270" y="430" font-size="20" fill="#46d6ff">${formatNumber(brawler.trophies ?? null)} trophies</text>
     ${chips}
-    <text x="76" y="580" font-size="14" fill="#aaa5d6">Highest ${formatNumber(brawler.highestTrophies ?? brawler.trophies ?? null)} • Best streak ${formatNumber(brawler.maxWinStreak ?? null)}</text>`;
+    ${accessoryLines}
+    <text x="76" y="618" font-size="13" fill="#8e88bd">Highest ${formatNumber(brawler.highestTrophies ?? brawler.trophies ?? null)} • Best streak ${formatNumber(brawler.maxWinStreak ?? null)} • Official accessory names</text>`;
 }
 
 function seasonMarkup(
@@ -377,22 +406,35 @@ function historyMarkup(summary: PlayerHistorySummary | null | undefined): string
     ['SNAPSHOTS', formatNumber(summary.points), '#46d6ff'],
     ['TROPHY CHANGE', delta, '#7de2a0'],
     ['CLUB CHANGES', formatNumber(summary.clubChanges), '#8f82ff'],
-    ['NAME CHANGES', formatNumber(summary.nameChanges), '#ff8fab'],
+    ['MEGAPIG WINS', formatNumber(summary.megaPig?.wins ?? null), '#ff8fab'],
   ] as const;
   const markup = tiles
     .map(([label, value, color], index) => {
       const x = 64 + (index % 2) * 552;
-      const y = 350 + Math.floor(index / 2) * 128;
-      return `<rect x="${x}" y="${y}" width="530" height="106" rx="18" fill="#ffffff" fill-opacity="0.055" stroke="#ffffff" stroke-opacity="0.09"/>
-        <text x="${x + 20}" y="${y + 32}" font-size="12" font-weight="700" letter-spacing="1.4" fill="${color}">${escapeXml(label)}</text>
-        <text x="${x + 20}" y="${y + 72}" font-size="28" font-weight="700" fill="#f7f6ff">${escapeXml(truncate(value, 20))}</text>`;
+      const y = 340 + Math.floor(index / 2) * 96;
+      return `<rect x="${x}" y="${y}" width="530" height="86" rx="18" fill="#ffffff" fill-opacity="0.055" stroke="#ffffff" stroke-opacity="0.09"/>
+        <text x="${x + 20}" y="${y + 28}" font-size="12" font-weight="700" letter-spacing="1.4" fill="${color}">${escapeXml(label)}</text>
+        <text x="${x + 20}" y="${y + 64}" font-size="26" font-weight="700" fill="#f7f6ff">${escapeXml(truncate(value, 20))}</text>`;
     })
     .join('');
   const first = summary.firstAt === null ? '—' : formatDate(summary.firstAt);
   const latest = summary.latestAt === null ? '—' : formatDate(summary.latestAt);
+  const events = summary.events
+    .slice(0, 4)
+    .map((event, index) => {
+      const date = event.date === null ? '—' : formatDate(event.date);
+      return `<text x="64" y="${548 + index * 20}" font-size="13" fill="#cfc9ff">${escapeXml(date)} • ${escapeXml(truncate(event.label, 74))}</text>`;
+    })
+    .join('');
+  const mega =
+    summary.megaPig === null
+      ? 'No stored Mega Pig record'
+      : `Mega Pig ${formatDate(summary.megaPig.date)} • ${formatNumber(summary.megaPig.wins)} wins • ${formatNumber(summary.megaPig.draws)} draws • ${formatNumber(summary.megaPig.losses)} losses • ${formatNumber(summary.megaPig.ticketsUsed)} tickets`;
   return `${markup}
-    <text x="64" y="620" font-size="14" fill="#aaa5d6">Stored snapshots: ${escapeXml(first)} → ${escapeXml(latest)}</text>
-    <text x="64" y="644" font-size="13" fill="#8e88bd">Built only from synced official data • no live claims</text>`;
+    <text x="64" y="536" font-size="12" font-weight="700" letter-spacing="1.4" fill="#8f82ff">CLUB MEMBERSHIP EVENTS</text>
+    ${events}
+    <text x="64" y="632" font-size="12" fill="#8e88bd">${escapeXml(truncate(mega, 110))}</text>
+    <text x="1136" y="632" text-anchor="end" font-size="11" fill="#8e88bd">Snapshots ${escapeXml(first)} → ${escapeXml(latest)}</text>`;
 }
 
 function modeDefs(mode: PlayerCardMode, gridCount: number): string {
@@ -451,7 +493,7 @@ async function buildPlayerModeImage(
   } else if (mode === 'history') {
     body = historyMarkup(options.history);
   } else if (mode === 'brawler') {
-    body = focusMarkup(focused, focusedPortrait);
+    body = focusMarkup(focused, focusedPortrait, options.brawlerDetail);
   } else {
     body = gridMarkup(gridBrawlers, gridPortraits, mode);
   }
@@ -532,6 +574,18 @@ export async function buildPlayerCardImage(
   const sourceLabel = profile.source === 'live' ? 'LIVE OFFICIAL DATA' : 'STORED OFFICIAL DATA';
   const updated = formatDate(profile.profileFetchedAt ?? profile.latestSnapshotAt);
   const level = player.expLevel === null ? '—' : `Level ${player.expLevel}`;
+  const power11 = profile.brawlers.filter((brawler) => brawler.power === 11).length;
+  const gadgetTotal = profile.brawlers.reduce((total, brawler) => total + (brawler.gadgets ?? 0), 0);
+  const starPowerTotal = profile.brawlers.reduce((total, brawler) => total + (brawler.starPowers ?? 0), 0);
+  const gearTotal = profile.brawlers.reduce((total, brawler) => total + (brawler.gears ?? 0), 0);
+  const streaks = profile.brawlers.flatMap((brawler) =>
+    brawler.maxWinStreak === null || brawler.maxWinStreak === undefined ? [] : [brawler.maxWinStreak],
+  );
+  const longestStreak = streaks.length === 0 ? '—' : formatNumber(Math.max(...streaks));
+  const bestBrawler = brawlers[0];
+  const bestBrawlerValue = bestBrawler === undefined
+    ? '—'
+    : formatNumber(bestBrawler.highestTrophies ?? bestBrawler.trophies ?? null);
 
   const brawlerCards = BRAWLER_X.map((x, index) =>
     brawlerMarkup(x, 548, index, brawlers[index], portraits[index] ?? null),
@@ -563,6 +617,8 @@ export async function buildPlayerCardImage(
   <text x="252" y="198" font-size="43" font-weight="700" fill="#f7f6ff">${escapeXml(displayName)}</text>
   <text x="252" y="236" font-size="24" font-weight="600" fill="#aaa5d6">${escapeXml(tag)}</text>
   ${badgeMarkup(assets.badges ?? [], 252, 258)}
+  <text x="70" y="300" font-size="13" fill="#aaa5d6">Fame ${escapeXml(formatNumber(player.fame ?? null))} • Prestige ${escapeXml(formatNumber(player.totalPrestigeLevel ?? null))} • Account ${escapeXml(formatNumber(player.expLevel ?? null))} • Longest streak ${escapeXml(longestStreak)}</text>
+  <text x="70" y="319" font-size="13" fill="#aaa5d6">Power 11 ${power11} • Gadgets ${gadgetTotal} • Star Powers ${starPowerTotal} • Gears ${gearTotal} • Best brawler ${escapeXml(bestBrawler?.name ?? '—')} ${escapeXml(bestBrawlerValue)}</text>
   <rect x="760" y="138" width="360" height="98" rx="20" fill="#ffffff" fill-opacity="0.055" stroke="#ffffff" stroke-opacity="0.08"/>
   ${clubMarkup(clubBadge)}
   <text x="858" y="178" font-size="19" font-weight="700" fill="#f7f6ff">${escapeXml(truncate(club?.name ?? 'No club recorded', 24))}</text>

@@ -13,7 +13,7 @@ import {
   type PlayerCardOptions,
   type PlayerHistorySummary,
 } from '../players/card.js';
-import { loadPlayerHistory, loadPlayerProfile } from '../players/service';
+import { loadPlayerBrawlers, loadPlayerHistory, loadPlayerProfile } from '../players/service';
 import { listLinkedAccounts, type LinkedAccountView } from '../verification/index.js';
 import { DEFAULT_ME_IMAGE_MODE, isMeImageMode } from './me-image-modes.js';
 import { meTagErrorMessage, resolveMeTag } from './me-utils.js';
@@ -41,6 +41,18 @@ async function loadHistorySummary(
     const view = result.value;
     const first = view.points[0] ?? null;
     const latest = view.points.at(-1) ?? null;
+    const events = view.events.map((event) => {
+      const from = event.fromClub?.name ?? 'a club';
+      const to = event.toClub?.name ?? 'a club';
+      const label =
+        event.eventType === 'join'
+          ? `Joined ${to}`
+          : event.eventType === 'leave'
+            ? `Left ${from}`
+            : `${from} → ${to}`;
+      return { type: event.eventType, label, date: event.detectedAt };
+    });
+    const megaPig = view.player.megaPig ?? null;
     return {
       points: view.points.length,
       firstAt: first?.capturedAt ?? null,
@@ -49,6 +61,17 @@ async function loadHistorySummary(
       latestTrophies: latest?.trophies ?? null,
       clubChanges: view.events.length,
       nameChanges: null,
+      events,
+      megaPig:
+        megaPig === null
+          ? null
+          : {
+              date: megaPig.date ?? null,
+              wins: megaPig.wins ?? null,
+              draws: megaPig.draws ?? null,
+              losses: megaPig.losses ?? null,
+              ticketsUsed: megaPig.ticketsUsed ?? null,
+            },
     };
   } catch {
     return null;
@@ -148,6 +171,21 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
       }
     } else if (mode === 'history') {
       options = { mode, history: await loadHistorySummary(resolved.tag, interaction.guildId) };
+    } else if (mode === 'brawler') {
+      const detailResult = await loadPlayerBrawlers({
+        tag: resolved.tag,
+        guildId: interaction.guildId,
+      });
+      const topName = [...profile.brawlers].sort((left, right) => right.trophies - left.trophies)[0]?.name;
+      const detail =
+        detailResult.kind === 'ok' && topName !== undefined
+          ? detailResult.value.brawlers.find((brawler) => brawler.name === topName) ?? null
+          : null;
+      options = { mode, brawlerDetail: detail };
+      assets = {
+        ...assets,
+        allBrawlerPortraitUrls: await resolveModePortraits(profile.brawlers, mode),
+      };
     } else if (mode !== 'profile') {
       assets = {
         ...assets,

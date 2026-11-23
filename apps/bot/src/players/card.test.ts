@@ -127,6 +127,8 @@ describe('buildPlayerCardImage', () => {
           latestTrophies: 5000,
           clubChanges: 1,
           nameChanges: null,
+          events: [{ type: 'join', label: 'Joined Alpha Club', date: '2026-11-02T00:00:00.000Z' }],
+          megaPig: { date: '2026-11-01T00:00:00.000Z', wins: 5, draws: 1, losses: 2, ticketsUsed: 4 },
         },
       });
       const metadata = await sharp(buffer).metadata();
