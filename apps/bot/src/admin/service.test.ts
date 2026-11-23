@@ -4,7 +4,7 @@ import type { StaffActor } from '../staff/types';
 
 interface Call {
   table: string;
-  operation: 'select' | 'insert' | 'upsert' | 'update';
+  operation: 'select' | 'insert' | 'upsert' | 'update' | 'delete';
   payload: any;
   options: any;
   filters: Record<string, unknown>;
@@ -78,6 +78,11 @@ vi.mock('@brawlhub/database', () => {
       return this;
     }
 
+    delete(): this {
+      this.operation = 'delete';
+      return this;
+    }
+
     eq(column: string, value: unknown): this {
       this.filters[column] = value;
       return this;
@@ -146,18 +151,53 @@ vi.mock('../verification/service.js', () => verificationMocks);
 
 import {
   AdminServiceError,
+  createGuildCustomRole,
+  deleteGuildCustomRole,
   listAuditLogs,
+  listGuildCustomRoles,
+  listGuildRoleMappings,
   loadGuildSettings,
   loadSyncStatus,
   requireGlobalPermission,
   sanitizeAuditDetails,
+  setGuildRoleMapping,
+  updateGuildCustomRole,
   updateGuildOverviewFields,
   updateGuildSettings,
 } from './service';
 
 const GUILD_ID = '123456789012345678';
+const OTHER_GUILD_ID = '876543210987654321';
 const PROFILE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CLUB_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const CUSTOM_ROLE_ID = '11111111-1111-4111-8111-111111111111';
+const OTHER_CUSTOM_ROLE_ID = '22222222-2222-4222-8222-222222222222';
+const DISCORD_ROLE_ID = '999999999999999999';
+const OTHER_DISCORD_ROLE_ID = '888888888888888888';
+
+function customRoleRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: CUSTOM_ROLE_ID,
+    guild_id: GUILD_ID,
+    name: 'Event lead',
+    description: 'Runs events',
+    permissions: ['sync:run'],
+    created_at: '2026-11-01T00:00:00.000Z',
+    updated_at: '2026-11-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function roleMappingRow(overrides: Record<string, unknown> = {}) {
+  return {
+    guild_id: GUILD_ID,
+    discord_role_id: DISCORD_ROLE_ID,
+    brawlhub_role: null,
+    custom_role_id: CUSTOM_ROLE_ID,
+    updated_at: '2026-11-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
 
 function actor(globalRole: StaffActor['globalRole'] = 'admin'): StaffActor {
   return { profileId: PROFILE_ID, discordUserId: '111111111111111111', globalRole };
@@ -171,6 +211,7 @@ beforeEach(() => {
   fake.handlers = {};
   fake.calls = [];
   setHandler('guild_role_mappings:select', () => ({ data: [] }));
+  setHandler('guild_custom_roles:select', () => ({ data: [] }));
   staffMocks.resolveStaffActor.mockReset();
   staffMocks.resolveStaffActor.mockResolvedValue(actor());
   verificationMocks.ensureBotProfileForDiscordUser.mockReset();
@@ -264,6 +305,232 @@ describe('requireGlobalPermission', () => {
       '111111111111111111',
       'AdminUser',
     );
+  });
+});
+
+describe('custom role grants in requireGlobalPermission', () => {
+  it('grants a mapped custom role permission and implies member only', async () => {
+    setHandler('guild_role_mappings:select', () => ({ data: [roleMappingRow()] }));
+    setHandler('guild_custom_roles:select', () => ({ data: [customRoleRow()] }));
+    staffMocks.resolveStaffActor.mockResolvedValue(actor(null));
+
+    await expect(
+      requireGlobalPermission('111111111111111111', 'sync:run', {
+        guildId: GUILD_ID,
+        memberRoleIds: [DISCORD_ROLE_ID],
+      }),
+    ).resolves.toEqual(actor('member'));
+  });
+
+  it('unions matched custom roles without granting unselected permissions', async () => {
+    setHandler('guild_role_mappings:select', () => ({
+      data: [
+        roleMappingRow(),
+        roleMappingRow({
+          discord_role_id: OTHER_DISCORD_ROLE_ID,
+          custom_role_id: OTHER_CUSTOM_ROLE_ID,
+        }),
+      ],
+    }));
+    setHandler('guild_custom_roles:select', () => ({
+      data: [
+        customRoleRow(),
+        customRoleRow({
+          id: OTHER_CUSTOM_ROLE_ID,
+          name: 'Auditor',
+          permissions: ['audit:read'],
+        }),
+      ],
+    }));
+    staffMocks.resolveStaffActor.mockResolvedValue(actor(null));
+
+    await expect(
+      requireGlobalPermission('111111111111111111', 'audit:read', {
+        guildId: GUILD_ID,
+        memberRoleIds: [DISCORD_ROLE_ID, OTHER_DISCORD_ROLE_ID],
+      }),
+    ).resolves.toEqual(actor('member'));
+
+    await expect(
+      requireGlobalPermission('111111111111111111', 'sync:run', {
+        guildId: GUILD_ID,
+        memberRoleIds: [OTHER_DISCORD_ROLE_ID],
+      }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('keeps built-in highest-role precedence and ignores unknown custom IDs', async () => {
+    setHandler('guild_role_mappings:select', () => ({
+      data: [
+        roleMappingRow({ brawlhub_role: 'member', custom_role_id: null }),
+        roleMappingRow({
+          discord_role_id: OTHER_DISCORD_ROLE_ID,
+          brawlhub_role: 'staff',
+          custom_role_id: null,
+        }),
+      ],
+    }));
+    setHandler('guild_custom_roles:select', () => ({ data: [] }));
+    staffMocks.resolveStaffActor.mockResolvedValue(actor(null));
+
+    await expect(
+      requireGlobalPermission('111111111111111111', 'members:verify', {
+        guildId: GUILD_ID,
+        memberRoleIds: [DISCORD_ROLE_ID, OTHER_DISCORD_ROLE_ID],
+      }),
+    ).resolves.toEqual(actor('staff'));
+  });
+});
+
+describe('custom role administration', () => {
+  it('lists custom role names for mappings and sorts built-ins first', async () => {
+    setHandler('guild_custom_roles:select', (call) => ({
+      data: call.filters.guild_id === GUILD_ID ? [customRoleRow()] : [],
+    }));
+    setHandler('guild_role_mappings:select', () => ({
+      data: [
+        roleMappingRow(),
+        roleMappingRow({
+          discord_role_id: OTHER_DISCORD_ROLE_ID,
+          brawlhub_role: 'admin',
+          custom_role_id: null,
+        }),
+      ],
+    }));
+
+    await expect(listGuildCustomRoles(GUILD_ID)).resolves.toEqual([
+      expect.objectContaining({ id: CUSTOM_ROLE_ID, name: 'Event lead', permissions: ['sync:run'] }),
+    ]);
+    await expect(listGuildRoleMappings(GUILD_ID)).resolves.toEqual([
+      expect.objectContaining({ brawlhubRole: 'admin', label: 'admin' }),
+      expect.objectContaining({ customRoleId: CUSTOM_ROLE_ID, label: 'Event lead' }),
+    ]);
+  });
+
+  it('creates a guild-scoped role with deduplicated permissions and audits it', async () => {
+    setHandler('guild_custom_roles:insert', () => ({ data: { id: CUSTOM_ROLE_ID } }));
+
+    await expect(
+      createGuildCustomRole({
+        actor: actor('admin'),
+        guildId: GUILD_ID,
+        name: '  Event lead  ',
+        permissions: ['sync:run', 'sync:run', 'invalid:permission'],
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_permissions' });
+
+    await createGuildCustomRole({
+      actor: actor('admin'),
+      guildId: GUILD_ID,
+      name: '  Event lead  ',
+      permissions: ['sync:run', 'sync:run'],
+    });
+
+    const insert = fake.calls.find(
+      (call) => call.table === 'guild_custom_roles' && call.operation === 'insert',
+    );
+    expect(insert?.payload).toMatchObject({
+      guild_id: GUILD_ID,
+      name: 'Event lead',
+      permissions: ['sync:run'],
+      created_by: PROFILE_ID,
+    });
+    expect(
+      fake.calls.some(
+        (call) =>
+          call.table === 'audit_logs' &&
+          call.payload?.action === 'guild.custom_role.created' &&
+          call.payload?.guild_id === GUILD_ID,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects duplicate names and cross-guild updates', async () => {
+    setHandler('guild_custom_roles:select', (call) => ({
+      data: call.filters.guild_id === GUILD_ID ? [customRoleRow()] : null,
+    }));
+
+    await expect(
+      createGuildCustomRole({
+        actor: actor(),
+        guildId: GUILD_ID,
+        name: 'Event lead',
+        permissions: ['clubs:read'],
+      }),
+    ).rejects.toMatchObject({ code: 'duplicate_custom_role' });
+
+    await expect(
+      updateGuildCustomRole({
+        actor: actor(),
+        guildId: OTHER_GUILD_ID,
+        customRoleId: CUSTOM_ROLE_ID,
+        name: 'Other guild role',
+        permissions: ['clubs:read'],
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_custom_role' });
+  });
+
+  it('refuses to delete a custom role that is still mapped', async () => {
+    setHandler('guild_custom_roles:select', () => ({ data: [customRoleRow()] }));
+    setHandler('guild_role_mappings:select', () => ({ data: [roleMappingRow()] }));
+
+    await expect(
+      deleteGuildCustomRole({ actor: actor(), guildId: GUILD_ID, customRoleId: CUSTOM_ROLE_ID }),
+    ).rejects.toMatchObject({ code: 'custom_role_in_use' });
+
+    setHandler('guild_role_mappings:select', () => ({ data: [] }));
+    setHandler('guild_custom_roles:insert', () => ({ data: { id: CUSTOM_ROLE_ID } }));
+    await deleteGuildCustomRole({ actor: actor(), guildId: GUILD_ID, customRoleId: CUSTOM_ROLE_ID });
+    expect(
+      fake.calls.some(
+        (call) =>
+          call.table === 'guild_custom_roles' &&
+          call.operation === 'delete' &&
+          call.filters.guild_id === GUILD_ID &&
+          call.filters.id === CUSTOM_ROLE_ID,
+      ),
+    ).toBe(true);
+  });
+
+  it('validates custom role mapping targets and guild isolation', async () => {
+    setHandler('guild_custom_roles:select', (call) => ({
+      data: call.filters.guild_id === GUILD_ID ? [customRoleRow()] : [],
+    }));
+
+    await expect(
+      setGuildRoleMapping({
+        actor: actor(),
+        guildId: GUILD_ID,
+        discordRoleId: DISCORD_ROLE_ID,
+        brawlhubRole: 'staff',
+        customRoleId: CUSTOM_ROLE_ID,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_role_mapping' });
+
+    await expect(
+      setGuildRoleMapping({
+        actor: actor(),
+        guildId: OTHER_GUILD_ID,
+        discordRoleId: DISCORD_ROLE_ID,
+        customRoleId: CUSTOM_ROLE_ID,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_custom_role' });
+
+    await setGuildRoleMapping({
+      actor: actor(),
+      guildId: GUILD_ID,
+      discordRoleId: DISCORD_ROLE_ID,
+      customRoleId: CUSTOM_ROLE_ID,
+    });
+    const upsert = fake.calls.find(
+      (call) => call.table === 'guild_role_mappings' && call.operation === 'upsert',
+    );
+    expect(upsert?.payload).toMatchObject({
+      guild_id: GUILD_ID,
+      discord_role_id: DISCORD_ROLE_ID,
+      brawlhub_role: null,
+      custom_role_id: CUSTOM_ROLE_ID,
+    });
   });
 });
 

@@ -1,3 +1,5 @@
+import type { Permission } from '@brawlhub/shared';
+
 export interface ClubRow {
   id: string;
   guild_id: string;
@@ -151,6 +153,25 @@ export interface AdminProfileRow {
   id: string;
   discord_user_id: string;
   username: string | null;
+}
+
+export interface GuildCustomRoleRow {
+  id: string;
+  guild_id: string;
+  name: string;
+  description: string | null;
+  permissions: Permission[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GuildRoleMappingRow {
+  id: string;
+  guild_id: string;
+  discord_role_id: string;
+  brawlhub_role: 'owner' | 'admin' | 'staff' | 'member' | null;
+  custom_role_id: string | null;
+  updated_at: string;
 }
 
 export interface NotificationRow {

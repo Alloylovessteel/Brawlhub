@@ -755,7 +755,7 @@ async function handleSetupInteraction(interaction: CommandComponentInteraction):
       }
       session.step = { kind: 'role_remove_pick' };
       const options = mappings.slice(0, 25).map((m) => ({
-        label: `${m.brawlhubRole}`.slice(0, 100),
+        label: m.label.slice(0, 100),
         value: m.discordRoleId,
         description: `Remove mapping for role ID ${m.discordRoleId}`.slice(0, 100),
       }));

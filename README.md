@@ -131,6 +131,7 @@ Rules:
 - Unconfigured Discord roles never grant BrawlHub permissions.
 - Verified guild members with no elevated role receive `member` for each registered club.
 - Manual grants made in the admin interface persist across future Discord logins.
+- Guild-scoped **custom BrawlHub roles** are separate from the four built-in roles. Create them under `/dashboard/admin` → **Custom roles**, tick the individual permissions they grant, and map Discord role IDs to them there. Built-in mappings keep their existing highest-role precedence; matched custom roles add their selected permissions. Custom roles affect bot command authorization in that guild only and do not change stored website roles, `/staff list`, competition or moderation resolvers.
 
 ### 7. Start the website
 
@@ -170,7 +171,7 @@ Press `Ctrl+C` in the terminal running the dev server or `npm run dev`.
 | `/dashboard/players/[playerId]` | Real player record, memberships, join/leave/transfer timeline and snapshot-only trophy chart. |
 | `/dashboard/leaderboards` | Club and player rankings calculated from stored records; per-club filter and real club progression. |
 | `/dashboard/history` | Time-range filters and snapshot-only charts for club trophies, member counts and a selected player's trophies. |
-| `/dashboard/admin` | Owner/admin sync trigger, manual role assignment, guild settings, audit log and recent sync runs. Audit log is owner-only. |
+| `/dashboard/admin` | Owner/admin sync trigger, manual role assignment, custom role definitions with permission checkboxes and Discord role mappings, guild settings, audit log and recent sync runs. Audit log is owner-only. |
 
 If a club has only one snapshot, the chart shows that real point and the history page states when collection began. No values are interpolated.
 
@@ -191,6 +192,8 @@ Permissions are enforced in two layers:
 2. Supabase RLS policies using `is_global_staff()`, `has_club_access()` and `is_global_owner()`.
 
 Client-provided user IDs, club IDs and permission claims are never trusted. All mutation inputs are validated with Zod, and sensitive POST routes check the request origin and apply in-process rate limits.
+
+Custom roles are stored per guild in `guild_custom_roles`, and Discord mappings live in `guild_role_mappings`. Reads and writes use the trusted server client with explicit guild filters; browser clients are denied direct access. A custom role can only be deleted after its mappings are removed. No new top-level Discord slash command was added.
 
 ## Testing and verification
 

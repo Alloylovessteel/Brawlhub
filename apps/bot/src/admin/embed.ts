@@ -140,7 +140,7 @@ export function buildSettingsViewEmbed(
       : mdList(
           roleMappings
             .slice(0, 10)
-            .map((mapping) => `<@&${mapping.discordRoleId}> → **${mapping.brawlhubRole}**`),
+            .map((mapping) => `<@&${mapping.discordRoleId}> → **${mapping.label}**`),
         );
 
   return new EmbedBuilder()
@@ -233,9 +233,7 @@ export function buildRoleMappingsEmbed(
     name: `Mappings (${roleMappings.length})`,
     value: text(
       mdList(
-        roleMappings.map(
-          (mapping) => `<@&${mapping.discordRoleId}> → **${mapping.brawlhubRole}**`,
-        ),
+        roleMappings.map((mapping) => `<@&${mapping.discordRoleId}> → **${mapping.label}**`),
       ),
     ),
   });

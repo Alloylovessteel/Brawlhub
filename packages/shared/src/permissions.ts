@@ -17,6 +17,38 @@ export type Permission =
   | 'audit:read'
   | 'notifications:send';
 
+/** Single source of truth for permission checkboxes and validation. */
+export const ALL_PERMISSIONS = [
+  'clubs:read',
+  'clubs:write',
+  'players:read',
+  'sync:run',
+  'members:verify',
+  'staff:manage',
+  'competitions:manage',
+  'blacklists:manage',
+  'audit:read',
+  'notifications:send',
+] as const satisfies readonly Permission[];
+
+export const permissionSchema = z.enum(ALL_PERMISSIONS);
+
+export const customRoleNameSchema = z
+  .string()
+  .trim()
+  .min(1, 'Role name is required')
+  .max(64, 'Role name must be 64 characters or fewer');
+
+export function isPermission(value: unknown): value is Permission {
+  return typeof value === 'string' && (ALL_PERMISSIONS as readonly string[]).includes(value);
+}
+
+export function isBuiltinRole(value: unknown): value is Role {
+  return (
+    value === 'owner' || value === 'admin' || value === 'staff' || value === 'member'
+  );
+}
+
 const ownerPermissions: readonly Permission[] = [
   'clubs:read',
   'clubs:write',
@@ -53,6 +85,31 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
 
 export function hasPermission(role: Role, permission: Permission): boolean {
   return ROLE_PERMISSIONS[role].includes(permission);
+}
+
+/** Guild-scoped role with an explicit permission subset. */
+export interface CustomRoleDefinition {
+  readonly id: string;
+  readonly guildId: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly permissions: readonly Permission[];
+}
+
+/** A built-in or custom role whose permissions can be evaluated. */
+export type EffectiveRole =
+  | { readonly kind: 'builtin'; readonly role: Role }
+  | { readonly kind: 'custom'; readonly role: CustomRoleDefinition };
+
+export function permissionsForEffectiveRole(role: EffectiveRole): readonly Permission[] {
+  return role.kind === 'builtin' ? ROLE_PERMISSIONS[role.role] : role.role.permissions;
+}
+
+export function hasAnyPermission(
+  roles: readonly EffectiveRole[],
+  permission: Permission,
+): boolean {
+  return roles.some((role) => permissionsForEffectiveRole(role).includes(permission));
 }
 
 const BRAWL_TAG_PATTERN = /^[0289CGJLPQRUVY]{3,10}$/;

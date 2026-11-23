@@ -65,6 +65,8 @@ try {
     'audit_logs',
     'sync_locks',
     'guild_settings',
+    'guild_role_mappings',
+    'guild_custom_roles',
   ];
   const rls = await client.query(
     `SELECT tablename, relrowsecurity
@@ -132,10 +134,11 @@ try {
     `SELECT table_name, grantee, privilege_type
        FROM information_schema.role_table_grants
       WHERE table_schema = 'public'
-        AND table_name = 'sync_locks'
+        AND table_name = ANY($1::text[])
         AND grantee IN ('anon', 'authenticated', 'PUBLIC')`,
+    [['sync_locks', 'guild_custom_roles']],
   );
-  check(grants.rowCount === 0, 'anon/authenticated still have privileges on sync_locks');
+  check(grants.rowCount === 0, 'anon/authenticated still have privileges on service-only tables');
 
   const mutationPolicies = await client.query(
     `SELECT tablename, policyname, cmd

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mdCode } from '../discord/embed-format';
-import { buildSyncStatusEmbed } from './embed';
-import type { SyncStatusView } from './types';
+import { buildRoleMappingsEmbed, buildSyncStatusEmbed } from './embed';
+import type { GuildRoleMappingView, SyncStatusView } from './types';
 
 const lock = {
   scope: 'guild:1488531664962326571',
@@ -23,6 +23,24 @@ const run = {
   affectedClubIds: ['club-1'],
   clubTags: ['2UG9UGQJY'],
 };
+
+describe('buildRoleMappingsEmbed', () => {
+  it('renders custom role labels instead of raw IDs', () => {
+    const mapping: GuildRoleMappingView = {
+      guildId: '123456789012345678',
+      discordRoleId: '999999999999999999',
+      brawlhubRole: null,
+      customRoleId: '11111111-1111-4111-8111-111111111111',
+      customRoleName: 'Event lead',
+      updatedAt: null,
+      label: 'Event lead',
+    };
+
+    const json = buildRoleMappingsEmbed(mapping.guildId, [mapping]).toJSON();
+    expect(JSON.stringify(json)).toContain('<@&999999999999999999> → **Event lead**');
+    expect(JSON.stringify(json)).not.toContain('11111111-1111-4111-8111-111111111111');
+  });
+});
 
 describe('buildSyncStatusEmbed', () => {
   it('labels a retained last_error as previous on an in-progress run', () => {

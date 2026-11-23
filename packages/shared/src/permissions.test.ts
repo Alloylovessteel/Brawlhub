@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { ROLE_PERMISSIONS, brawlTagSchema, discordIdSchema, hasPermission } from './permissions';
+import {
+  ALL_PERMISSIONS,
+  ROLE_PERMISSIONS,
+  brawlTagSchema,
+  customRoleNameSchema,
+  discordIdSchema,
+  hasAnyPermission,
+  hasPermission,
+  isBuiltinRole,
+  isPermission,
+  permissionSchema,
+} from './permissions';
 
 describe('hasPermission', () => {
   it('grants owners every permission', () => {
@@ -23,6 +34,63 @@ describe('hasPermission', () => {
     expect(hasPermission('member', 'clubs:read')).toBe(true);
     expect(hasPermission('member', 'players:read')).toBe(true);
     expect(hasPermission('member', 'clubs:write')).toBe(false);
+  });
+});
+
+describe('custom role helpers', () => {
+  it('covers every built-in permission exactly once', () => {
+    const builtInPermissions = new Set(Object.values(ROLE_PERMISSIONS).flat());
+    expect([...builtInPermissions].sort()).toEqual([...ALL_PERMISSIONS].sort());
+    expect(new Set(ALL_PERMISSIONS).size).toBe(ALL_PERMISSIONS.length);
+  });
+
+  it('validates the 10 permissions and trims custom role names', () => {
+    expect(permissionSchema.safeParse('audit:read').success).toBe(true);
+    expect(permissionSchema.safeParse('made:up').success).toBe(false);
+    expect(isPermission('sync:run')).toBe(true);
+    expect(isPermission('sync:ALL')).toBe(false);
+    expect(customRoleNameSchema.parse('  Event lead  ')).toBe('Event lead');
+    expect(customRoleNameSchema.safeParse('').success).toBe(false);
+  });
+
+  it('unions built-in and custom role permissions without widening the stored role', () => {
+    expect(isBuiltinRole('staff')).toBe(true);
+    expect(isBuiltinRole('event-lead')).toBe(false);
+    expect(
+      hasAnyPermission(
+        [
+          { kind: 'builtin', role: 'member' },
+          {
+            kind: 'custom',
+            role: {
+              id: 'role-id',
+              guildId: 'guild-id',
+              name: 'Event lead',
+              description: null,
+              permissions: ['sync:run'],
+            },
+          },
+        ],
+        'sync:run',
+      ),
+    ).toBe(true);
+    expect(
+      hasAnyPermission(
+        [
+          {
+            kind: 'custom',
+            role: {
+              id: 'role-id',
+              guildId: 'guild-id',
+              name: 'Event lead',
+              description: null,
+              permissions: ['clubs:read'],
+            },
+          },
+        ],
+        'audit:read',
+      ),
+    ).toBe(false);
   });
 });
 

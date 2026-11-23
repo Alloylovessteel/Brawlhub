@@ -1,3 +1,4 @@
+import { ALL_PERMISSIONS } from '@brawlhub/shared';
 import { HistoryChart } from '@/components/charts/history-chart';
 import { PageHeader } from '@/components/dashboard/page-header';
 import { Badge } from '@/components/ui/badge';
@@ -13,6 +14,8 @@ import {
   getAdminProfiles,
   getAuditLogs,
   getClubs,
+  getGuildCustomRoles,
+  getGuildRoleMappings,
   getGuildSettings,
   getSyncRuns,
   getUserRoles,
@@ -34,6 +37,32 @@ function formatDetails(value: unknown): string {
   }
 }
 
+function PermissionCheckboxes({
+  selected = [],
+  name = 'permissions',
+}: {
+  selected?: readonly string[];
+  name?: string;
+}) {
+  const selectedPermissions = new Set<string>(selected);
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {ALL_PERMISSIONS.map((permission) => (
+        <label key={permission} className="flex items-center gap-2 text-xs text-foreground">
+          <input
+            type="checkbox"
+            name={name}
+            value={permission}
+            defaultChecked={selectedPermissions.has(permission)}
+            className="h-4 w-4 rounded border-border bg-surface-muted text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          />
+          <span className="font-mono">{permission}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export default async function AdminPage({
   searchParams,
 }: Readonly<{
@@ -41,6 +70,7 @@ export default async function AdminPage({
     sync?: string | string[];
     role?: string | string[];
     settings?: string | string[];
+    customRoles?: string | string[];
     tab?: string | string[];
   }>;
 }>) {
@@ -50,13 +80,16 @@ export default async function AdminPage({
   const canManageGlobalRoles = session.globalRole === 'owner';
   const canManageRoles = hasGlobalPermission(session, 'staff:manage');
 
-  const [clubs, syncRuns, guildSettings, profiles, roleRows] = await Promise.all([
-    getClubs({ page: 1, pageSize: 100 }),
-    getSyncRuns(20),
-    getGuildSettings(),
-    getAdminProfiles(),
-    getUserRoles(),
-  ]);
+  const [clubs, syncRuns, guildSettings, profiles, roleRows, customRoles, roleMappings] =
+    await Promise.all([
+      getClubs({ page: 1, pageSize: 100 }),
+      getSyncRuns(20),
+      getGuildSettings(),
+      getAdminProfiles(),
+      getUserRoles(),
+      canManageRoles ? getGuildCustomRoles() : Promise.resolve(null),
+      canManageRoles ? getGuildRoleMappings() : Promise.resolve(null),
+    ]);
   const auditLogs = canAudit ? await getAuditLogs(50) : null;
 
   const profileById = new Map(profiles.rows.map((profile) => [profile.id, profile]));
@@ -67,6 +100,10 @@ export default async function AdminPage({
       label: formatDateTime(run.started_at),
       value: run.records_processed,
     }));
+  const defaultGuildId = guildSettings.rows[0]?.guild_id ?? process.env.DISCORD_GUILD_ID ?? '';
+  const customRoleRows = customRoles?.rows ?? [];
+  const mappingRows = roleMappings?.rows ?? [];
+  const customRoleById = new Map(customRoleRows.map((role) => [role.id, role]));
 
   return (
     <>
@@ -98,11 +135,23 @@ export default async function AdminPage({
           {firstValue(params.settings) === 'success' ? 'Guild settings saved.' : 'Guild settings could not be saved.'}
         </p>
       ) : null}
+      {firstValue(params.customRoles) !== undefined ? (
+        <p
+          className={`mb-4 rounded-lg border px-4 py-3 text-sm ${firstValue(params.customRoles) === 'success' ? 'border-success/40 bg-success/10 text-success' : 'border-danger/40 bg-danger/10 text-danger'}`}
+        >
+          {firstValue(params.customRoles) === 'success'
+            ? 'Custom role saved.'
+            : 'Custom role could not be saved. Check the name, permissions and guild.'}
+        </p>
+      ) : null}
 
       <div className="mb-5 flex flex-wrap gap-2 text-sm">
         <a href="#sync" className="rounded-lg border border-border bg-surface px-3 py-1.5 hover:bg-surface-hover">Sync</a>
         {canManageRoles ? (
           <a href="#roles" className="rounded-lg border border-border bg-surface px-3 py-1.5 hover:bg-surface-hover">Roles</a>
+        ) : null}
+        {canManageRoles ? (
+          <a href="#custom-roles" className="rounded-lg border border-border bg-surface px-3 py-1.5 hover:bg-surface-hover">Custom roles</a>
         ) : null}
         {canAudit ? (
           <a href="#audit" className="rounded-lg border border-border bg-surface px-3 py-1.5 hover:bg-surface-hover">Audit log</a>
@@ -284,6 +333,178 @@ export default async function AdminPage({
                         </TableRow>
                       );
                     })}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+        </section>
+      ) : null}
+
+      {canManageRoles ? (
+        <section id="custom-roles" className="mt-6 grid gap-4 lg:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Create custom BrawlHub role</CardTitle>
+              <CardDescription>
+                Define a guild-scoped role with its own permission checkboxes, then map Discord roles to it.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form action="/api/admin/custom-roles" method="post" className="grid gap-3">
+                <input type="hidden" name="action" value="create" />
+                <div>
+                  <label htmlFor="custom-role-guild" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Guild ID</label>
+                  <Input id="custom-role-guild" name="guildId" defaultValue={defaultGuildId} required inputMode="numeric" pattern="[0-9]{17,20}" className="font-mono" />
+                </div>
+                <div>
+                  <label htmlFor="custom-role-name" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Role name</label>
+                  <Input id="custom-role-name" name="name" maxLength={64} required />
+                </div>
+                <div>
+                  <label htmlFor="custom-role-description" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Description</label>
+                  <Input id="custom-role-description" name="description" maxLength={200} />
+                </div>
+                <fieldset className="grid gap-2 rounded-lg border border-border p-3">
+                  <legend className="muted-text px-1 text-xs font-semibold uppercase tracking-wider">Permissions</legend>
+                  <PermissionCheckboxes />
+                </fieldset>
+                <div>
+                  <Button type="submit">Create custom role</Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Discord role mapping</CardTitle>
+              <CardDescription>
+                Map a Discord role in one guild to a built-in or custom BrawlHub role. Custom roles grant only the permissions you select.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {mappingRows.length === 0 ? (
+                <p className="muted-text mb-4 text-sm">No Discord role mappings stored yet.</p>
+              ) : (
+                <Table className="mb-4">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Guild</TableHead>
+                      <TableHead>Discord role</TableHead>
+                      <TableHead>BrawlHub role</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {mappingRows.map((mapping) => (
+                      <TableRow key={mapping.id}>
+                        <TableCell className="font-mono text-xs">{mapping.guild_id}</TableCell>
+                        <TableCell className="font-mono text-xs">{mapping.discord_role_id}</TableCell>
+                        <TableCell className="text-sm">
+                          {mapping.brawlhub_role ?? customRoleById.get(mapping.custom_role_id ?? '')?.name ?? 'Unknown'}
+                        </TableCell>
+                        <TableCell>
+                          <form action="/api/admin/custom-roles" method="post">
+                            <input type="hidden" name="action" value="unmap" />
+                            <input type="hidden" name="guildId" value={mapping.guild_id} />
+                            <input type="hidden" name="discordRoleId" value={mapping.discord_role_id} />
+                            <Button type="submit" variant="danger" size="sm">Remove</Button>
+                          </form>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+              <form action="/api/admin/custom-roles" method="post" className="grid gap-3">
+                <input type="hidden" name="action" value="map" />
+                <div>
+                  <label htmlFor="mapping-guild" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Guild ID</label>
+                  <Input id="mapping-guild" name="guildId" defaultValue={defaultGuildId} required inputMode="numeric" pattern="[0-9]{17,20}" className="font-mono" />
+                </div>
+                <div>
+                  <label htmlFor="mapping-discord-role" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">Discord role ID</label>
+                  <Input id="mapping-discord-role" name="discordRoleId" required inputMode="numeric" pattern="[0-9]{17,20}" className="font-mono" />
+                </div>
+                <div>
+                  <label htmlFor="mapping-target" className="muted-text mb-1.5 block text-xs font-semibold uppercase tracking-wider">BrawlHub role</label>
+                  <Select id="mapping-target" name="target" className="w-full">
+                    <option value="builtin:owner">Built-in: owner</option>
+                    <option value="builtin:admin">Built-in: admin</option>
+                    <option value="builtin:staff">Built-in: staff</option>
+                    <option value="builtin:member">Built-in: member</option>
+                    {customRoleRows.length === 0 ? null : (
+                      <optgroup label="Custom roles">
+                        {customRoleRows.map((role) => (
+                          <option key={role.id} value={`custom:${role.id}`}>
+                            {role.name} ({role.guild_id})
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </Select>
+                </div>
+                <div>
+                  <Button type="submit">Save mapping</Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+
+          <Card className="lg:col-span-2">
+            <CardHeader>
+              <CardTitle>Defined custom roles</CardTitle>
+              <CardDescription>Edit permissions or remove a role. A role with active Discord mappings must be unmapped first.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {customRoleRows.length === 0 ? (
+                <p className="muted-text py-6 text-center text-sm">No custom roles defined yet.</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Guild</TableHead>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Permissions</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {customRoleRows.map((role) => (
+                      <TableRow key={role.id}>
+                        <TableCell className="font-mono text-xs">{role.guild_id}</TableCell>
+                        <TableCell>
+                          <p className="text-sm font-medium">{role.name}</p>
+                          {role.description === null ? null : (
+                            <p className="muted-text text-xs">{role.description}</p>
+                          )}
+                        </TableCell>
+                        <TableCell className="max-w-sm font-mono text-xs text-muted">
+                          {role.permissions.length === 0 ? '—' : role.permissions.join(', ')}
+                        </TableCell>
+                        <TableCell>
+                          <details className="mb-2">
+                            <summary className="cursor-pointer text-sm text-accent">Edit</summary>
+                            <form action="/api/admin/custom-roles" method="post" className="mt-3 grid gap-3">
+                              <input type="hidden" name="action" value="update" />
+                              <input type="hidden" name="guildId" value={role.guild_id} />
+                              <input type="hidden" name="customRoleId" value={role.id} />
+                              <Input name="name" defaultValue={role.name} maxLength={64} required />
+                              <Input name="description" defaultValue={role.description ?? ''} maxLength={200} />
+                              <PermissionCheckboxes selected={role.permissions} />
+                              <Button type="submit" size="sm">Save role</Button>
+                            </form>
+                          </details>
+                          <form action="/api/admin/custom-roles" method="post">
+                            <input type="hidden" name="action" value="delete" />
+                            <input type="hidden" name="guildId" value={role.guild_id} />
+                            <input type="hidden" name="customRoleId" value={role.id} />
+                            <Button type="submit" variant="danger" size="sm">Delete</Button>
+                          </form>
+                        </TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
               )}

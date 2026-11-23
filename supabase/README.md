@@ -48,9 +48,11 @@ references it.
   `blacklists` and `audit_logs` are global-staff only. The checks are enforced
   with `SECURITY DEFINER` helpers so clients do not need direct access to `user_roles`.
 - **Service-role only:** `sync_runs`, `membership_events`, `club_snapshots`,
-  `player_snapshots`, `notifications`, `user_roles` and `discord_users` have no
-  policies and no grants for `anon`/`authenticated`. Future changes may add narrowly
-  scoped SELECT policies for club history, but should keep them role-restricted.
+  `player_snapshots`, `notifications`, `user_roles`, `discord_users`,
+  `guild_role_mappings` and `guild_custom_roles` have no client policies.
+  `guild_custom_roles` explicitly revokes `anon`/`authenticated` grants. Future
+  changes may add narrowly scoped SELECT policies for club history, but should
+  keep them role-restricted.
 - **No Discord OAuth tokens are stored anywhere.** `profiles` and `discord_users`
   hold only IDs, usernames and avatar URLs. Tokens stay in the trusted server/session
   layer (see root `.env.example`).

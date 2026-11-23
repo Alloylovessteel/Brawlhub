@@ -1,9 +1,13 @@
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import {
-  ROLE_PERMISSIONS,
+  customRoleNameSchema,
   discordIdSchema,
+  hasAnyPermission,
   hasPermission,
+  isPermission,
+  type CustomRoleDefinition,
+  type EffectiveRole,
   type Permission,
   type Role,
 } from '@brawlhub/shared';
@@ -18,6 +22,7 @@ import type {
   AdminActor,
   AuditLogEntry,
   AuditLogView,
+  GuildCustomRoleView,
   GuildOverviewFieldsUpdate,
   GuildRoleMappingView,
   GuildSettingsField,
@@ -55,6 +60,10 @@ const AUDIT_DETAIL_KEYS = [
   'clubTag',
   'clubName',
   'changedFields',
+  'brawlhubRole',
+  'customRoleId',
+  'customRoleName',
+  'permissions',
   'status',
   'clubsProcessed',
   'playersUpserted',
@@ -114,11 +123,58 @@ function parseBrawlhubRole(value: unknown): Role | null {
     : null;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function parseUuid(value: unknown): string | null {
+  return typeof value === 'string' && UUID_PATTERN.test(value) ? value : null;
+}
+
 interface GuildRoleMappingRow {
   readonly guild_id: string;
   readonly discord_role_id: string;
-  readonly brawlhub_role: string;
+  readonly brawlhub_role: string | null;
+  readonly custom_role_id: string | null;
   readonly updated_at: string | null;
+}
+
+interface GuildCustomRoleRow {
+  readonly id: string;
+  readonly guild_id: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly permissions: unknown;
+  readonly created_at: string | null;
+  readonly updated_at: string | null;
+}
+
+function parsePermissions(value: unknown): Permission[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<Permission>();
+  const result: Permission[] = [];
+  for (const item of value) {
+    if (!isPermission(item) || seen.has(item)) continue;
+    seen.add(item);
+    result.push(item);
+  }
+  return result;
+}
+
+function parseCustomRoleRow(row: GuildCustomRoleRow): CustomRoleDefinition | null {
+  if (
+    parseUuid(row.id) === null ||
+    typeof row.guild_id !== 'string' ||
+    typeof row.name !== 'string' ||
+    row.name.trim().length === 0
+  ) {
+    return null;
+  }
+  return {
+    id: row.id,
+    guildId: row.guild_id,
+    name: row.name,
+    description: asString(row.description),
+    permissions: parsePermissions(row.permissions),
+  };
 }
 
 async function readGuildRoleMappings(
@@ -127,26 +183,65 @@ async function readGuildRoleMappings(
 ): Promise<GuildRoleMappingRow[]> {
   const result = await db
     .from('guild_role_mappings')
-    .select('guild_id, discord_role_id, brawlhub_role, updated_at')
+    .select('guild_id, discord_role_id, brawlhub_role, custom_role_id, updated_at')
     .eq('guild_id', guildId);
   requireOk(result.error, 'Read guild role mappings');
   return (Array.isArray(result.data) ? result.data : []) as GuildRoleMappingRow[];
 }
 
-function resolveMappedRole(
+async function readGuildCustomRoles(
+  guildId: string,
+  db: DatabaseClient,
+): Promise<GuildCustomRoleRow[]> {
+  const result = await db
+    .from('guild_custom_roles')
+    .select('id, guild_id, name, description, permissions, created_at, updated_at')
+    .eq('guild_id', guildId);
+  requireOk(result.error, 'Read guild custom roles');
+  return (Array.isArray(result.data) ? result.data : []) as GuildCustomRoleRow[];
+}
+
+interface MappedRoles {
+  readonly builtin: Role | null;
+  readonly roles: readonly EffectiveRole[];
+}
+
+/**
+ * Built-in mappings keep their existing "highest role wins" behavior. Custom
+ * roles are additive: every matched custom role contributes its permissions.
+ */
+function resolveMappedEffectiveRoles(
   memberRoleIds: readonly string[] | null | undefined,
   mappings: readonly GuildRoleMappingRow[],
-): Role | null {
-  if (memberRoleIds === null || memberRoleIds === undefined || memberRoleIds.length === 0) return null;
+  customRoles: readonly GuildCustomRoleRow[],
+): MappedRoles {
+  if (memberRoleIds === null || memberRoleIds === undefined || memberRoleIds.length === 0) {
+    return { builtin: null, roles: [] };
+  }
   const roleIds = new Set(memberRoleIds);
+  const customById = new Map<string, CustomRoleDefinition>();
+  for (const row of customRoles) {
+    const role = parseCustomRoleRow(row);
+    if (role !== null) customById.set(role.id, role);
+  }
+
   let best: Role | null = null;
+  const matchedCustom: CustomRoleDefinition[] = [];
   for (const mapping of mappings) {
     if (!roleIds.has(mapping.discord_role_id)) continue;
-    const role = parseBrawlhubRole(mapping.brawlhub_role);
-    if (role === null) continue;
-    if (best === null || ROLE_RANK[role] > ROLE_RANK[best]) best = role;
+    const builtin = parseBrawlhubRole(mapping.brawlhub_role);
+    if (builtin !== null && (best === null || ROLE_RANK[builtin] > ROLE_RANK[best])) {
+      best = builtin;
+    }
+    const customId = parseUuid(mapping.custom_role_id);
+    const custom = customId === null ? undefined : customById.get(customId);
+    if (custom !== undefined) matchedCustom.push(custom);
   }
-  return best;
+
+  const roles: EffectiveRole[] = [];
+  if (best !== null) roles.push({ kind: 'builtin', role: best });
+  for (const custom of matchedCustom) roles.push({ kind: 'custom', role: custom });
+  return { builtin: best, roles };
 }
 
 function hasDiscordBreakglassGrant(
@@ -262,13 +357,18 @@ export async function requireGlobalPermission(
     const parsedGuildId = discordIdSchema.safeParse(options.guildId);
     if (parsedGuildId.success) {
       const db = dbFor(options);
-      const mappings = await readGuildRoleMappings(parsedGuildId.data, db);
-      const mappedRole = resolveMappedRole(options.memberRoleIds, mappings);
-      if (mappedRole !== null && hasPermission(mappedRole, permission)) {
+      const [mappings, customRoles] = await Promise.all([
+        readGuildRoleMappings(parsedGuildId.data, db),
+        readGuildCustomRoles(parsedGuildId.data, db),
+      ]);
+      const mapped = resolveMappedEffectiveRoles(options.memberRoleIds, mappings, customRoles);
+      if (hasAnyPermission(mapped.roles, permission)) {
+        // Custom roles grant command permissions without changing the stored
+        // global role. Only a matched built-in mapping implies a built-in role.
         return resolveOrProvisionActor(
           discordUserId,
           { ...options, db },
-          impliedRoleForDiscordGrant(options, mappedRole),
+          impliedRoleForDiscordGrant(options, mapped.builtin ?? 'member'),
         );
       }
     }
@@ -520,54 +620,345 @@ export async function updateGuildOverviewFields(
   return loadGuildSettings(parsedGuildId.data, { db });
 }
 
+function validateCustomPermissions(value: unknown): Permission[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new AdminServiceError(
+      'invalid_permissions',
+      'Select at least one permission for this custom role.',
+    );
+  }
+  const seen = new Set<Permission>();
+  const permissions: Permission[] = [];
+  for (const item of value) {
+    if (!isPermission(item)) {
+      throw new AdminServiceError('invalid_permissions', 'A selected permission is not supported.');
+    }
+    if (!seen.has(item)) {
+      seen.add(item);
+      permissions.push(item);
+    }
+  }
+  return permissions;
+}
+
+function isDuplicateError(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === '23505';
+}
+
+function requireGuildId(guildId: string): string {
+  const parsed = discordIdSchema.safeParse(guildId);
+  if (!parsed.success) {
+    throw new AdminServiceError('invalid_guild', 'A valid configured Discord guild is required.');
+  }
+  return parsed.data;
+}
+
+export async function listGuildCustomRoles(
+  guildId: string,
+  options: AdminServiceOptions = {},
+): Promise<GuildCustomRoleView[]> {
+  const parsedGuildId = requireGuildId(guildId);
+  const db = dbFor(options);
+  const rows = await readGuildCustomRoles(parsedGuildId, db);
+  return rows
+    .map((row) => {
+      const role = parseCustomRoleRow(row);
+      if (role === null) return null;
+      return {
+        id: role.id,
+        guildId: parsedGuildId,
+        name: role.name,
+        description: role.description,
+        permissions: role.permissions,
+        createdAt: asString(row.created_at),
+        updatedAt: asString(row.updated_at),
+      } satisfies GuildCustomRoleView;
+    })
+    .filter((role): role is GuildCustomRoleView => role !== null)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function createGuildCustomRole(
+  input: {
+    actor: AdminActor;
+    guildId: string;
+    name: string;
+    description?: string | null;
+    permissions: readonly unknown[];
+  },
+  options: AdminServiceOptions = {},
+): Promise<GuildCustomRoleView[]> {
+  const parsedGuildId = requireGuildId(input.guildId);
+  const parsedName = customRoleNameSchema.safeParse(input.name);
+  const permissions = validateCustomPermissions(input.permissions);
+  if (!parsedName.success) {
+    throw new AdminServiceError('invalid_name', parsedName.error.issues[0]?.message ?? 'Invalid role name.');
+  }
+
+  const db = dbFor(options);
+  const existing = await readGuildCustomRoles(parsedGuildId, db);
+  if (existing.some((row) => row.name === parsedName.data)) {
+    throw new AdminServiceError('duplicate_custom_role', 'A custom role with that name already exists.');
+  }
+
+  const saved = await db
+    .from('guild_custom_roles')
+    .insert({
+      guild_id: parsedGuildId,
+      name: parsedName.data,
+      description: asString(input.description),
+      permissions,
+      created_by: input.actor.profileId,
+    })
+    .select('id')
+    .maybeSingle();
+  if (saved.error !== null && saved.error !== undefined) {
+    if (isDuplicateError(saved.error)) {
+      throw new AdminServiceError('duplicate_custom_role', 'A custom role with that name already exists.');
+    }
+    requireOk(saved.error, 'Create guild custom role');
+  }
+  const customRoleId = (saved.data as { id?: unknown } | null)?.id;
+  if (typeof customRoleId !== 'string') {
+    throw new AdminServiceError('create_failed', 'Custom role could not be created.');
+  }
+
+  await recordAdminAudit(
+    {
+      actor: input.actor,
+      action: 'guild.custom_role.created',
+      targetType: 'guild_custom_role',
+      targetId: customRoleId,
+      guildId: parsedGuildId,
+      details: {
+        guildId: parsedGuildId,
+        customRoleId,
+        customRoleName: parsedName.data,
+        permissions,
+      },
+    },
+    { db },
+  );
+
+  return listGuildCustomRoles(parsedGuildId, { db });
+}
+
+export async function updateGuildCustomRole(
+  input: {
+    actor: AdminActor;
+    guildId: string;
+    customRoleId: string;
+    name: string;
+    description?: string | null;
+    permissions: readonly unknown[];
+  },
+  options: AdminServiceOptions = {},
+): Promise<GuildCustomRoleView[]> {
+  const parsedGuildId = requireGuildId(input.guildId);
+  const customRoleId = parseUuid(input.customRoleId);
+  const parsedName = customRoleNameSchema.safeParse(input.name);
+  const permissions = validateCustomPermissions(input.permissions);
+  if (customRoleId === null) {
+    throw new AdminServiceError('invalid_custom_role', 'Select a valid custom role.');
+  }
+  if (!parsedName.success) {
+    throw new AdminServiceError('invalid_name', parsedName.error.issues[0]?.message ?? 'Invalid role name.');
+  }
+
+  const db = dbFor(options);
+  const currentResult = await db
+    .from('guild_custom_roles')
+    .select('id, guild_id, name, description, permissions, created_at, updated_at')
+    .eq('id', customRoleId)
+    .eq('guild_id', parsedGuildId)
+    .maybeSingle();
+  requireOk(currentResult.error, 'Read guild custom role');
+  if (currentResult.data === null) {
+    throw new AdminServiceError('invalid_custom_role', 'Custom role was not found in this guild.');
+  }
+
+  const saved = await db
+    .from('guild_custom_roles')
+    .update({
+      name: parsedName.data,
+      description: asString(input.description),
+      permissions,
+    })
+    .eq('id', customRoleId)
+    .eq('guild_id', parsedGuildId);
+  if (saved.error !== null && saved.error !== undefined) {
+    if (isDuplicateError(saved.error)) {
+      throw new AdminServiceError('duplicate_custom_role', 'A custom role with that name already exists.');
+    }
+    requireOk(saved.error, 'Update guild custom role');
+  }
+
+  await recordAdminAudit(
+    {
+      actor: input.actor,
+      action: 'guild.custom_role.updated',
+      targetType: 'guild_custom_role',
+      targetId: customRoleId,
+      guildId: parsedGuildId,
+      details: {
+        guildId: parsedGuildId,
+        customRoleId,
+        customRoleName: parsedName.data,
+        permissions,
+      },
+    },
+    { db },
+  );
+
+  return listGuildCustomRoles(parsedGuildId, { db });
+}
+
+export async function deleteGuildCustomRole(
+  input: { actor: AdminActor; guildId: string; customRoleId: string },
+  options: AdminServiceOptions = {},
+): Promise<GuildCustomRoleView[]> {
+  const parsedGuildId = requireGuildId(input.guildId);
+  const customRoleId = parseUuid(input.customRoleId);
+  if (customRoleId === null) {
+    throw new AdminServiceError('invalid_custom_role', 'Select a valid custom role.');
+  }
+
+  const db = dbFor(options);
+  const [customRoles, mappings] = await Promise.all([
+    readGuildCustomRoles(parsedGuildId, db),
+    readGuildRoleMappings(parsedGuildId, db),
+  ]);
+  const role = customRoles.find((row) => row.id === customRoleId);
+  if (role === undefined) {
+    throw new AdminServiceError('invalid_custom_role', 'Custom role was not found in this guild.');
+  }
+  if (mappings.some((row) => row.custom_role_id === customRoleId)) {
+    throw new AdminServiceError(
+      'custom_role_in_use',
+      'Remove Discord role mappings for this custom role before deleting it.',
+    );
+  }
+
+  const removed = await db
+    .from('guild_custom_roles')
+    .delete()
+    .eq('id', customRoleId)
+    .eq('guild_id', parsedGuildId);
+  requireOk(removed.error, 'Delete guild custom role');
+
+  await recordAdminAudit(
+    {
+      actor: input.actor,
+      action: 'guild.custom_role.removed',
+      targetType: 'guild_custom_role',
+      targetId: customRoleId,
+      guildId: parsedGuildId,
+      details: {
+        guildId: parsedGuildId,
+        customRoleId,
+        customRoleName: role.name,
+      },
+    },
+    { db },
+  );
+
+  return listGuildCustomRoles(parsedGuildId, { db });
+}
+
 export async function listGuildRoleMappings(
   guildId: string,
   options: AdminServiceOptions = {},
 ): Promise<GuildRoleMappingView[]> {
-  const parsedGuildId = discordIdSchema.safeParse(guildId);
-  if (!parsedGuildId.success) {
-    throw new AdminServiceError('invalid_guild', 'A valid configured Discord guild is required.');
-  }
+  const parsedGuildId = requireGuildId(guildId);
   const db = dbFor(options);
-  const rows = await readGuildRoleMappings(parsedGuildId.data, db);
+  const [rows, customRoleRows] = await Promise.all([
+    readGuildRoleMappings(parsedGuildId, db),
+    readGuildCustomRoles(parsedGuildId, db),
+  ]);
+  const customNames = new Map<string, string>();
+  for (const row of customRoleRows) {
+    const role = parseCustomRoleRow(row);
+    if (role !== null) customNames.set(role.id, role.name);
+  }
+
   return rows
     .map((row) => {
-      const role = parseBrawlhubRole(row.brawlhub_role);
-      if (role === null) return null;
+      const builtin = parseBrawlhubRole(row.brawlhub_role);
+      const customId = parseUuid(row.custom_role_id);
+      const customName = customId === null ? null : customNames.get(customId) ?? null;
+      if (builtin === null && customName === null) return null;
+      const label = builtin ?? customName ?? 'Unknown';
       return {
-        guildId: parsedGuildId.data,
+        guildId: parsedGuildId,
         discordRoleId: row.discord_role_id,
-        brawlhubRole: role,
+        brawlhubRole: builtin,
+        customRoleId: builtin === null ? customId : null,
+        customRoleName: customName,
         updatedAt: asString(row.updated_at),
+        label,
       } satisfies GuildRoleMappingView;
     })
     .filter((row): row is GuildRoleMappingView => row !== null)
-    .sort((a, b) => ROLE_RANK[b.brawlhubRole] - ROLE_RANK[a.brawlhubRole] || a.discordRoleId.localeCompare(b.discordRoleId));
+    .sort((a, b) => {
+      const aRank = a.brawlhubRole === null ? -1 : ROLE_RANK[a.brawlhubRole];
+      const bRank = b.brawlhubRole === null ? -1 : ROLE_RANK[b.brawlhubRole];
+      return bRank - aRank || a.label.localeCompare(b.label) || a.discordRoleId.localeCompare(b.discordRoleId);
+    });
 }
 
 export async function setGuildRoleMapping(
-  input: { actor: AdminActor; guildId: string; discordRoleId: string; brawlhubRole: Role },
+  input: {
+    actor: AdminActor;
+    guildId: string;
+    discordRoleId: string;
+    brawlhubRole?: Role;
+    customRoleId?: string;
+  },
   options: AdminServiceOptions = {},
 ): Promise<GuildRoleMappingView[]> {
   const parsedGuildId = discordIdSchema.safeParse(input.guildId);
   const parsedRoleId = discordIdSchema.safeParse(input.discordRoleId);
-  const role = parseBrawlhubRole(input.brawlhubRole);
+  const builtin =
+    input.brawlhubRole === undefined ? null : parseBrawlhubRole(input.brawlhubRole);
+  const customRoleId =
+    input.customRoleId === undefined ? null : parseUuid(input.customRoleId);
+
   if (!parsedGuildId.success) {
     throw new AdminServiceError('invalid_guild', 'A valid configured Discord guild is required.');
   }
   if (!parsedRoleId.success) {
     throw new AdminServiceError('invalid_role', 'Select a valid Discord role.');
   }
-  if (role === null) {
+  if ((builtin === null) === (customRoleId === null)) {
+    throw new AdminServiceError(
+      'invalid_role_mapping',
+      'Select exactly one BrawlHub role or custom role.',
+    );
+  }
+  if (input.brawlhubRole !== undefined && builtin === null) {
     throw new AdminServiceError('invalid_role_mapping', 'Select a valid BrawlHub role.');
+  }
+  if (input.customRoleId !== undefined && customRoleId === null) {
+    throw new AdminServiceError('invalid_role_mapping', 'Select a valid custom role.');
   }
 
   const db = dbFor(options);
+  let customRoleName: string | null = null;
+  if (customRoleId !== null) {
+    const customRoles = await readGuildCustomRoles(parsedGuildId.data, db);
+    const custom = customRoles.find((row) => row.id === customRoleId);
+    if (custom === undefined) {
+      throw new AdminServiceError('invalid_custom_role', 'Custom role was not found in this guild.');
+    }
+    customRoleName = custom.name;
+  }
+
   const saved = await db.from('guild_role_mappings').upsert(
     {
       guild_id: parsedGuildId.data,
       discord_role_id: parsedRoleId.data,
-      brawlhub_role: role,
+      brawlhub_role: builtin,
+      custom_role_id: customRoleId,
     },
     { onConflict: 'guild_id,discord_role_id' },
   );
@@ -580,7 +971,13 @@ export async function setGuildRoleMapping(
       targetType: 'guild_role_mapping',
       targetId: `${parsedGuildId.data}:${parsedRoleId.data}`,
       guildId: parsedGuildId.data,
-      details: { guildId: parsedGuildId.data, discordRoleId: parsedRoleId.data, brawlhubRole: role },
+      details: {
+        guildId: parsedGuildId.data,
+        discordRoleId: parsedRoleId.data,
+        brawlhubRole: builtin,
+        customRoleId,
+        customRoleName,
+      },
     },
     { db },
   );

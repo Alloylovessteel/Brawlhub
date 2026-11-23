@@ -1,3 +1,4 @@
+import { createTrustedClient } from '@brawlhub/database';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { z } from 'zod';
 import type {
@@ -6,6 +7,8 @@ import type {
   ClubPrivateRow,
   ClubRow,
   ClubSnapshotRow,
+  GuildCustomRoleRow,
+  GuildRoleMappingRow,
   GuildSettingsRow,
   MembershipEventRow,
   MembershipRow,
@@ -528,6 +531,30 @@ export async function getGuildSettings(): Promise<QueryResult<GuildSettingsRow>>
     .select('guild_id, announcement_channel_id, verified_role_id, updated_at')
     .order('guild_id', { ascending: true });
   return { rows: (data ?? []) as GuildSettingsRow[], count: data?.length ?? 0, error: errorText(error) };
+}
+
+/** Service-role reads: custom role tables are deliberately denied to browser clients. */
+export async function getGuildCustomRoles(): Promise<QueryResult<GuildCustomRoleRow>> {
+  const db = createTrustedClient();
+  const { data, error } = await db
+    .from('guild_custom_roles')
+    .select('id, guild_id, name, description, permissions, created_at, updated_at')
+    .order('guild_id', { ascending: true })
+    .order('name', { ascending: true })
+    .limit(200);
+  return { rows: (data ?? []) as GuildCustomRoleRow[], count: data?.length ?? 0, error: errorText(error) };
+}
+
+/** Service-role reads: mapping rows are scoped to their guild in the admin UI. */
+export async function getGuildRoleMappings(): Promise<QueryResult<GuildRoleMappingRow>> {
+  const db = createTrustedClient();
+  const { data, error } = await db
+    .from('guild_role_mappings')
+    .select('id, guild_id, discord_role_id, brawlhub_role, custom_role_id, updated_at')
+    .order('guild_id', { ascending: true })
+    .order('discord_role_id', { ascending: true })
+    .limit(200);
+  return { rows: (data ?? []) as GuildRoleMappingRow[], count: data?.length ?? 0, error: errorText(error) };
 }
 
 export async function getUserRoles(): Promise<QueryResult<UserRoleRow>> {

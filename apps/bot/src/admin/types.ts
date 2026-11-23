@@ -1,4 +1,4 @@
-import type { Role } from '@brawlhub/shared';
+import type { Permission, Role } from '@brawlhub/shared';
 import type { ClubRegistrationPreview } from '@brawlhub/sync';
 import type { OverviewFieldKey } from '../clubs/overview/fields';
 import type { StaffActor } from '../staff/types';
@@ -30,11 +30,25 @@ export interface GuildSettingsView {
   readonly updatedAt: string | null;
 }
 
+export interface GuildCustomRoleView {
+  readonly id: string;
+  readonly guildId: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly permissions: readonly Permission[];
+  readonly createdAt: string | null;
+  readonly updatedAt: string | null;
+}
+
 export interface GuildRoleMappingView {
   readonly guildId: string;
   readonly discordRoleId: string;
-  readonly brawlhubRole: Role;
+  readonly brawlhubRole: Role | null;
+  readonly customRoleId: string | null;
+  readonly customRoleName: string | null;
   readonly updatedAt: string | null;
+  /** Resolved display label for embeds and list output. */
+  readonly label: string;
 }
 
 export type GuildSettingsField =

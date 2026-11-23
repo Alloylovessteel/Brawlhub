@@ -57,7 +57,7 @@ Permissions are checked twice:
 1. In application guards using `hasPermission()` and club-scoped role rows loaded from the database.
 2. In Supabase RLS using `is_global_staff()` and `has_club_access()`.
 
-Service-role reads are limited to trusted auth provisioning and admin APIs. Dashboard read queries use the user-scoped Supabase client so RLS remains effective.
+Service-role reads are limited to trusted auth provisioning and admin APIs. Dashboard read queries use the user-scoped Supabase client so RLS remains effective. Custom BrawlHub roles are the exception: they live in `guild_custom_roles`, are read through the trusted client in the owner/admin dashboard, and grant only their selected permissions when a matched Discord role mapping is resolved by the bot. They do not widen `user_roles.role` or the website session's built-in `Role` union.
 
 ## Data access design
 
