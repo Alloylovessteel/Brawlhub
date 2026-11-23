@@ -171,9 +171,11 @@ export async function loadInactivityData(
       const player = players.get(membership.playerId);
       if (player === undefined) continue;
       const last = player.lastBattleAt === null ? Number.NaN : Date.parse(player.lastBattleAt);
+      // Unknown, invalid, or future timestamps cannot prove inactivity. Only
+      // report members with a known battle older than the configured threshold.
       const days =
         Number.isNaN(last) || now.getTime() < last ? null : Math.floor((now.getTime() - last) / DAY_MS);
-      if (days !== null && days < thresholdDays) continue;
+      if (days === null || days < thresholdDays) continue;
       inactiveCount += 1;
       inactive.push({
         clubTag: club.tag,

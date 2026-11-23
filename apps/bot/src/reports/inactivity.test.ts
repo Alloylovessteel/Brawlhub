@@ -151,6 +151,8 @@ describe('loadInactivityData', () => {
           { club_id: 'club-1', player_id: 'player-1', role: 'senior' },
           { club_id: 'club-1', player_id: 'player-2', role: 'member' },
           { club_id: 'club-1', player_id: 'player-3', role: 'vicePresident' },
+          { club_id: 'club-1', player_id: 'player-4', role: 'member' },
+          { club_id: 'club-1', player_id: 'player-5', role: 'member' },
         ],
         error: null,
       }),
@@ -159,6 +161,8 @@ describe('loadInactivityData', () => {
           { id: 'player-1', tag: 'P1', name: 'Recent', last_battle_at: daysAgo(2) },
           { id: 'player-2', tag: 'P2', name: 'Idle', last_battle_at: daysAgo(10) },
           { id: 'player-3', tag: 'P3', name: 'Unknown', last_battle_at: null },
+          { id: 'player-4', tag: 'P4', name: 'Invalid', last_battle_at: 'not-a-date' },
+          { id: 'player-5', tag: 'P5', name: 'Future', last_battle_at: daysAgo(-2) },
         ],
         error: null,
       }),
@@ -186,11 +190,10 @@ describe('loadInactivityData', () => {
         ],
       }),
     );
-    expect(result.totalMembers).toBe(3);
-    expect(result.inactive.map((member) => member.playerTag)).toEqual(['P2', 'P3']);
+    expect(result.totalMembers).toBe(5);
+    expect(result.inactive.map((member) => member.playerTag)).toEqual(['P2']);
     expect(result.inactive[0]?.daysInactive).toBe(10);
-    expect(result.inactive[1]?.daysInactive).toBeNull();
-    expect(result.clubs[0]).toMatchObject({ tag: 'ABC', members: 3, inactive: 2 });
+    expect(result.clubs[0]).toMatchObject({ tag: 'ABC', members: 5, inactive: 1 });
   });
 
   it('returns an empty report for a guild with no registered clubs', async () => {
