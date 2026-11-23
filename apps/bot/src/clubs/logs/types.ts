@@ -13,7 +13,7 @@ export interface ClubLogConfig {
   readonly periods: readonly ClubLogPeriod[];
 }
 
-/** Internal row with the subscription timestamp used as the event watermark. */
+/** Internal row carrying the subscription creation timestamp. */
 export interface ClubLogRow extends ClubLogConfig {
   readonly createdAt: string;
 }

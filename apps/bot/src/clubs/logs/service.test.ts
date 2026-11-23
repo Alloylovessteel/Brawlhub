@@ -289,7 +289,7 @@ describe('loadUndeliveredClubLogEvents', () => {
     });
     setHandler('membership_events:select', (call) => {
       expect(call.orValue).toBe(`from_club_id.eq.${CLUB_ID},to_club_id.eq.${CLUB_ID}`);
-      expect(call.gteValue).toEqual({ column: 'detected_at', value: CREATED_AT });
+      expect(call.gteValue).toBeNull();
       return {
         data: [
           {
@@ -384,6 +384,34 @@ describe('loadUndeliveredClubLogEvents', () => {
       'membership',
       'capacity',
       'capacity',
+    ]);
+  });
+
+  it('includes stored events that predate the subscription so a new log can backfill history', async () => {
+    setHandler('guild_club_log_deliveries:select', () => ({ data: [] }));
+    setHandler('membership_events:select', (call) => {
+      expect(call.gteValue).toBeNull();
+      return {
+        data: [
+          {
+            id: 'old1',
+            event_type: 'join',
+            detected_at: '2026-11-01T08:00:00.000Z',
+            from_club_id: null,
+            to_club_id: CLUB_ID,
+            player: { tag: '#OLDMEMBER', name: 'Old Member' },
+          },
+        ],
+      };
+    });
+    setHandler('club_role_changes:select', () => ({ data: [] }));
+    setHandler('club_capacity_events:select', () => ({ data: [] }));
+
+    const groups = await loadUndeliveredClubLogEvents(GUILD_ID);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.events.map((event) => event.description)).toEqual([
+      '#OLDMEMBER joined #ALPHA',
     ]);
   });
 

@@ -609,6 +609,9 @@ async function loadEventsForLog(
 ): Promise<ClubLogEvent[]> {
   const delivered = onlyUndelivered ? await readDeliveredKeys(guildId, log.id, db) : new Set<string>();
 
+  // No subscription-time watermark: stored history is included so a newly added log
+  // can backfill past joins, leaves, transfers, role and capacity changes. The delivery
+  // ledger prevents reposts and the query/display caps bound how much is shown at once.
   const [membership, roles, capacity] = await Promise.all([
     db
       .from('membership_events')
@@ -616,7 +619,6 @@ async function loadEventsForLog(
         'id, event_type, detected_at, from_club_id, to_club_id, player:players!membership_events_player_id_fkey(tag, name)',
       )
       .or(`from_club_id.eq.${log.clubId},to_club_id.eq.${log.clubId}`)
-      .gte('detected_at', log.createdAt)
       .order('detected_at', { ascending: false })
       .limit(100),
     db
@@ -625,14 +627,12 @@ async function loadEventsForLog(
         'id, from_role, to_role, detected_at, player:players!club_role_changes_player_id_fkey(tag, name, trophies)',
       )
       .eq('club_id', log.clubId)
-      .gte('detected_at', log.createdAt)
       .order('detected_at', { ascending: false })
       .limit(100),
     db
       .from('club_capacity_events')
       .select('id, from_count, to_count, is_full, detected_at')
       .eq('club_id', log.clubId)
-      .gte('detected_at', log.createdAt)
       .order('detected_at', { ascending: false })
       .limit(100),
   ]);
