@@ -1,5 +1,10 @@
 import { buildBrawlToolsImage } from '../images/brawltools-style.js';
-import type { PlayerBrawler, PlayerBrawlerDetail, PlayerProfileView } from './types';
+import type {
+  PlayerBrawler,
+  PlayerBrawlerDetail,
+  PlayerBattleRecord,
+  PlayerProfileView,
+} from './types';
 
 /**
  * Static image assets passed in by the command layer. URLs come only from the
@@ -70,22 +75,20 @@ export interface PlayerSnapshotPoint {
   readonly trophies: number | null;
 }
 
-export interface PlayerCardCharts {
-  readonly trophyChartPng: Buffer | null;
-  readonly activityChartPng: Buffer | null;
-}
-
 export interface PlayerCardOptions {
   readonly mode?: PlayerCardMode;
   readonly brawlerName?: string | null;
-  /** Complete official brawler list for grid modes; falls back to the 8 profile brawlers. */
+  /** Complete official brawler list; falls back to the 8 brawlers on the profile. */
   readonly brawlers?: readonly PlayerBrawler[];
   readonly brawlerDetail?: PlayerBrawlerDetail | null;
   readonly seasonWindow?: PlayerSeasonWindow;
+  /** Clock used to cap the season graph at the current UTC day. */
+  readonly now?: Date;
+  /** All stored official battles, including ranked and trophy pushes. */
+  readonly battles?: readonly PlayerBattleRecord[];
   readonly history?: PlayerHistorySummary | null;
   readonly modeStats?: readonly ModeWinStat[];
   readonly snapshots?: readonly PlayerSnapshotPoint[];
-  readonly charts?: PlayerCardCharts | null;
 }
 
 /** Brawlers featured on the top-brawler asset list, highest trophies first. */
@@ -104,11 +107,5 @@ export async function buildPlayerCardImage(
   assets: PlayerCardAssets = {},
   options: PlayerCardOptions = {},
 ): Promise<Buffer> {
-  return buildBrawlToolsImage(
-    options.mode ?? 'profile',
-    profile,
-    assets,
-    options,
-    options.charts ?? null,
-  );
+  return buildBrawlToolsImage(options.mode ?? 'profile', profile, assets, options);
 }

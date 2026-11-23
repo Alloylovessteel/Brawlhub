@@ -20,10 +20,6 @@ const mocks = vi.hoisted(() => ({
   },
   card: {
     buildPlayerCardImage: vi.fn(async (): Promise<Buffer> => Buffer.from('fake-png')),
-    selectTopBrawlers: vi.fn(),
-  },
-  charts: {
-    loadOrRenderChart: vi.fn(),
   },
 }));
 
@@ -37,7 +33,6 @@ vi.mock('../config.js', () => ({
 vi.mock('../verification/index', () => mocks.verification);
 vi.mock('../metadata/assets.js', () => mocks.assets);
 vi.mock('../players/card.js', () => mocks.card);
-vi.mock('../images/chart-service.js', () => mocks.charts);
 
 import { handleMeImage } from './me-image';
 
@@ -115,8 +110,6 @@ beforeEach(() => {
   mocks.assets.resolvePlayerIconUrl.mockResolvedValue(null);
   mocks.assets.resolveBrawlerPortraitUrl.mockResolvedValue(null);
   mocks.card.buildPlayerCardImage.mockResolvedValue(Buffer.from('fake-png'));
-  mocks.card.selectTopBrawlers.mockImplementation((profile: any) => profile.brawlers.slice(0, 3));
-  mocks.charts.loadOrRenderChart.mockResolvedValue({ kind: 'not-found', tag: '2C0Y' });
 });
 
 describe('/me image', () => {
@@ -138,6 +131,7 @@ describe('/me image', () => {
     expect(mocks.service.loadPlayerProfile).toHaveBeenCalledWith({
       tag: '#2c0y',
       guildId: 'guild-1',
+      now: expect.any(Date),
     });
     expect(mocks.assets.resolvePlayerIconUrl).toHaveBeenCalledWith(28000003);
     expect(mocks.assets.resolveBrawlerPortraitUrl.mock.calls.map((call) => call[0])).toEqual([
@@ -156,7 +150,11 @@ describe('/me image', () => {
         ],
         badges: ['VERIFIED', 'MAIN'],
       }),
-      { mode: 'profile' },
+      expect.objectContaining({
+        mode: 'profile',
+        brawlers: expect.arrayContaining([expect.objectContaining({ name: 'Shelly' })]),
+        now: expect.any(Date),
+      }),
     );
 
     const reply = payload(interaction);
@@ -182,11 +180,16 @@ describe('/me image', () => {
     expect(mocks.service.loadPlayerProfile).toHaveBeenCalledWith({
       tag: '2C0Y',
       guildId: 'guild-1',
+      now: expect.any(Date),
     });
     expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ badges: ['VERIFIED', 'ALT'] }),
-      { mode: 'profile' },
+      expect.objectContaining({
+        mode: 'profile',
+        brawlers: expect.arrayContaining([expect.objectContaining({ name: 'Shelly' })]),
+        now: expect.any(Date),
+      }),
     );
   });
 
@@ -293,13 +296,15 @@ describe('/me image', () => {
       expect.anything(),
       expect.objectContaining({
         mode: 'season',
+        brawlers: expect.arrayContaining([expect.objectContaining({ name: 'Shelly' })]),
+        now: expect.any(Date),
         seasonWindow: {
           start: '2026-11-05T08:00:00.000Z',
           end: '2026-12-03T08:00:00.000Z',
         },
         snapshots: [],
+        battles: [],
         modeStats: [],
-        charts: null,
       }),
     );
   });
@@ -312,15 +317,16 @@ describe('/me image', () => {
 
     expect(mocks.service.loadPlayerHistory).not.toHaveBeenCalled();
     expect(mocks.service.loadPlayerBattles).not.toHaveBeenCalled();
-    expect(mocks.charts.loadOrRenderChart).not.toHaveBeenCalled();
     expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
       expect.objectContaining({
         mode: 'season',
+        brawlers: expect.arrayContaining([expect.objectContaining({ name: 'Shelly' })]),
+        now: expect.any(Date),
         snapshots: [],
+        battles: [],
         modeStats: [],
-        charts: null,
       }),
     );
   });
@@ -347,6 +353,7 @@ describe('/me image', () => {
     expect(mocks.service.loadPlayerBrawlers).toHaveBeenCalledWith({
       tag: '#2c0y',
       guildId: 'guild-1',
+      now: expect.any(Date),
     });
     expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
       expect.anything(),
@@ -359,7 +366,7 @@ describe('/me image', () => {
     expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y-brawler.png');
   });
 
-  it('builds the graph-heavy season preset from stored charts and battles', async () => {
+  it('builds the season graph from all stored ranked and trophy battles', async () => {
     mocks.service.loadPlayerHistory.mockResolvedValue({
       kind: 'ok',
       value: {
@@ -368,28 +375,52 @@ describe('/me image', () => {
         player: { megaPig: null },
       },
     });
+    const battles = [
+      {
+        id: 'b1',
+        battleTime: '2026-11-05T09:00:00.000Z',
+        mode: 'gemGrab',
+        result: 'victory',
+      },
+      {
+        id: 'b2',
+        battleTime: '2026-11-05T10:00:00.000Z',
+        mode: 'gemGrab',
+        result: 'defeat',
+      },
+      {
+        id: 'b3',
+        battleTime: '2026-11-05T11:00:00.000Z',
+        mode: 'soloShowdown',
+        result: 'defeat',
+      },
+      {
+        id: 'b4',
+        battleTime: '2026-11-08T09:00:00.000Z',
+        mode: 'brawlBall',
+        result: 'victory',
+      },
+    ];
     mocks.service.loadPlayerBattles.mockResolvedValue({
       kind: 'ok',
-      value: {
-        battles: [
-          { mode: 'gemGrab', result: 'victory' },
-          { mode: 'gemGrab', result: 'defeat' },
-          { mode: 'brawlBall', result: 'victory' },
-        ],
-      },
+      value: { battles },
     });
-    mocks.charts.loadOrRenderChart
-      .mockResolvedValueOnce({ kind: 'ok', image: { png: Buffer.from('trophy-chart') } })
-      .mockResolvedValueOnce({ kind: 'ok', image: { png: Buffer.from('activity-chart') } });
     const interaction = chatInteraction({ tag: '#2c0y', mode: 'season' });
 
     await handleMeImage(interaction);
 
-    expect(mocks.charts.loadOrRenderChart).toHaveBeenCalledTimes(2);
-    expect(mocks.charts.loadOrRenderChart.mock.calls.map((call) => call[0].option)).toEqual([
-      'trophies',
-      'activity',
-    ]);
+    expect(mocks.service.loadPlayerHistory).toHaveBeenCalledWith({
+      tag: '#2c0y',
+      guildId: 'guild-1',
+      period: 'all',
+      now: expect.any(Date),
+    });
+    expect(mocks.service.loadPlayerBattles).toHaveBeenCalledWith({
+      tag: '#2c0y',
+      guildId: 'guild-1',
+      period: 'all',
+      now: expect.any(Date),
+    });
     expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -400,14 +431,12 @@ describe('/me image', () => {
           end: '2026-12-03T08:00:00.000Z',
         },
         snapshots: [{ date: '2026-11-05T08:00:00.000Z', trophies: 4800 }],
+        battles,
         modeStats: [
           { label: 'Gem Grab', wins: 1, matches: 2, winRate: 50 },
+          { label: 'Solo Showdown', wins: 0, matches: 1, winRate: 0 },
           { label: 'Brawl Ball', wins: 1, matches: 1, winRate: 100 },
         ],
-        charts: {
-          trophyChartPng: Buffer.from('trophy-chart'),
-          activityChartPng: Buffer.from('activity-chart'),
-        },
       }),
     );
     expect(payload(interaction).content).toContain('Season progress');
@@ -437,12 +466,15 @@ describe('/me image', () => {
       tag: '#2c0y',
       guildId: 'guild-1',
       period: '30d',
+      now: expect.any(Date),
     });
     expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      {
+      expect.objectContaining({
         mode: 'history',
+        brawlers: expect.arrayContaining([expect.objectContaining({ name: 'Shelly' })]),
+        now: expect.any(Date),
         history: {
           points: 2,
           firstAt: '2026-11-01T00:00:00.000Z',
@@ -467,7 +499,7 @@ describe('/me image', () => {
           { date: '2026-11-01T00:00:00.000Z', trophies: 4800 },
           { date: '2026-11-20T00:00:00.000Z', trophies: 5000 },
         ],
-      },
+      }),
     );
   });
 
@@ -479,7 +511,11 @@ describe('/me image', () => {
     expect(mocks.card.buildPlayerCardImage).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      { mode: 'profile' },
+      expect.objectContaining({
+        mode: 'profile',
+        brawlers: expect.arrayContaining([expect.objectContaining({ name: 'Shelly' })]),
+        now: expect.any(Date),
+      }),
     );
     expect(payload(interaction).files[0].name).toBe('brawlhub-2C0Y.png');
   });

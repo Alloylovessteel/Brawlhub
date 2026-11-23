@@ -3,14 +3,11 @@ import { AttachmentBuilder, type ChatInputCommandInteraction } from 'discord.js'
 import { getBotConfig } from '../config.js';
 import { replyWithSafeError } from '../discord/errors';
 import { cleanTag, escapeMarkdown } from '../discord/format';
-import { loadOrRenderChart } from '../images/chart-service.js';
 import { resolveBrawlerPortraitUrl, resolvePlayerIconUrl } from '../metadata/assets.js';
 import {
   buildPlayerCardImage,
-  selectTopBrawlers,
   type ModeWinStat,
   type PlayerCardAssets,
-  type PlayerCardCharts,
   type PlayerCardOptions,
   type PlayerHistorySummary,
   type PlayerSnapshotPoint,
@@ -21,7 +18,11 @@ import {
   loadPlayerHistory,
   loadPlayerProfile,
 } from '../players/service';
-import type { PlayerBrawler, PlayerBrawlerDetail } from '../players/types';
+import type {
+  PlayerBattleRecord,
+  PlayerBrawler,
+  PlayerBrawlerDetail,
+} from '../players/types';
 import { listLinkedAccounts, type LinkedAccountView } from '../verification/index.js';
 import { DEFAULT_ME_IMAGE_MODE, isMeImageMode } from './me-image-modes.js';
 import { meTagErrorMessage, resolveMeTag } from './me-utils.js';
@@ -56,10 +57,15 @@ function modeLabel(mode: string | null): string {
 }
 
 /** Build the truthful history summary and trophy points used by the presets. */
-async function loadHistoryData(tag: string, guildId: string | null): Promise<LoadedHistory> {
+async function loadHistoryData(
+  tag: string,
+  guildId: string | null,
+  period: '7d' | '30d' | '90d' | 'all' = '30d',
+  now: Date = new Date(),
+): Promise<LoadedHistory> {
   if (guildId === null) return { summary: null, snapshots: [] };
   try {
-    const result = await loadPlayerHistory({ tag, guildId, period: '30d' });
+    const result = await loadPlayerHistory({ tag, guildId, period, now });
     if (result.kind !== 'ok') return { summary: null, snapshots: [] };
     const view = result.value;
     const first = view.points[0] ?? null;
@@ -107,31 +113,48 @@ async function loadHistoryData(tag: string, guildId: string | null): Promise<Loa
   }
 }
 
-/** Aggregate stored official battles into mode win rates for the season preset. */
-async function loadModeStats(tag: string, guildId: string | null): Promise<readonly ModeWinStat[]> {
-  if (guildId === null) return [];
+interface LoadedBattles {
+  readonly battles: readonly PlayerBattleRecord[];
+  readonly modeStats: readonly ModeWinStat[];
+}
+
+/**
+ * Load every stored official battle for the season preset. The raw records are
+ * needed for the date/match bars, while mode rates are aggregated from the
+ * same ranked and trophy battles.
+ */
+async function loadBattleData(
+  tag: string,
+  guildId: string | null,
+  now: Date,
+): Promise<LoadedBattles> {
+  const empty: LoadedBattles = { battles: [], modeStats: [] };
+  if (guildId === null) return empty;
   try {
-    const result = await loadPlayerBattles({ tag, guildId, period: '30d' });
-    if (result.kind !== 'ok') return [];
+    const result = await loadPlayerBattles({ tag, guildId, period: 'all', now });
+    if (result.kind !== 'ok') return empty;
+    const battles = result.value.battles;
     const counts = new Map<string, { wins: number; matches: number }>();
-    for (const battle of result.value.battles) {
+    for (const battle of battles) {
       const label = modeLabel(battle.mode);
       const entry = counts.get(label) ?? { wins: 0, matches: 0 };
       entry.matches += 1;
       if (battle.result?.toLowerCase() === 'victory') entry.wins += 1;
       counts.set(label, entry);
     }
-    return [...counts.entries()]
-      .map(([label, entry]) => ({
-        label,
-        wins: entry.wins,
-        matches: entry.matches,
-        winRate: entry.matches === 0 ? null : (entry.wins / entry.matches) * 100,
-      }))
-      .sort((left, right) => right.matches - left.matches)
-      .slice(0, 8);
+    return {
+      battles,
+      modeStats: [...counts.entries()]
+        .map(([label, entry]) => ({
+          label,
+          wins: entry.wins,
+          matches: entry.matches,
+          winRate: entry.matches === 0 ? null : (entry.wins / entry.matches) * 100,
+        }))
+        .sort((left, right) => right.matches - left.matches),
+    };
   } catch {
-    return [];
+    return empty;
   }
 }
 
@@ -181,9 +204,11 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
   }
 
   try {
-    const [profileResult, linkedAccounts] = await Promise.all([
-      loadPlayerProfile({ tag: resolved.tag, guildId: interaction.guildId }),
+    const now = new Date();
+    const [profileResult, linkedAccounts, brawlerResult] = await Promise.all([
+      loadPlayerProfile({ tag: resolved.tag, guildId: interaction.guildId, now }),
       listLinkedAccounts(interaction.user.id).catch(() => null),
+      loadPlayerBrawlers({ tag: resolved.tag, guildId: interaction.guildId, now }).catch(() => null),
     ]);
     if (profileResult.kind !== 'ok') {
       await replyPlayerLookupFailure(interaction, profileResult);
@@ -191,10 +216,19 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
     }
 
     const profile = profileResult.value;
-    const brawlers = selectTopBrawlers(profile);
+    const details = brawlerResult?.kind === 'ok' ? brawlerResult.value.brawlers : [];
+    const fullBrawlers = details
+      .map(toCardBrawler)
+      .filter((brawler): brawler is PlayerBrawler => brawler !== null);
+    // The profile view only carries eight brawlers. Every preset uses the full
+    // official brawler list when available so counts and grids are accurate.
+    const cardBrawlers = fullBrawlers.length > 0 ? fullBrawlers : profile.brawlers;
+    const topBrawlers = [...cardBrawlers]
+      .sort((left, right) => right.trophies - left.trophies)
+      .slice(0, 3);
     const [playerIconUrl, ...brawlerPortraitUrls] = await Promise.all([
       resolvePlayerIconUrl(profile.player.iconId),
-      ...brawlers.map((brawler) => resolveBrawlerPortraitUrl(brawler.name)),
+      ...topBrawlers.map((brawler) => resolveBrawlerPortraitUrl(brawler.name)),
     ]);
 
     let assets: PlayerCardAssets = {
@@ -202,7 +236,7 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
       brawlerPortraitUrls,
       badges: badgesFor(linkedAccounts, profile.player.tag),
     };
-    let options: PlayerCardOptions = { mode };
+    let options: PlayerCardOptions = { mode, brawlers: cardBrawlers, now };
 
     if (mode === 'season') {
       const config = getBotConfig();
@@ -211,71 +245,35 @@ export async function handleMeImage(interaction: ChatInputCommandInteraction): P
         end: config.seasonEndIso ?? null,
       };
       let snapshots: readonly PlayerSnapshotPoint[] = [];
+      let battles: readonly PlayerBattleRecord[] = [];
       let modeStats: readonly ModeWinStat[] = [];
-      let charts: PlayerCardCharts | null = null;
 
       // Stored history is guild-scoped. Without a guild we can only show the
-      // current official snapshot, never cross-guild graph data.
+      // official current trophy point, never cross-guild graph data.
       if (interaction.guildId !== null) {
-        const [history, stats, trophyChart, activityChart] = await Promise.all([
-          loadHistoryData(resolved.tag, interaction.guildId),
-          loadModeStats(resolved.tag, interaction.guildId),
-          loadOrRenderChart({
-            guildId: interaction.guildId,
-            kind: 'player',
-            tag: resolved.tag,
-            option: 'trophies',
-            period: '30d',
-          }),
-          loadOrRenderChart({
-            guildId: interaction.guildId,
-            kind: 'player',
-            tag: resolved.tag,
-            option: 'activity',
-            period: '30d',
-          }),
+        const [history, battleData] = await Promise.all([
+          loadHistoryData(resolved.tag, interaction.guildId, 'all', now),
+          loadBattleData(resolved.tag, interaction.guildId, now),
         ]);
         snapshots = history.snapshots;
-        modeStats = stats;
-        if (trophyChart.kind === 'ok' && activityChart.kind === 'ok') {
-          charts = {
-            trophyChartPng: trophyChart.image.png,
-            activityChartPng: activityChart.image.png,
-          };
-        }
+        battles = battleData.battles;
+        modeStats = battleData.modeStats;
       }
 
-      options = { mode, seasonWindow, snapshots, modeStats, charts };
+      options = { mode, brawlers: cardBrawlers, now, seasonWindow, snapshots, battles, modeStats };
     } else if (mode === 'history') {
-      const history = await loadHistoryData(resolved.tag, interaction.guildId);
-      options = { mode, history: history.summary, snapshots: history.snapshots };
+      const history = await loadHistoryData(resolved.tag, interaction.guildId, '30d', now);
+      options = { mode, brawlers: cardBrawlers, now, history: history.summary, snapshots: history.snapshots };
     } else if (mode === 'brawler' || mode === 'rank' || mode === 'trophies' || mode === 'highest') {
-      // The profile view only carries eight brawlers. Grid modes use the full
-      // official brawler list, falling back to those eight only if it is empty.
-      const detailResult = await loadPlayerBrawlers({
-        tag: resolved.tag,
-        guildId: interaction.guildId,
-      });
-      const details = detailResult.kind === 'ok' ? detailResult.value.brawlers : [];
-      const fullBrawlers = details
-        .map(toCardBrawler)
-        .filter((brawler): brawler is PlayerBrawler => brawler !== null);
-      const cardBrawlers = fullBrawlers.length > 0 ? fullBrawlers : profile.brawlers;
-      const topName = [...cardBrawlers].sort((left, right) => right.trophies - left.trophies)[0]?.name;
+      const topName = topBrawlers[0]?.name;
       const detail = topName === undefined ? null : details.find((brawler) => brawler.name === topName) ?? null;
       options = {
-        mode,
-        brawlers: cardBrawlers,
+        ...options,
         ...(mode === 'brawler' ? { brawlerDetail: detail } : {}),
       };
       assets = {
         ...assets,
         allBrawlerPortraitUrls: await resolveModePortraits(cardBrawlers),
-      };
-    } else if (mode !== 'profile') {
-      assets = {
-        ...assets,
-        allBrawlerPortraitUrls: await resolveModePortraits(profile.brawlers),
       };
     }
 

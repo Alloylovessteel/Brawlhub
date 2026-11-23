@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildSeasonProgressPoints } from '../images/brawltools-style.js';
 import { buildPlayerCardImage, PLAYER_CARD_MODES, selectTopBrawlers } from './card';
 import type { PlayerProfileView } from './types';
 
@@ -115,7 +116,17 @@ describe('buildPlayerCardImage', () => {
     for (const mode of PLAYER_CARD_MODES) {
       const buffer = await buildPlayerCardImage(profile(), {}, {
         mode,
+        now: new Date('2026-11-08T12:00:00.000Z'),
+        brawlers: profile().brawlers,
         seasonWindow: { start: '2026-11-05T08:00:00.000Z', end: '2026-12-03T08:00:00.000Z' },
+        battles: [
+          {
+            id: 'b1',
+            battleTime: '2026-11-05T09:00:00.000Z',
+            mode: 'gemGrab',
+            result: 'victory',
+          },
+        ] as never,
         history: {
           points: 2,
           firstAt: '2026-11-01T00:00:00.000Z',
@@ -153,16 +164,56 @@ describe('buildPlayerCardImage', () => {
     expect(buffer.byteLength).toBeGreaterThan(1_000);
   });
 
-  it('composites stored charts into the season preset', async () => {
-    const chart = await sharp({
-      create: { width: 32, height: 32, channels: 4, background: { r: 30, g: 20, b: 70, alpha: 1 } },
-    })
-      .png()
-      .toBuffer();
-    const buffer = await buildPlayerCardImage(profile(), {}, {
-      mode: 'season',
-      charts: { trophyChartPng: chart, activityChartPng: chart },
-    });
+  it('renders a zero-filled season graph from stored ranked and trophy battles', async () => {
+    const now = new Date('2026-11-08T12:00:00.000Z');
+    const options = {
+      mode: 'season' as const,
+      now,
+      seasonWindow: { start: '2026-11-05T08:00:00.000Z', end: '2026-12-03T08:00:00.000Z' },
+      battles: [
+        {
+          id: 'b0',
+          battleTime: '2026-11-05T07:59:00.000Z',
+          mode: 'gemGrab',
+          result: 'victory',
+        },
+        {
+          id: 'b1',
+          battleTime: '2026-11-05T09:00:00.000Z',
+          mode: 'gemGrab',
+          result: 'victory',
+        },
+        {
+          id: 'b2',
+          battleTime: '2026-11-05T10:00:00.000Z',
+          mode: 'soloShowdown',
+          result: 'defeat',
+        },
+        {
+          id: 'b3',
+          battleTime: '2026-11-08T09:00:00.000Z',
+          mode: 'brawlBall',
+          result: 'victory',
+        },
+      ] as never,
+      snapshots: [
+        { date: '2026-11-05T08:30:00.000Z', trophies: 4800 },
+        { date: '2026-11-08T08:30:00.000Z', trophies: 4860 },
+      ],
+    };
+
+    const points = buildSeasonProgressPoints(profile(), options);
+    expect(points.map((point) => point.key)).toEqual([
+      '2026-11-05',
+      '2026-11-06',
+      '2026-11-07',
+      '2026-11-08',
+    ]);
+    expect(points.map((point) => point.matches)).toEqual([2, 0, 0, 1]);
+    expect(points.map((point) => point.wins)).toEqual([1, 0, 0, 1]);
+    expect(points.map((point) => point.trophies)).toEqual([4800, null, null, 5000]);
+
+    const buffer = await buildPlayerCardImage(profile(), {}, options);
     const metadata = await sharp(buffer).metadata();
 
     expect(metadata.width).toBe(1200);

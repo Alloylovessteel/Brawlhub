@@ -5,7 +5,7 @@ import type {
   PlayerCardOptions,
   PlayerSnapshotPoint,
 } from '../players/card.js';
-import type { PlayerBrawler, PlayerProfileView } from '../players/types.js';
+import type { PlayerBattleRecord, PlayerBrawler, PlayerProfileView } from '../players/types.js';
 
 /**
  * BrawlTools-style player images.
@@ -15,11 +15,6 @@ import type { PlayerBrawler, PlayerProfileView } from '../players/types.js';
  * number comes from the official Brawl Stars player payload or from stored
  * guild-scoped history; no historical values are invented.
  */
-
-export interface BrawlToolsCharts {
-  readonly trophyChartPng: Buffer | null;
-  readonly activityChartPng: Buffer | null;
-}
 
 const COLORS = {
   background: '#f4f5f7',
@@ -206,16 +201,16 @@ function compactHeader(
     ${right === null ? '' : `<text x="1172" y="${rightY + 24}" text-anchor="end" font-size="12" fill="${COLORS.headerMuted}">${escapeXml(truncate(rankedLine(player), 26))}</text>`}`;
 }
 
-function totals(profile: PlayerProfileView) {
-  const brawlers = profile.brawlers;
+function totals(profile: PlayerProfileView, source: readonly PlayerBrawler[] = profile.brawlers) {
+  const power11 = source.filter((brawler) => brawler.power === 11).length;
   return {
-    power11: brawlers.filter((brawler) => brawler.power === 11).length,
-    gadgets: brawlers.reduce((total, brawler) => total + (brawler.gadgets ?? 0), 0),
-    starPowers: brawlers.reduce((total, brawler) => total + (brawler.starPowers ?? 0), 0),
-    gears: brawlers.reduce((total, brawler) => total + (brawler.gears ?? 0), 0),
-    hyperCharges: brawlers.reduce((total, brawler) => total + (brawler.hyperCharges ?? 0), 0),
-    brawlerCount: profile.stats?.brawlerCount ?? brawlers.length,
-    maxedBrawlers: profile.stats?.maxedBrawlers ?? null,
+    power11,
+    gadgets: source.reduce((total, brawler) => total + (brawler.gadgets ?? 0), 0),
+    starPowers: source.reduce((total, brawler) => total + (brawler.starPowers ?? 0), 0),
+    gears: source.reduce((total, brawler) => total + (brawler.gears ?? 0), 0),
+    hyperCharges: source.reduce((total, brawler) => total + (brawler.hyperCharges ?? 0), 0),
+    brawlerCount: profile.stats?.brawlerCount ?? source.length,
+    maxedBrawlers: profile.stats?.maxedBrawlers ?? (power11 > 0 ? power11 : null),
     wins: [profile.player.threeVsThreeVictories, profile.player.soloVictories, profile.player.duoVictories]
       .reduce<number>((total, value) => total + (value ?? 0), 0),
   };
@@ -273,11 +268,12 @@ function brawlerPortrait(
 export async function buildBtProfileImage(
   profile: PlayerProfileView,
   assets: PlayerCardAssets,
+  options: PlayerCardOptions,
 ): Promise<Buffer> {
   const width = 1200;
   const height = 650;
   const player = profile.player;
-  const total = totals(profile);
+  const total = totals(profile, options.brawlers ?? profile.brawlers);
   const [playerIcon, clubBadge] = await Promise.all([
     assetDataUrl(assets.playerIconUrl, 112),
     assetDataUrl(assets.clubBadgeUrl, 34),
@@ -424,102 +420,280 @@ async function buildBtBrawlerGridImage(
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
-/** Season Progress preset with stored mode rates and stored charts. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface SeasonProgressPoint {
+  readonly key: string;
+  readonly date: Date;
+  readonly label: string;
+  readonly matches: number;
+  readonly wins: number;
+  readonly trophies: number | null;
+}
+
+function parseTime(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function dayKey(time: number): string {
+  return new Date(time).toISOString().slice(0, 10);
+}
+
+function startOfUtcDay(time: number): number {
+  const date = new Date(time);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function shortDate(time: number): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    timeZone: 'UTC',
+  }).format(new Date(time));
+}
+
+function signedNumber(value: number | null): string {
+  if (value === null) return '—';
+  if (value === 0) return '0';
+  return `${value > 0 ? '+' : ''}${formatNumber(value)}`;
+}
+
+/**
+ * Build one point per UTC day in the configured season window, capped at the
+ * current day. Match counts come from every stored official battle, including
+ * ranked and trophy pushes; days with no stored battle remain zero instead of
+ * being dropped. Trophy points come only from stored snapshots plus the
+ * current official profile trophy count on today's date.
+ */
+export function buildSeasonProgressPoints(
+  profile: PlayerProfileView,
+  options: PlayerCardOptions,
+): readonly SeasonProgressPoint[] {
+  const now = options.now;
+  const nowMs = now instanceof Date && Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
+  const battles: readonly PlayerBattleRecord[] = options.battles ?? [];
+  const snapshots = options.snapshots ?? [];
+  const dataTimes = [
+    ...battles.map((battle) => parseTime(battle.battleTime)),
+    ...snapshots.map((snapshot) => parseTime(snapshot.date)),
+  ].filter((value): value is number => value !== null);
+
+  const configuredStart = parseTime(options.seasonWindow?.start);
+  const configuredEnd = parseTime(options.seasonWindow?.end);
+  const startMs = configuredStart ?? (dataTimes.length > 0 ? Math.min(...dataTimes) : nowMs);
+  let endMs = configuredEnd === null ? nowMs : Math.min(configuredEnd, nowMs);
+  if (configuredStart === null && dataTimes.length > 0) {
+    endMs = Math.min(endMs, Math.max(...dataTimes));
+  }
+  if (endMs < startMs) endMs = startMs;
+
+  const matchesByDay = new Map<string, number>();
+  const winsByDay = new Map<string, number>();
+  for (const battle of battles) {
+    const time = parseTime(battle.battleTime);
+    if (time === null || time < startMs || time > endMs) continue;
+    const key = dayKey(time);
+    matchesByDay.set(key, (matchesByDay.get(key) ?? 0) + 1);
+    if (battle.result?.toLowerCase() === 'victory') {
+      winsByDay.set(key, (winsByDay.get(key) ?? 0) + 1);
+    }
+  }
+
+  const trophiesByDay = new Map<string, number>();
+  for (const snapshot of snapshots) {
+    const time = parseTime(snapshot.date);
+    if (time === null || time < startMs || time > endMs || snapshot.trophies === null) continue;
+    trophiesByDay.set(dayKey(time), snapshot.trophies);
+  }
+  const currentTrophies = profile.player.trophies;
+  if (currentTrophies !== null && nowMs >= startMs && nowMs <= endMs) {
+    trophiesByDay.set(dayKey(nowMs), currentTrophies);
+  }
+
+  const firstDay = startOfUtcDay(startMs);
+  const lastDay = startOfUtcDay(endMs);
+  const points: SeasonProgressPoint[] = [];
+  for (let time = firstDay; time <= lastDay; time += DAY_MS) {
+    const key = dayKey(time);
+    points.push({
+      key,
+      date: new Date(time),
+      label: shortDate(time),
+      matches: matchesByDay.get(key) ?? 0,
+      wins: winsByDay.get(key) ?? 0,
+      trophies: trophiesByDay.get(key) ?? null,
+    });
+  }
+  return points;
+}
+
+function renderSeasonGraph(points: readonly SeasonProgressPoint[]): string {
+  const graphX = 96;
+  const graphY = 326;
+  const graphWidth = 1036;
+  const graphHeight = 322;
+  const baseline = graphY + graphHeight;
+  const slot = graphWidth / Math.max(points.length, 1);
+  const barWidth = Math.max(5, Math.min(22, slot * 0.5));
+  const hasMatches = points.some((point) => point.matches > 0);
+  const maxMatches = Math.max(1, ...points.map((point) => point.matches));
+  const trophyValues = points
+    .map((point) => point.trophies)
+    .filter((value): value is number => value !== null);
+  const trophyCoords = points.flatMap((point, index) =>
+    point.trophies === null
+      ? []
+      : [{ x: graphX + (index + 0.5) * slot, y: point.trophies }],
+  );
+
+  let minTrophies = 0;
+  let maxTrophies = 1;
+  if (trophyValues.length > 0) {
+    minTrophies = Math.min(...trophyValues);
+    maxTrophies = Math.max(...trophyValues);
+    if (minTrophies === maxTrophies) {
+      minTrophies -= 100;
+      maxTrophies += 100;
+    } else {
+      const padding = Math.max(25, Math.round((maxTrophies - minTrophies) * 0.12));
+      minTrophies -= padding;
+      maxTrophies += padding;
+    }
+  }
+
+  const grid = Array.from({ length: 5 }, (_, index) => {
+    const y = graphY + (graphHeight / 4) * index;
+    const fraction = 1 - index / 4;
+    const matchTick = hasMatches ? Math.round(maxMatches * fraction) : 0;
+    const trophyTick = trophyValues.length === 0
+      ? '—'
+      : Math.round(minTrophies + (maxTrophies - minTrophies) * fraction).toLocaleString('en-US');
+    return `<line x1="${graphX}" y1="${y}" x2="${graphX + graphWidth}" y2="${y}" stroke="${COLORS.border}" stroke-width="1"/>
+      <text x="${graphX - 10}" y="${y + 4}" text-anchor="end" font-size="11" fill="${COLORS.muted}">${matchTick}</text>
+      <text x="${graphX + graphWidth + 10}" y="${y + 4}" font-size="11" fill="${COLORS.muted}">${escapeXml(trophyTick)}</text>`;
+  }).join('');
+
+  const bars = points.map((point, index) => {
+    const center = graphX + (index + 0.5) * slot;
+    const x = center - barWidth / 2;
+    const height = point.matches === 0 ? 0 : (point.matches / maxMatches) * graphHeight;
+    const y = height === 0 ? baseline - 2 : baseline - height;
+    const countY = height === 0 ? baseline - 8 : Math.max(graphY + 12, y - 8);
+    const labelX = center + 4;
+    const labelY = baseline + 14;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${height === 0 ? 2 : height.toFixed(1)}" rx="${height === 0 ? 1 : 3}" fill="${height === 0 ? '#d1d5db' : COLORS.gold}"/>
+      <text x="${center.toFixed(1)}" y="${countY.toFixed(1)}" text-anchor="middle" font-size="11" font-weight="${height === 0 ? 400 : 700}" fill="${height === 0 ? COLORS.faint : COLORS.text}">${point.matches}</text>
+      <text x="${labelX.toFixed(1)}" y="${labelY}" text-anchor="end" font-size="10" fill="${COLORS.muted}" transform="rotate(-45 ${labelX.toFixed(1)} ${labelY})">${escapeXml(point.label)}</text>`;
+  }).join('');
+
+  const scaledTrophyCoords = trophyCoords.map((point) => ({
+    x: point.x,
+    y: graphY + ((maxTrophies - point.y) / (maxTrophies - minTrophies)) * graphHeight,
+  }));
+  const trophyPath = scaledTrophyCoords
+    .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(1)},${point.y.toFixed(1)}`)
+    .join(' ');
+  const trophyLine = scaledTrophyCoords.length < 2
+    ? ''
+    : `<path d="${trophyPath}" fill="none" stroke="${COLORS.blue}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>`;
+  const trophyDots = scaledTrophyCoords
+    .map((point) => `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="4" fill="#ffffff" stroke="${COLORS.blue}" stroke-width="3"/>`)
+    .join('');
+
+  return `${grid}
+    ${bars}
+    ${trophyLine}
+    ${trophyDots}
+    <text x="${graphX}" y="${graphY - 12}" font-size="11" font-weight="700" fill="${COLORS.muted}">MATCHES</text>
+    <text x="${graphX + graphWidth}" y="${graphY - 12}" text-anchor="end" font-size="11" font-weight="700" fill="${COLORS.muted}">TROPHIES</text>
+    ${trophyCoords.length === 0
+      ? `<text x="${graphX + graphWidth / 2}" y="${graphY + graphHeight / 2}" text-anchor="middle" font-size="14" fill="${COLORS.muted}">No stored trophy snapshots in this window.</text>`
+      : ''}`;
+}
+
+/** Season Progress preset: one combined dates/matches/trophies graph. */
 export async function buildBtSeasonImage(
   profile: PlayerProfileView,
   assets: PlayerCardAssets,
   options: PlayerCardOptions,
-  charts: BrawlToolsCharts | null,
 ): Promise<Buffer> {
   const width = 1200;
   const height = 1120;
   const playerIcon = await assetDataUrl(assets.playerIconUrl, 76);
   const player = profile.player;
-  const snapshots = options.snapshots ?? [];
-  const first = snapshots[0]?.trophies ?? null;
-  const latest = snapshots.at(-1)?.trophies ?? null;
-  const trophyPush = first === null || latest === null ? null : latest - first;
-  const modeStats = options.modeStats ?? [];
-  const matches = modeStats.reduce((sum, stat) => sum + stat.matches, 0);
-  const victories = modeStats.reduce((sum, stat) => sum + stat.wins, 0);
+  const points = buildSeasonProgressPoints(profile, options);
+  const matches = points.reduce((sum, point) => sum + point.matches, 0);
+  const victories = points.reduce((sum, point) => sum + point.wins, 0);
   const winRate = matches === 0 ? null : (victories / matches) * 100;
+  const trophyValues = points
+    .map((point) => point.trophies)
+    .filter((value): value is number => value !== null);
+  const firstTrophies = trophyValues[0] ?? null;
+  const latestTrophies = trophyValues.at(-1) ?? null;
+  const trophyPush = firstTrophies === null || latestTrophies === null
+    ? null
+    : latestTrophies - firstTrophies;
   const window = options.seasonWindow;
   const start = window?.start === null || window?.start === undefined ? '—' : formatDate(window.start);
   const end = window?.end === null || window?.end === undefined ? '—' : formatDate(window.end);
 
+  const modeStats = options.modeStats ?? [];
   const modeRows = modeStats
-    .slice(0, 7)
+    .slice(0, 6)
     .map((stat, index) => {
-      const y = 330 + index * 44;
+      const y = 856 + index * 34;
       const rate = stat.winRate === null ? '—' : `${stat.winRate.toFixed(1)}%`;
       const barWidth = stat.winRate === null ? 0 : Math.max(0, Math.min(160, (stat.winRate / 100) * 160));
-      return `<text x="64" y="${y + 18}" font-size="14" fill="${COLORS.text}">${escapeXml(truncate(stat.label, 18))}</text>
-        <text x="250" y="${y + 18}" text-anchor="end" font-size="12" fill="${COLORS.muted}">${stat.wins}/${stat.matches}</text>
-        <rect x="270" y="${y + 8}" width="160" height="12" rx="6" fill="#eef1f5"/>
-        <rect x="270" y="${y + 8}" width="${barWidth}" height="12" rx="6" fill="${COLORS.green}"/>
-        <text x="438" y="${y + 19}" text-anchor="end" font-size="14" font-weight="700" fill="${COLORS.text}">${escapeXml(rate)}</text>`;
+      return `<text x="64" y="${y + 12}" font-size="13" fill="${COLORS.text}">${escapeXml(truncate(stat.label, 18))}</text>
+        <text x="250" y="${y + 12}" text-anchor="end" font-size="11" fill="${COLORS.muted}">${stat.wins}/${stat.matches}</text>
+        <rect x="270" y="${y + 2}" width="160" height="12" rx="6" fill="#eef1f5"/>
+        <rect x="270" y="${y + 2}" width="${barWidth}" height="12" rx="6" fill="${COLORS.green}"/>
+        <text x="438" y="${y + 13}" text-anchor="end" font-size="13" font-weight="700" fill="${COLORS.text}">${escapeXml(rate)}</text>`;
     })
     .join('');
 
-  // Stored charts are 1200x700. Resize to the identical 12:7 ratio so the
-  // graphs are never stretched, and give them enough vertical room to read.
-  const composites: { input: Buffer; left: number; top: number }[] = [];
-  if (charts?.trophyChartPng !== null && charts?.trophyChartPng !== undefined) {
-    composites.push({
-      input: await sharp(charts.trophyChartPng).resize(600, 350, { fit: 'inside' }).toBuffer(),
-      left: 520,
-      top: 284,
-    });
-  }
-  if (charts?.activityChartPng !== null && charts?.activityChartPng !== undefined) {
-    composites.push({
-      input: await sharp(charts.activityChartPng).resize(600, 350, { fit: 'inside' }).toBuffer(),
-      left: 520,
-      top: 704,
-    });
-  }
-
-  const profileTotals = totals(profile);
+  const profileTotals = totals(profile, options.brawlers ?? profile.brawlers);
   const summary = [
-    summaryRow(64, 736, 'Current rank', rankedLine(player)),
-    summaryRow(64, 780, 'Ranked ELO', formatNumber(player.rankedElo)),
-    summaryRow(64, 824, 'Highest rank', player.highestSeasonRankedRankName ?? '—'),
-    summaryRow(64, 868, '3v3 wins', formatNumber(player.threeVsThreeVictories)),
-    summaryRow(64, 912, 'Solo wins', formatNumber(player.soloVictories)),
-    summaryRow(64, 956, 'Duo wins', formatNumber(player.duoVictories)),
-    summaryRow(64, 1000, 'Brawlers', formatNumber(profileTotals.brawlerCount)),
-    summaryRow(64, 1044, 'Power 11', formatNumber(profileTotals.power11)),
+    summaryRow(644, 856, 'Current rank', rankedLine(player)),
+    summaryRow(644, 884, 'Ranked ELO', formatNumber(player.rankedElo)),
+    summaryRow(644, 912, 'Highest rank', player.highestSeasonRankedRankName ?? '—'),
+    summaryRow(644, 940, '3v3 wins', formatNumber(player.threeVsThreeVictories)),
+    summaryRow(644, 968, 'Solo wins', formatNumber(player.soloVictories)),
+    summaryRow(644, 996, 'Duo wins', formatNumber(player.duoVictories)),
+    summaryRow(644, 1024, 'Brawlers', formatNumber(profileTotals.brawlerCount)),
+    summaryRow(644, 1052, 'Power 11', formatNumber(profileTotals.power11)),
   ].join('');
 
   const svg = svgDocument(width, height, `
     ${compactHeader(profile, playerIcon, `Season Progress • ${start} → ${end}`, `${formatNumber(player.trophies)} trophies`)}
     ${statTile(40, 126, 270, 88, 'Current trophies', formatNumber(player.trophies), COLORS.blue)}
-    ${statTile(330, 126, 270, 88, 'Stored push', trophyPush === null ? '—' : `${trophyPush >= 0 ? '+' : ''}${formatNumber(trophyPush)}`, COLORS.green)}
+    ${statTile(330, 126, 270, 88, 'Trophy change', signedNumber(trophyPush), COLORS.green)}
     ${statTile(620, 126, 270, 88, 'Matches played', formatNumber(matches), COLORS.gold)}
     ${statTile(910, 126, 250, 88, 'Win rate', winRate === null ? '—' : `${winRate.toFixed(1)}%`, COLORS.green, player.rankedElo === null ? null : `${formatNumber(player.rankedElo)} ELO`)}
 
-    ${panel(40, 240, 420, 400)}
-    ${sectionTitle(62, 286, 'Mode win rates')}
-    ${modeRows}
-    ${modeStats.length === 0 ? '<text x="64" y="360" font-size="14" fill="#6b7280">No stored battles in this window.</text>' : ''}
+    ${panel(40, 240, 1120, 520)}
+    ${sectionTitle(64, 280, 'Season progress')}
+    <rect x="800" y="268" width="14" height="14" rx="3" fill="${COLORS.gold}"/>
+    <text x="822" y="280" font-size="12" fill="${COLORS.muted}">Played Matches</text>
+    <line x1="946" y1="275" x2="980" y2="275" stroke="${COLORS.blue}" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="963" cy="275" r="4" fill="#ffffff" stroke="${COLORS.blue}" stroke-width="3"/>
+    <text x="990" y="280" font-size="12" fill="${COLORS.muted}">Player Trophies</text>
+    ${renderSeasonGraph(points)}
 
-    ${panel(40, 660, 420, 400)}
-    ${sectionTitle(62, 706, 'Season summary')}
+    ${panel(40, 780, 560, 300)}
+    ${sectionTitle(64, 816, 'Mode win rates')}
+    ${modeRows}
+    ${modeStats.length === 0 ? '<text x="64" y="872" font-size="14" fill="#6b7280">No stored battles in this window.</text>' : ''}
+
+    ${panel(620, 780, 540, 300)}
+    ${sectionTitle(644, 816, 'Season summary')}
     ${summary}
 
-    ${panel(480, 240, 680, 400)}
-    ${sectionTitle(500, 276, 'Player trophies')}
-    ${charts?.trophyChartPng == null ? '<text x="500" y="440" font-size="14" fill="#6b7280">No stored trophy snapshots for this guild.</text>' : ''}
-
-    ${panel(480, 660, 680, 400)}
-    ${sectionTitle(500, 696, 'Matches played')}
-    ${charts?.activityChartPng == null ? '<text x="500" y="860" font-size="14" fill="#6b7280">No stored battles for this guild.</text>' : ''}
-
-    ${footer('Official Brawl Stars data • stored guild history for graphs and mode rates', 40, 1092)}
+    ${footer('Official Brawl Stars data • dates, matches and trophies from stored guild history', 40, 1092)}
   `);
-  const background = await sharp(Buffer.from(svg)).png().toBuffer();
-  if (composites.length === 0) return background;
-  return sharp(background).composite(composites).png().toBuffer();
+  return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
 /** Player History preset with only the records BrawlHub actually stores. */
@@ -532,7 +706,7 @@ export async function buildBtHistoryImage(
   const height = 1800;
   const playerIcon = await assetDataUrl(assets.playerIconUrl, 76);
   const summary = options.history;
-  const total = totals(profile);
+  const total = totals(profile, options.brawlers ?? profile.brawlers);
   const events = summary?.events ?? [];
   const mega = summary?.megaPig ?? null;
   const snapshots = [...(options.snapshots ?? [])]
@@ -598,7 +772,6 @@ export async function buildBrawlToolsImage(
   profile: PlayerProfileView,
   assets: PlayerCardAssets,
   options: PlayerCardOptions,
-  charts: BrawlToolsCharts | null,
 ): Promise<Buffer> {
   switch (mode) {
     case 'brawler':
@@ -608,10 +781,10 @@ export async function buildBrawlToolsImage(
     case 'highest':
       return buildBtBrawlerGridImage(profile, assets, options, mode);
     case 'season':
-      return buildBtSeasonImage(profile, assets, options, charts);
+      return buildBtSeasonImage(profile, assets, options);
     case 'history':
       return buildBtHistoryImage(profile, assets, options);
     default:
-      return buildBtProfileImage(profile, assets);
+      return buildBtProfileImage(profile, assets, options);
   }
 }
