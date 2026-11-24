@@ -4,7 +4,6 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { requireApiClubPermission, sameOriginGuard } from '@/lib/api/guards';
 import { checkRateLimit } from '@/lib/api/rate-limit';
-import { canAdministerRoleChange } from '@/lib/auth/role-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,96 +59,27 @@ export async function POST(
   };
 
   try {
-    const club = await db
-      .from('clubs')
-      .select('guild_id')
-      .eq('id', parsedClubId.data)
-      .is('archived_at', null)
-      .maybeSingle();
-    if (club.error !== null && club.error !== undefined) {
-      throw new Error(club.error.message);
-    }
-    const guildId =
-      typeof (club.data as { guild_id?: unknown } | null)?.guild_id === 'string'
-        ? ((club.data as { guild_id: string }).guild_id)
-        : null;
+    // The RPC re-reads stored roles inside one transaction and writes the audit
+    // row with the grant, so an overlapping grant change cannot bypass policy.
+    const result = await db.rpc('apply_manual_role_change', {
+      p_actor_profile_id: guard.session.profile!.id,
+      p_discord_user_id: parsed.data.discordUserId,
+      p_scope: 'club',
+      p_club_id: parsedClubId.data,
+      p_role: parsed.data.role,
+      p_action: parsed.data.action,
+    });
+    if (result.error !== null && result.error !== undefined) throw new Error(result.error.message);
 
-    const targetProfile = await db
-      .from('profiles')
-      .select('id')
-      .eq('discord_user_id', parsed.data.discordUserId)
-      .maybeSingle();
-    if (targetProfile.error !== null && targetProfile.error !== undefined) {
-      throw new Error(targetProfile.error.message);
-    }
-    if (targetProfile.data === null) return redirectWith('error');
-
-    const currentRolesResult = await db
-      .from('user_roles')
-      .select('role')
-      .eq('user_id', targetProfile.data.id as string)
-      .eq('scope', 'club')
-      .eq('club_id', parsedClubId.data);
-    if (currentRolesResult.error !== null && currentRolesResult.error !== undefined) {
-      throw new Error(currentRolesResult.error.message);
-    }
-    const existingRoles = (currentRolesResult.data ?? [])
-      .map((row) => roleSchema.safeParse((row as { role?: unknown })?.role))
-      .flatMap((parsed) => (parsed.success ? [parsed.data] : []));
-    const actorGlobalRole = guard.session.globalRole ?? 'member';
-    if (
-      !canAdministerRoleChange(
-        { globalRole: actorGlobalRole, clubRole: guard.session.clubRoles.get(parsedClubId.data) },
-        'club',
-        parsed.data.role,
-        existingRoles,
-      )
-    ) {
+    const outcome = result.data as { ok?: boolean; code?: string } | null;
+    if (outcome?.ok === true) return redirectWith('success');
+    if (outcome?.code === 'forbidden') {
       return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
-
-    if (parsed.data.action === 'grant') {
-      // Upsert instead of delete+insert: a failed insert must not revoke the
-      // target's current club role.
-      const saved = await db.from('user_roles').upsert(
-        {
-          user_id: targetProfile.data.id as string,
-          scope: 'club',
-          club_id: parsedClubId.data,
-          role: parsed.data.role,
-          source: 'manual',
-          granted_by: guard.session.profile!.id,
-        },
-        { onConflict: 'user_id,scope,club_id' },
-      );
-      if (saved.error !== null && saved.error !== undefined) throw new Error(saved.error.message);
-    } else {
-      const removed = await db
-        .from('user_roles')
-        .delete()
-        .eq('user_id', targetProfile.data.id as string)
-        .eq('scope', 'club')
-        .eq('club_id', parsedClubId.data);
-      if (removed.error !== null && removed.error !== undefined) throw new Error(removed.error.message);
+    if (outcome?.code === 'invalid_request') {
+      return NextResponse.json({ error: 'invalid_request' }, { status: 400 });
     }
-
-    const audit = await db.from('audit_logs').insert({
-      actor_profile_id: guard.session.profile!.id,
-      action: parsed.data.action === 'grant' ? 'club.staff.granted' : 'club.staff.revoked',
-      target_type: 'profile',
-      target_id: targetProfile.data.id as string,
-      guild_id: guildId,
-      details: {
-        clubId: parsedClubId.data,
-        discordUserId: parsed.data.discordUserId,
-        role: parsed.data.role,
-      },
-    });
-    if (audit.error !== null && audit.error !== undefined) {
-      throw new Error(`Staff role saved but audit logging failed: ${audit.error.message}`);
-    }
-
-    return redirectWith('success');
+    return redirectWith('error');
   } catch (error) {
     console.error('Club staff administration failed', error instanceof Error ? error.message : 'unknown error');
     return redirectWith('error');
