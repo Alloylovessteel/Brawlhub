@@ -1,7 +1,9 @@
 import { SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
+import { createLogger } from '@brawlhub/logging';
 import { getBotConfig } from '../config';
 import { buildSyncResultEmbed } from '../admin/embed';
 import { replyAdminError } from '../admin/errors';
+import { refreshOverviewNow } from '../clubs/overview/service';
 import {
   loadSyncRun,
   recordSyncRunAudit,
@@ -17,6 +19,7 @@ import { handleSyncStatus } from './sync-status.js';
 const COMMAND_NAME = 'sync';
 const RATE_LIMIT = 3;
 const RATE_WINDOW_MS = 60_000;
+const logger = createLogger('bot');
 
 export const syncCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
@@ -48,6 +51,26 @@ async function postOperatorNotice(result: SyncResult): Promise<void> {
     await notifySyncResult(result);
   } catch {
     // Operator notices are best-effort and must never fail the sync command.
+  }
+}
+
+/** Refresh the auto-posted overview immediately after a successful manual sync. */
+async function refreshOverviewAfterSync(
+  interaction: ChatInputCommandInteraction,
+  result: SyncResult,
+): Promise<void> {
+  if (result.status !== 'completed') return;
+  try {
+    await refreshOverviewNow(interaction.guildId!, {
+      label: interaction.guild?.name ?? null,
+      iconUrl: interaction.guild?.iconURL() ?? null,
+    });
+  } catch (error) {
+    // The regular overview timer will retry; never fail a completed sync over this.
+    logger.warn('Could not refresh club overview after manual sync', {
+      guildId: interaction.guildId,
+      error: error instanceof Error ? error.message : 'unknown error',
+    });
   }
 }
 
@@ -115,6 +138,7 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
       return;
     }
     await recordSyncRunAudit(actor, result, { guildId: interaction.guildId });
+    await refreshOverviewAfterSync(interaction, result);
     await postOperatorNotice(result);
     const run = result.syncRunId === '' ? null : await loadSyncRun(result.syncRunId);
     await interaction.editReply({

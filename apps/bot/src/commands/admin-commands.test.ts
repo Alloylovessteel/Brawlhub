@@ -65,6 +65,9 @@ const mocks = vi.hoisted(() => {
     guard: {
       runManagedSync: vi.fn(),
     },
+    overview: {
+      refreshOverviewNow: vi.fn(),
+    },
     rateLimit: {
       checkBotRateLimit: vi.fn(),
       clearBotRateLimits: vi.fn(),
@@ -81,6 +84,7 @@ vi.mock('../admin/embed', () => mocks.embeds);
 vi.mock('@brawlhub/sync', () => mocks.sync);
 vi.mock('../clubs/service', () => mocks.clubs);
 vi.mock('../clubs/archival', () => mocks.archival);
+vi.mock('../clubs/overview/service', () => mocks.overview);
 vi.mock('../sync/guard', () => mocks.guard);
 vi.mock('../discord/rate-limit', () => mocks.rateLimit);
 
@@ -184,6 +188,7 @@ function chat(subcommand: string | null, options: Record<string, unknown> = {}, 
   const interaction = {
     user: { id: userId },
     guildId: GUILD_ID,
+    guild: { name: 'Test Guild', iconURL: vi.fn(() => 'https://example.test/icon.png') },
     options: {
       getSubcommand: vi.fn(() => subcommand),
       getString: vi.fn((name: string) => options[name] ?? null),
@@ -316,6 +321,9 @@ beforeEach(() => {
 
   mocks.guard.runManagedSync.mockReset();
   mocks.guard.runManagedSync.mockResolvedValue({ kind: 'ran', results: [syncResult()] });
+
+  mocks.overview.refreshOverviewNow.mockReset();
+  mocks.overview.refreshOverviewNow.mockResolvedValue({ posted: true, messageId: 'overview-1' });
 
   mocks.rateLimit.checkBotRateLimit.mockReset();
   mocks.rateLimit.checkBotRateLimit.mockReturnValue({ allowed: true, retryAfterSeconds: 0 });
@@ -504,6 +512,29 @@ describe('/sync', () => {
     expect(mocks.service.recordSyncRunAudit).toHaveBeenCalledWith(actor(), failed, { guildId: GUILD_ID });
     expect(mocks.service.loadSyncRun).toHaveBeenCalledWith('run-1');
     expect(mocks.embeds.buildSyncResultEmbed).toHaveBeenCalledWith(failed, syncRun());
+    expect(mocks.overview.refreshOverviewNow).not.toHaveBeenCalled();
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
+  });
+
+  it('refreshes the club overview immediately after a completed sync', async () => {
+    const interaction = chat(null);
+
+    await handleSync(interaction);
+
+    expect(mocks.overview.refreshOverviewNow).toHaveBeenCalledWith(GUILD_ID, {
+      label: 'Test Guild',
+      iconUrl: 'https://example.test/icon.png',
+    });
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
+  });
+
+  it('keeps the sync reply when the overview refresh fails', async () => {
+    mocks.overview.refreshOverviewNow.mockRejectedValueOnce(new Error('Discord unavailable'));
+    const interaction = chat(null);
+
+    await handleSync(interaction);
+
+    expect(mocks.overview.refreshOverviewNow).toHaveBeenCalledOnce();
     expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
   });
 });
