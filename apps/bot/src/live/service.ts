@@ -75,6 +75,13 @@ export interface LivePollOutcome {
   readonly activeSubscriptions: number;
   readonly expiredSubscriptions: number;
   readonly playersPolled: number;
+  /** Valid official battle candidates emitted by the collector. */
+  readonly collectedCandidates: number;
+  /** Rows the shared collector actually inserted into player_battles. */
+  readonly storedBattles: number;
+  /** Discord messages posted and recorded for subscriptions. */
+  readonly deliveredMessages: number;
+  /** Legacy alias of storedBattles, retained for existing callers. */
   readonly newBattles: number;
   readonly delivered: number;
   readonly failedPlayers: number;
@@ -396,7 +403,11 @@ async function insertPoll(
     readonly player_id: string;
     readonly status: PollStatus;
     readonly last_battle_at_before: string | null;
+    /** Legacy alias of stored_battles. */
     readonly new_battles?: number;
+    readonly collected_candidates?: number;
+    readonly stored_battles?: number;
+    readonly delivered_messages?: number;
     readonly last_error?: string | null;
   },
 ): Promise<void> {
@@ -497,6 +508,23 @@ function deliveryKey(row: SubscriptionRow, playerId: string, battleKey: string):
   return `${row.guild_id}|${row.id}|${playerId}|${battleKey}`;
 }
 
+/**
+ * A subscription only receives battles from its current session window.
+ * Renewing a subscription moves started_at forward, so older official history
+ * must not be delivered again even though the collector emits all battles.
+ */
+function battlesInSession(
+  battles: readonly CollectedBattleLog[],
+  startedAt: string,
+): CollectedBattleLog[] {
+  const startMs = Date.parse(startedAt);
+  if (!Number.isFinite(startMs)) return [];
+  return battles.filter((battle) => {
+    const battleMs = Date.parse(battle.battleTime);
+    return Number.isFinite(battleMs) && battleMs >= startMs;
+  });
+}
+
 async function recordDelivery(
   db: Db,
   row: SubscriptionRow,
@@ -563,6 +591,10 @@ async function deliverBattles(
       unconfirmedDeliveries.delete(key);
       continue;
     }
+    // The key is the full send identity: guild, subscription, player and
+    // battle. Another subscription seeing the same battle must never inherit
+    // this message id, nor consume the pending reconciliation entry.
+    if (key !== deliveryKey(row, playerId, unconfirmed.battleKey)) continue;
     const battle = battlesByKey.get(unconfirmed.battleKey);
     if (battle === undefined) continue;
     const error = await recordDelivery(db, row, playerId, battle, unconfirmed.messageId, nowIso);
@@ -653,6 +685,9 @@ export async function runLiveBattlePoll(
     activeSubscriptions: 0,
     expiredSubscriptions: 0,
     playersPolled: 0,
+    collectedCandidates: 0,
+    storedBattles: 0,
+    deliveredMessages: 0,
     newBattles: 0,
     delivered: 0,
     failedPlayers: 0,
@@ -699,6 +734,10 @@ export async function runLiveBattlePoll(
           player_id: playerId,
           status: 'failed',
           last_battle_at_before: null,
+          collected_candidates: 0,
+          stored_battles: 0,
+          delivered_messages: 0,
+          new_battles: 0,
           last_error: 'Subscribed player is no longer stored',
         });
       }
@@ -708,11 +747,12 @@ export async function runLiveBattlePoll(
 
     const before = player.last_battle_at;
     const fresh: CollectedBattleLog[] = [];
+    let storedBattles = 0;
     let firstError: unknown;
     let collectionFailed = false;
 
     try {
-      await collectBattleLogs(
+      storedBattles = await collectBattleLogs(
         db,
         api,
         [{ playerId, tag: player.tag }],
@@ -741,27 +781,53 @@ export async function runLiveBattlePoll(
           player_id: playerId,
           status: 'failed',
           last_battle_at_before: before,
+          collected_candidates: fresh.length,
+          stored_battles: storedBattles,
+          delivered_messages: 0,
+          new_battles: storedBattles,
           last_error: safeError(firstError ?? new Error('Live battle collection failed')),
         });
       }
       outcome.failedPlayers += 1;
+      outcome.collectedCandidates += fresh.length;
+      outcome.storedBattles += storedBattles;
+      // Legacy alias must remain the running total, not just the last player.
+      outcome.newBattles += storedBattles;
       continue;
     }
 
+    const collectedCandidates = fresh.length;
     for (const row of subscriptions) {
-      const delivery = await deliverBattles(client, db, row, playerId, player.tag, fresh, nowIso);
+      // The collector intentionally emits the whole official history; each
+      // subscription only receives battles at or after its current start.
+      const sessionBattles = battlesInSession(fresh, row.started_at);
+      const delivery = await deliverBattles(
+        client,
+        db,
+        row,
+        playerId,
+        player.tag,
+        sessionBattles,
+        nowIso,
+      );
       await insertPoll(db, {
         guild_id: row.guild_id,
         player_id: playerId,
         status: delivery.error === null ? 'completed' : 'failed',
         last_battle_at_before: before,
-        new_battles: fresh.length,
+        collected_candidates: collectedCandidates,
+        stored_battles: storedBattles,
+        delivered_messages: delivery.delivered,
+        new_battles: storedBattles,
         ...(delivery.error === null ? {} : { last_error: delivery.error }),
       });
       outcome.delivered += delivery.delivered;
+      outcome.deliveredMessages += delivery.delivered;
     }
     outcome.playersPolled += 1;
-    outcome.newBattles += fresh.length;
+    outcome.collectedCandidates += collectedCandidates;
+    outcome.storedBattles += storedBattles;
+    outcome.newBattles += storedBattles;
   }
 
   return outcome;
