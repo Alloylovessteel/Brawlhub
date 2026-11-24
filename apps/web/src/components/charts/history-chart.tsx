@@ -2,6 +2,7 @@
 
 import {
   CartesianGrid,
+  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -9,25 +10,49 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import {
+  mergeHistorySeries,
+  type HistoryPoint,
+  type HistorySeries,
+} from './history-chart-data';
 
-export interface HistoryPoint {
-  label: string;
-  value: number;
-}
+export type { HistoryPoint, HistorySeries } from './history-chart-data';
 
 export function HistoryChart({
   data,
+  series,
   valueLabel,
   color = '#7c96ff',
 }: {
-  data: HistoryPoint[];
+  /** Legacy single-series input. Prefer `series` for comparisons. */
+  data?: HistoryPoint[];
+  series?: readonly HistorySeries[];
   valueLabel: string;
   color?: string;
 }) {
+  const resolvedSeries: HistorySeries[] =
+    series !== undefined && series.length > 0
+      ? [...series]
+      : [
+          {
+            key: 'value',
+            name: valueLabel,
+            color,
+            points: (data ?? []).map((point) => ({
+              ...point,
+              time: point.label,
+            })),
+          },
+        ];
+  const chartData = mergeHistorySeries(resolvedSeries);
+
   return (
-    <div className="h-64 w-full" aria-label={`${valueLabel} history chart`}>
+    <div
+      className="h-64 w-full"
+      aria-label={`${valueLabel} history chart: ${resolvedSeries.map((item) => item.name).join(', ')}`}
+    >
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+        <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
           <CartesianGrid stroke="#243149" strokeDasharray="3 3" vertical={false} />
           <XAxis
             dataKey="label"
@@ -41,7 +66,9 @@ export function HistoryChart({
             tickLine={false}
             axisLine={false}
             width={64}
-            tickFormatter={(value: number) => new Intl.NumberFormat('en-US', { notation: 'compact' }).format(value)}
+            tickFormatter={(value: number) =>
+              new Intl.NumberFormat('en-US', { notation: 'compact' }).format(value)
+            }
           />
           <Tooltip
             contentStyle={{
@@ -52,21 +79,33 @@ export function HistoryChart({
               fontSize: 12,
             }}
             labelStyle={{ color: '#94a3b8' }}
-            formatter={(value: unknown) => [
-              new Intl.NumberFormat('en-US').format(Number(value)),
-              valueLabel,
+            formatter={(value: unknown, name: unknown) => [
+              value === null || value === undefined || value === ''
+                ? '—'
+                : new Intl.NumberFormat('en-US').format(Number(value)),
+              typeof name === 'string' && name.length > 0 ? name : valueLabel,
             ]}
           />
-          <Line
-            type="linear"
-            dataKey="value"
-            stroke={color}
-            strokeWidth={2.5}
-            dot={{ r: 3, fill: color }}
-            activeDot={{ r: 5 }}
-            connectNulls={false}
-            isAnimationActive={false}
-          />
+          {resolvedSeries.length > 1 ? (
+            <Legend
+              wrapperStyle={{ color: '#94a3b8', fontSize: 11, paddingTop: 4 }}
+              iconType="plainline"
+            />
+          ) : null}
+          {resolvedSeries.map((item) => (
+            <Line
+              key={item.key}
+              type="linear"
+              dataKey={item.key}
+              name={item.name}
+              stroke={item.color}
+              strokeWidth={2.5}
+              dot={{ r: 3, fill: item.color }}
+              activeDot={{ r: 5 }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          ))}
         </LineChart>
       </ResponsiveContainer>
     </div>

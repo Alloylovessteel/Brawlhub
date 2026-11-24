@@ -639,14 +639,22 @@ export async function getAllClubSnapshots(
 
 export async function getAllPlayerSnapshots(
   days?: number,
-  options: { clubIds?: readonly string[] } = {},
+  options: { clubIds?: readonly string[]; playerIds?: readonly string[] } = {},
 ): Promise<QueryResult<PlayerSnapshotRow>> {
-  if (scopeEmpty(options.clubIds)) return emptyResult(null);
+  if (scopeEmpty(options.clubIds) || scopeEmpty(options.playerIds)) return emptyResult(null);
   let playerScope: string[] | undefined;
   if (options.clubIds !== undefined) {
     const scoped = await getPlayerIdsForClubScope(options.clubIds);
     if (scoped.error !== null) return emptyResult(scoped.error);
     playerScope = scoped.ids;
+    if (playerScope.length === 0) return emptyResult(null);
+  }
+  if (options.playerIds !== undefined) {
+    const selected = [...new Set(options.playerIds)];
+    playerScope =
+      playerScope === undefined
+        ? selected
+        : selected.filter((id) => playerScope!.includes(id));
     if (playerScope.length === 0) return emptyResult(null);
   }
   const supabase = await createServerSupabaseClient();
@@ -660,6 +668,67 @@ export async function getAllPlayerSnapshots(
   }
   const { data, count, error } = await query;
   return { rows: (data ?? []) as PlayerSnapshotRow[], count: count ?? 0, error: errorText(error) };
+}
+
+/**
+ * Earliest stored snapshot for a read scope, independent of the selected chart
+ * range. Used only for the "collection began" label, never for plotted values.
+ */
+export async function getSnapshotCollectionStart(
+  options: { clubIds?: readonly string[] } = {},
+): Promise<{ capturedAt: string | null; error: string | null }> {
+  if (scopeEmpty(options.clubIds)) return { capturedAt: null, error: null };
+  const supabase = await createServerSupabaseClient();
+
+  let clubQuery = supabase
+    .from('club_snapshots')
+    .select('captured_at')
+    .order('captured_at', { ascending: true })
+    .limit(1);
+  if (options.clubIds !== undefined) {
+    clubQuery = clubQuery.in('club_id', [...options.clubIds]);
+  }
+  const clubTimes = await clubQuery;
+  if (clubTimes.error !== null && clubTimes.error !== undefined) {
+    return { capturedAt: null, error: errorText(clubTimes.error) };
+  }
+
+  let playerIds: string[] | undefined;
+  if (options.clubIds !== undefined) {
+    const scoped = await getPlayerIdsForClubScope(options.clubIds);
+    if (scoped.error !== null) return { capturedAt: null, error: scoped.error };
+    playerIds = scoped.ids;
+  }
+
+  let playerQuery = supabase
+    .from('player_snapshots')
+    .select('captured_at')
+    .order('captured_at', { ascending: true })
+    .limit(1);
+  if (playerIds !== undefined) {
+    if (playerIds.length === 0) {
+      return {
+        capturedAt:
+          typeof clubTimes.data?.[0]?.captured_at === 'string'
+            ? clubTimes.data[0].captured_at
+            : null,
+        error: null,
+      };
+    }
+    playerQuery = playerQuery.in('player_id', playerIds);
+  }
+  const playerTimes = await playerQuery;
+  if (playerTimes.error !== null && playerTimes.error !== undefined) {
+    return { capturedAt: null, error: errorText(playerTimes.error) };
+  }
+
+  const clubEarliest =
+    typeof clubTimes.data?.[0]?.captured_at === 'string' ? clubTimes.data[0].captured_at : null;
+  const playerEarliest =
+    typeof playerTimes.data?.[0]?.captured_at === 'string' ? playerTimes.data[0].captured_at : null;
+  if (clubEarliest === null) return { capturedAt: playerEarliest, error: null };
+  if (playerEarliest === null) return { capturedAt: clubEarliest, error: null };
+  return { capturedAt: clubEarliest < playerEarliest ? clubEarliest : playerEarliest, error: null };
 }
 
 export interface OverviewData {
