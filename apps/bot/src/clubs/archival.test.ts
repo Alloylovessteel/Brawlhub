@@ -34,6 +34,8 @@ type Handler = (call: QueryCall) => { data?: unknown; error?: unknown };
 interface Fixture {
   readonly clubs?: Row[];
   readonly tags?: Row[];
+  readonly memberships?: Row[];
+  readonly membershipUpdateError?: { readonly message: string };
   readonly clubSelectError?: { readonly message: string };
   readonly clubUpdateError?: { readonly message: string };
 }
@@ -43,10 +45,12 @@ function createFakeDb(fixture: Fixture = {}): {
   calls: QueryCall[];
   clubs: Row[];
   tags: Row[];
+  memberships: Row[];
 } {
   const calls: QueryCall[] = [];
   const clubs = fixture.clubs === undefined ? [] : [...fixture.clubs];
   const tags = fixture.tags === undefined ? [] : [...fixture.tags];
+  const memberships = fixture.memberships === undefined ? [] : [...fixture.memberships];
 
   const handlers: Record<string, Handler> = {
     'clubs:select': ({ filters }) => {
@@ -69,6 +73,20 @@ function createFakeDb(fixture: Fixture = {}): {
       found['archived_by'] = payload['archived_by'];
       found['archive_reason'] = payload['archive_reason'];
       return { data: [{ id: found['id'] }] };
+    },
+    'club_memberships:update': ({ filters, payload }) => {
+      if (fixture.membershipUpdateError !== undefined) {
+        return { error: fixture.membershipUpdateError };
+      }
+      for (const membership of memberships) {
+        if (
+          membership['club_id'] === filters['club_id'] &&
+          (membership['valid_to'] ?? null) === (filters['valid_to'] ?? null)
+        ) {
+          membership['valid_to'] = payload['valid_to'];
+        }
+      }
+      return { data: [] };
     },
     'guild_view_tags:delete': ({ filters }) => {
       for (let index = tags.length - 1; index >= 0; index -= 1) {
@@ -156,6 +174,7 @@ function createFakeDb(fixture: Fixture = {}): {
     calls,
     clubs,
     tags,
+    memberships,
   };
 }
 
@@ -194,9 +213,14 @@ beforeEach(() => {
 
 describe('archiveGuildClub', () => {
   it('archives non-destructively with guild-scoped writes and records an audit', async () => {
-    const { db, calls, clubs, tags } = createFakeDb({
+    const { db, calls, clubs, tags, memberships } = createFakeDb({
       clubs: [activeClub(CLUB_ID), activeClub(OTHER_CLUB_ID)],
       tags: [tag(CLUB_ID), tag(CLUB_ID, OTHER_GUILD_ID), tag(OTHER_CLUB_ID)],
+      memberships: [
+        { id: 'membership-1', club_id: CLUB_ID, valid_to: null },
+        { id: 'membership-2', club_id: CLUB_ID, valid_to: null },
+        { id: 'membership-3', club_id: OTHER_CLUB_ID, valid_to: null },
+      ],
     });
 
     const result = await archiveGuildClub(input(), { db });
@@ -225,6 +249,16 @@ describe('archiveGuildClub', () => {
       activeClub(OTHER_CLUB_ID),
     ]);
     expect(tags).toEqual([tag(CLUB_ID, OTHER_GUILD_ID), tag(OTHER_CLUB_ID)]);
+    expect(calls.find((call) => call.table === 'club_memberships')).toMatchObject({
+      operation: 'update',
+      payload: { valid_to: ARCHIVED_AT },
+      filters: { club_id: CLUB_ID, valid_to: null },
+    });
+    expect(memberships).toEqual([
+      { id: 'membership-1', club_id: CLUB_ID, valid_to: ARCHIVED_AT },
+      { id: 'membership-2', club_id: CLUB_ID, valid_to: ARCHIVED_AT },
+      { id: 'membership-3', club_id: OTHER_CLUB_ID, valid_to: null },
+    ]);
     expect(calls.some((call) => call.table === 'guild_settings')).toBe(false);
     expect(calls.find((call) => call.table === 'guild_view_tags')).toMatchObject({
       operation: 'delete',
@@ -290,6 +324,14 @@ describe('archiveGuildClub', () => {
     });
     await expect(archiveGuildClub(input(), { db: updateFailure.db })).rejects.toThrow(
       'Archive club failed: write failed',
+    );
+
+    const membershipFailure = createFakeDb({
+      clubs: [activeClub(CLUB_ID)],
+      membershipUpdateError: { message: 'memberships down' },
+    });
+    await expect(archiveGuildClub(input(), { db: membershipFailure.db })).rejects.toThrow(
+      'Close archived club memberships failed: memberships down',
     );
     expect(mocks.recordAdminAudit).not.toHaveBeenCalled();
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canAdministerRole } from './role-admin';
+import { canAdministerRole, canAdministerRoleChange } from './role-admin';
 
 describe('canAdministerRole', () => {
   it('lets the Server Owner assign global and club roles', () => {
@@ -18,5 +18,19 @@ describe('canAdministerRole', () => {
     expect(canAdministerRole({ globalRole: null, clubRole: 'owner' }, 'club', 'owner')).toBe(false);
     expect(canAdministerRole({ globalRole: null, clubRole: 'owner' }, 'global', 'staff')).toBe(false);
     expect(canAdministerRole({ globalRole: null, clubRole: 'staff' }, 'club', 'member')).toBe(false);
+  });
+});
+
+describe('canAdministerRoleChange', () => {
+  it('checks the target\'s existing roles as well as the requested role', () => {
+    const globalAdmin = { globalRole: 'admin' as const };
+    expect(canAdministerRoleChange(globalAdmin, 'club', 'member', ['staff'])).toBe(true);
+    expect(canAdministerRoleChange(globalAdmin, 'club', 'member', ['owner'])).toBe(false);
+    expect(canAdministerRoleChange({ globalRole: 'owner' }, 'global', 'admin', ['owner'])).toBe(true);
+  });
+
+  it('allows an empty target when the requested role itself is permitted', () => {
+    expect(canAdministerRoleChange({ globalRole: 'owner' }, 'global', 'admin', [])).toBe(true);
+    expect(canAdministerRoleChange({ globalRole: 'admin' }, 'global', 'admin', [])).toBe(false);
   });
 });

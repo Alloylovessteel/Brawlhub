@@ -19,3 +19,20 @@ export function canAdministerRole(
 
   return scope === 'club' && actor.clubRole === 'owner' && (targetRole === 'staff' || targetRole === 'member');
 }
+
+/**
+ * A role change must be authorized against every role the target currently
+ * holds in that scope. Checking only the requested role lets an administrator
+ * revoke a higher role by asking for a lower one.
+ */
+export function canAdministerRoleChange(
+  actor: { globalRole: Role | null; clubRole?: Role | undefined },
+  scope: RoleScope,
+  requestedRole: Role,
+  existingRoles: readonly Role[],
+): boolean {
+  return (
+    canAdministerRole(actor, scope, requestedRole) &&
+    existingRoles.every((role) => canAdministerRole(actor, scope, role))
+  );
+}

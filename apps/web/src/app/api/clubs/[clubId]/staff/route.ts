@@ -4,10 +4,12 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { requireApiClubPermission, sameOriginGuard } from '@/lib/api/guards';
 import { checkRateLimit } from '@/lib/api/rate-limit';
-import { canAdministerRole } from '@/lib/auth/role-admin';
+import { canAdministerRoleChange } from '@/lib/auth/role-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+const roleSchema = z.enum(['owner', 'admin', 'staff', 'member']);
 
 const staffRequestSchema = z.object({
   action: z.enum(['grant', 'revoke']),
@@ -50,17 +52,6 @@ export async function POST(
   });
   if (!parsed.success) return NextResponse.json({ error: 'invalid_request' }, { status: 400 });
 
-  const actorGlobalRole = guard.session.globalRole ?? 'member';
-  if (
-    !canAdministerRole(
-      { globalRole: actorGlobalRole, clubRole: guard.session.clubRoles.get(parsedClubId.data) },
-      'club',
-      parsed.data.role,
-    )
-  ) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  }
-
   const db = createTrustedClient();
   const redirectWith = (status: 'success' | 'error'): NextResponse => {
     const url = new URL(`/dashboard/clubs/${parsedClubId.data}`, request.nextUrl.origin);
@@ -93,24 +84,53 @@ export async function POST(
     }
     if (targetProfile.data === null) return redirectWith('error');
 
-    const removed = await db
+    const currentRolesResult = await db
       .from('user_roles')
-      .delete()
+      .select('role')
       .eq('user_id', targetProfile.data.id as string)
       .eq('scope', 'club')
       .eq('club_id', parsedClubId.data);
-    if (removed.error !== null && removed.error !== undefined) throw new Error(removed.error.message);
+    if (currentRolesResult.error !== null && currentRolesResult.error !== undefined) {
+      throw new Error(currentRolesResult.error.message);
+    }
+    const existingRoles = (currentRolesResult.data ?? [])
+      .map((row) => roleSchema.safeParse((row as { role?: unknown })?.role))
+      .flatMap((parsed) => (parsed.success ? [parsed.data] : []));
+    const actorGlobalRole = guard.session.globalRole ?? 'member';
+    if (
+      !canAdministerRoleChange(
+        { globalRole: actorGlobalRole, clubRole: guard.session.clubRoles.get(parsedClubId.data) },
+        'club',
+        parsed.data.role,
+        existingRoles,
+      )
+    ) {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+    }
 
     if (parsed.data.action === 'grant') {
-      const inserted = await db.from('user_roles').insert({
-        user_id: targetProfile.data.id as string,
-        scope: 'club',
-        club_id: parsedClubId.data,
-        role: parsed.data.role,
-        source: 'manual',
-        granted_by: guard.session.profile!.id,
-      });
-      if (inserted.error !== null && inserted.error !== undefined) throw new Error(inserted.error.message);
+      // Upsert instead of delete+insert: a failed insert must not revoke the
+      // target's current club role.
+      const saved = await db.from('user_roles').upsert(
+        {
+          user_id: targetProfile.data.id as string,
+          scope: 'club',
+          club_id: parsedClubId.data,
+          role: parsed.data.role,
+          source: 'manual',
+          granted_by: guard.session.profile!.id,
+        },
+        { onConflict: 'user_id,scope,club_id' },
+      );
+      if (saved.error !== null && saved.error !== undefined) throw new Error(saved.error.message);
+    } else {
+      const removed = await db
+        .from('user_roles')
+        .delete()
+        .eq('user_id', targetProfile.data.id as string)
+        .eq('scope', 'club')
+        .eq('club_id', parsedClubId.data);
+      if (removed.error !== null && removed.error !== undefined) throw new Error(removed.error.message);
     }
 
     const audit = await db.from('audit_logs').insert({

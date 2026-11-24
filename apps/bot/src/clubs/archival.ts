@@ -57,6 +57,18 @@ export async function archiveGuildClub(
   }
   if (!(update.data ?? []).length) return { kind: 'already-archived' };
 
+  // An archived club is no longer being tracked, so its open memberships must
+  // not keep looking current to roster and leaderboard reads. Closing at the
+  // archive timestamp preserves the membership history for this guild's club.
+  const memberships = await db
+    .from('club_memberships')
+    .update({ valid_to: archivedAt })
+    .eq('club_id', clubId)
+    .is('valid_to', null);
+  if (memberships.error !== null && memberships.error !== undefined) {
+    throw new Error(`Close archived club memberships failed: ${memberships.error.message}`);
+  }
+
   // The overview should no longer list the archived club.
   await db.from('guild_view_tags').delete().eq('guild_id', guildId).eq('club_id', clubId);
 
