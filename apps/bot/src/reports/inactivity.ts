@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mdBold, mdCode, mdList, mdParagraphs, mdSection } from '../discord/embed-format';
 import { EMBED_COLORS } from '../discord/embed-style';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -359,9 +360,61 @@ export async function updateInactivitySettings(
   return readInactivitySettings(input.guildId, db);
 }
 
+const INACTIVITY_CLAIM_PREFIX = 'claim:';
+const INACTIVITY_DELIVERED_PREFIX = 'claim-delivered:';
+const LEDGER_WRITE_ATTEMPTS = 2;
+type InactivityClaimStage = 'reserved' | 'loading' | 'sending';
+
 interface InactivityPostRow {
   readonly messageId: string;
   readonly channelId: string;
+}
+
+interface ParsedInactivityClaim {
+  readonly claimId: string;
+  readonly stage: InactivityClaimStage | 'legacy';
+}
+
+function inactivityClaimMessageId(claimId: string, stage: InactivityClaimStage): string {
+  return `${INACTIVITY_CLAIM_PREFIX}${claimId}:${stage}`;
+}
+
+function inactivityDeliveredMessageId(claimId: string, messageId: string): string {
+  return `${INACTIVITY_DELIVERED_PREFIX}${claimId}:${messageId}`;
+}
+
+function parseInactivityClaim(messageId: string | null): ParsedInactivityClaim | null {
+  if (messageId === null || !messageId.startsWith(INACTIVITY_CLAIM_PREFIX)) return null;
+  const parts = messageId.slice(INACTIVITY_CLAIM_PREFIX.length).split(':');
+  const claimId = parts[0];
+  if (claimId === undefined || claimId === '') return null;
+  const stage = parts[1];
+  if (stage === 'reserved' || stage === 'loading' || stage === 'sending') {
+    return { claimId, stage };
+  }
+  // Unstaged claims from earlier runs may have reached Discord, so they cannot
+  // be safely reclaimed.
+  return parts.length === 1 ? { claimId, stage: 'legacy' } : null;
+}
+
+function parseInactivityDeliveredClaim(messageId: string): string | null {
+  if (!messageId.startsWith(INACTIVITY_DELIVERED_PREFIX)) return null;
+  const separator = messageId.indexOf(':', INACTIVITY_DELIVERED_PREFIX.length);
+  const recovered = separator === -1 ? null : messageId.slice(separator + 1);
+  return recovered === null || recovered === '' ? null : recovered;
+}
+
+function isUnknownMessage(error: unknown): boolean {
+  const candidate = record(error);
+  if (candidate === null) return false;
+  return (
+    candidate['code'] === 10008 ||
+    candidate['code'] === '10008' ||
+    candidate['status'] === 404 ||
+    candidate['status'] === '404' ||
+    candidate['message'] === 'Unknown Message' ||
+    String(error).includes('Unknown Message')
+  );
 }
 
 async function readInactivityPost(
@@ -415,20 +468,171 @@ export async function postInactivityReports(
       asString(item?.['report_inactivity_channel_id']) ?? asString(item?.['overview_channel_id']);
     if (channelId === null) continue;
 
+    const claimId = randomUUID();
+    let claimMessageId = inactivityClaimMessageId(claimId, 'reserved');
+    const ledgerOptions = { onConflict: 'guild_id,period_key' } as const;
+    let ownsClaim = false;
+    let existingMessageId: string | null = null;
+    let expectedPriorValue: string | null = null;
+
+    const releaseClaim = async (): Promise<void> => {
+      if (!ownsClaim) return;
+      try {
+        await db
+          .from('guild_inactivity_report_posts')
+          .delete()
+          .eq('guild_id', guildId)
+          .eq('period_key', periodKey)
+          .eq('message_id', claimMessageId);
+      } catch {
+        // Keep the original failure as the result; the next tick can retry.
+      }
+    };
+
+    const transitionClaim = async (stage: InactivityClaimStage): Promise<boolean> => {
+      if (!ownsClaim) return false;
+      const nextId = inactivityClaimMessageId(claimId, stage);
+      const updated = await db
+        .from('guild_inactivity_report_posts')
+        .update({ message_id: nextId })
+        .eq('guild_id', guildId)
+        .eq('period_key', periodKey)
+        .eq('message_id', claimMessageId);
+      if (updated.error) throw new Error(`Advance inactivity claim failed: ${updated.error.message}`);
+      const won = (updated.data ?? []).some(
+        (item) => asString(record(item)?.['message_id']) === nextId,
+      );
+      if (won) claimMessageId = nextId;
+      return won;
+    };
+
+    const warnUncertain = (): void => {
+      logger.warn('Inactivity digest outcome is uncertain; manual reconciliation may be needed', {
+        guildId,
+        periodKey,
+      });
+    };
+
+    try {
+      const reserved = await db
+        .from('guild_inactivity_report_posts')
+        .upsert(
+          {
+            guild_id: guildId,
+            period_key: periodKey,
+            channel_id: channelId,
+            message_id: claimMessageId,
+          },
+          { ...ledgerOptions, ignoreDuplicates: true },
+        )
+        .select('message_id');
+      if (reserved.error) throw new Error(`Reserve inactivity post failed: ${reserved.error.message}`);
+      ownsClaim = (reserved.data ?? []).some(
+        (item) => asString(record(item)?.['message_id']) === claimMessageId,
+      );
+
+      if (!ownsClaim) {
+        const existing = await readInactivityPost(guildId, periodKey, db);
+        if (existing === null) throw new Error('Inactivity claim was lost before delivery');
+        const deliveredId = parseInactivityDeliveredClaim(existing.messageId);
+        if (deliveredId !== null) {
+          existingMessageId = deliveredId;
+          expectedPriorValue = existing.messageId;
+        } else {
+          const claim = parseInactivityClaim(existing.messageId);
+          if (claim !== null && (claim.stage === 'reserved' || claim.stage === 'loading')) {
+            const takeoverId = inactivityClaimMessageId(claimId, 'reserved');
+            const taken = await db
+              .from('guild_inactivity_report_posts')
+              .update({ message_id: takeoverId })
+              .eq('guild_id', guildId)
+              .eq('period_key', periodKey)
+              .eq('message_id', existing.messageId)
+              .select('message_id');
+            if (taken.error) throw new Error(`Recover inactivity claim failed: ${taken.error.message}`);
+            ownsClaim = (taken.data ?? []).some(
+              (item) => asString(record(item)?.['message_id']) === takeoverId,
+            );
+            if (ownsClaim) {
+              claimMessageId = takeoverId;
+              expectedPriorValue = existing.messageId;
+            } else {
+              warnUncertain();
+              throw new Error('Inactivity claim was taken by another worker');
+            }
+          } else if (claim === null) {
+            existingMessageId = existing.messageId;
+            expectedPriorValue = existing.messageId;
+          } else {
+            warnUncertain();
+            throw new Error('Inactivity report has an uncertain claim');
+          }
+        }
+      }
+    } catch (error: unknown) {
+      failed += 1;
+      logger.warn('Inactivity report claim failed for guild', {
+        guildId,
+        error: safeError(error, token),
+      });
+      continue;
+    }
+
+    try {
+      if (ownsClaim && !(await transitionClaim('loading'))) {
+        failed += 1;
+        continue;
+      }
+    } catch (error: unknown) {
+      await releaseClaim();
+      failed += 1;
+      logger.warn('Inactivity report claim could not advance for guild', {
+        guildId,
+        error: safeError(error, token),
+      });
+      continue;
+    }
+
+    let embed;
     try {
       const data = await loadInactivityData(guildId, Math.floor(days), now, db);
-      const embed = buildInactivityEmbed(data);
-      const body = { embeds: [embed.toJSON()], allowed_mentions: { parse: [] }, flags: 0 };
-      const existing = await readInactivityPost(guildId, periodKey, db);
-      let messageId: string | null = null;
-      if (existing !== null) {
+      embed = buildInactivityEmbed(data);
+    } catch (error: unknown) {
+      await releaseClaim();
+      failed += 1;
+      logger.warn('Inactivity report failed for guild', {
+        guildId,
+        error: safeError(error, token),
+      });
+      continue;
+    }
+
+    try {
+      if (ownsClaim && !(await transitionClaim('sending'))) {
+        failed += 1;
+        continue;
+      }
+    } catch (error: unknown) {
+      // The claim is still `loading`, which is safely recoverable next tick.
+      failed += 1;
+      logger.warn('Inactivity report claim could not reach sending for guild', {
+        guildId,
+        error: safeError(error, token),
+      });
+      continue;
+    }
+
+    const body = { embeds: [embed.toJSON()], allowed_mentions: { parse: [] }, flags: 0 };
+    let messageId: string | null = null;
+    try {
+      if (existingMessageId !== null) {
         try {
-          const message = (await rest.patch(Routes.channelMessage(channelId, existing.messageId), {
+          const message = (await rest.patch(Routes.channelMessage(channelId, existingMessageId), {
             body,
           })) as { id?: string } | undefined;
-          messageId = asString(message?.id) ?? existing.messageId;
+          messageId = asString(message?.id) ?? existingMessageId;
         } catch (editError: unknown) {
-          if (!String(editError).includes('Unknown Message')) throw editError;
+          if (!isUnknownMessage(editError)) throw editError;
         }
       }
       if (messageId === null) {
@@ -438,19 +642,63 @@ export async function postInactivityReports(
         messageId = asString(message?.id);
         if (messageId === null) throw new Error('Discord inactivity post returned no message ID');
       }
-      const saved = await db.from('guild_inactivity_report_posts').upsert(
-        { guild_id: guildId, period_key: periodKey, channel_id: channelId, message_id: messageId },
-        { onConflict: 'guild_id,period_key' },
-      );
-      if (saved.error) throw new Error(`Record inactivity post failed: ${saved.error.message}`);
-      posted += 1;
     } catch (error: unknown) {
+      // A failed send may still have reached Discord; the `sending` claim is
+      // intentionally kept so a retry cannot post a second message.
+      warnUncertain();
       failed += 1;
       logger.warn('Inactivity report failed for guild', {
         guildId,
         error: safeError(error, token),
       });
+      continue;
     }
+
+    const payload = {
+      guild_id: guildId,
+      period_key: periodKey,
+      channel_id: channelId,
+      message_id: messageId,
+    };
+    let recordError: string | null = null;
+    for (let attempt = 0; attempt < LEDGER_WRITE_ATTEMPTS; attempt += 1) {
+      try {
+        const saved = await db.from('guild_inactivity_report_posts').upsert(payload, ledgerOptions);
+        if (!saved.error) {
+          recordError = null;
+          break;
+        }
+        recordError = saved.error.message;
+      } catch (error: unknown) {
+        recordError = safeError(error, token);
+      }
+    }
+    if (recordError !== null) {
+      // Discord already has the message. Preserve its ID where the next claim
+      // can find it so a retry edits that message instead of posting another.
+      if (expectedPriorValue !== null) {
+        try {
+          const current = await readInactivityPost(guildId, periodKey, db);
+          if (current?.messageId === expectedPriorValue) {
+            await db.from('guild_inactivity_report_posts').upsert(
+              { ...payload, message_id: inactivityDeliveredMessageId(claimId, messageId) },
+              ledgerOptions,
+            );
+            posted += 1;
+            continue;
+          }
+        } catch {
+          // An unrecorded claim remains uncertain; retries will skip it.
+        }
+      }
+      failed += 1;
+      logger.warn('Inactivity report was not fully recorded for guild', {
+        guildId,
+        error: recordError,
+      });
+      continue;
+    }
+    posted += 1;
   }
   return { posted, failed };
 }

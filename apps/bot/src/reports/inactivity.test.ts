@@ -61,7 +61,8 @@ function fakeDb(handlers: Record<string, Handler>): { db: SupabaseClient; calls:
     }
 
     select(): this {
-      this.operation = 'select';
+      // Keep the preceding operation: `upsert(...).select(...)` and
+      // `update(...).select(...)` must remain writes in the fake.
       return this;
     }
 
@@ -69,6 +70,17 @@ function fakeDb(handlers: Record<string, Handler>): { db: SupabaseClient; calls:
       this.operation = 'upsert';
       this.payload = payload;
       this.options = options;
+      return this;
+    }
+
+    update(payload: Record<string, unknown>): this {
+      this.operation = 'update';
+      this.payload = payload;
+      return this;
+    }
+
+    delete(): this {
+      this.operation = 'delete';
       return this;
     }
 
@@ -326,9 +338,75 @@ describe('inactivity settings', () => {
   });
 });
 
+interface LedgerRecord {
+  guild_id: string;
+  period_key: string;
+  channel_id: string;
+  message_id: string;
+}
+
+function fakeLedger(initial: readonly LedgerRecord[] = []) {
+  let rows = initial.map((row) => ({ ...row }));
+  let remainingFailures = 0;
+  let failureMessage = 'ledger down';
+
+  const key = (row: Pick<LedgerRecord, 'guild_id' | 'period_key'>) =>
+    `${row.guild_id}:${row.period_key}`;
+  const matches = (row: LedgerRecord, filters: readonly Filter[] | undefined) =>
+    (filters ?? []).every(([operator, column, value]) => operator === 'eq' && row[column as keyof LedgerRecord] === value);
+
+  const handlers: Record<string, Handler> = {
+    'guild_inactivity_report_posts:select': (_payload, _options, filters) => ({
+      data: rows.find((row) => matches(row, filters)) ?? null,
+      error: null,
+    }),
+    'guild_inactivity_report_posts:upsert': (payload, options, filters) => {
+      const row = payload as unknown as LedgerRecord;
+      const index = rows.findIndex((item) => key(item) === key(row));
+      if (options?.['ignoreDuplicates'] === true) {
+        if (index !== -1) return { data: [], error: null };
+        rows.push({ ...row });
+        return { data: [{ ...row }], error: null };
+      }
+      if (remainingFailures > 0) {
+        remainingFailures -= 1;
+        return { data: null, error: { message: failureMessage } };
+      }
+      if (index === -1) rows.push({ ...row });
+      else rows[index] = { ...row };
+      return { data: [{ ...row }], error: null };
+    },
+    'guild_inactivity_report_posts:update': (payload, _options, filters) => {
+      const updated: LedgerRecord[] = [];
+      rows = rows.map((row) => {
+        if (!matches(row, filters)) return row;
+        const next = { ...row, ...(payload as Partial<LedgerRecord>) };
+        updated.push(next);
+        return next;
+      });
+      return { data: updated, error: null };
+    },
+    'guild_inactivity_report_posts:delete': (_payload, _options, filters) => {
+      rows = rows.filter((row) => !matches(row, filters));
+      return { data: [], error: null };
+    },
+  };
+
+  return {
+    handlers,
+    rows: () => rows,
+    failNextUpserts: (count: number, message = 'ledger down') => {
+      remainingFailures = count;
+      failureMessage = message;
+    },
+  };
+}
+
 describe('postInactivityReports', () => {
   it('posts once per guild/day and skips disabled guilds', async () => {
+    const ledger = fakeLedger();
     const { db, calls } = fakeDb({
+      ...ledger.handlers,
       'guild_settings:select': () => ({
         data: [
           {
@@ -358,8 +436,6 @@ describe('postInactivityReports', () => {
         data: [{ id: 'player-1', tag: 'P1', name: 'Idle', last_battle_at: daysAgo(9) }],
         error: null,
       }),
-      'guild_inactivity_report_posts:select': () => ({ data: null, error: null }),
-      'guild_inactivity_report_posts:upsert': () => ({ data: null, error: null }),
     });
     const post = vi.fn(async (_route: string, _options?: unknown) => ({ id: 'message-1' }));
     const rest = { post, patch: vi.fn() } as unknown as REST;
@@ -391,39 +467,180 @@ describe('postInactivityReports', () => {
     ]);
   });
 
-  it('reports a failed guild so the scheduler can retry the digest', async () => {
-    const { db } = fakeDb({
-      'guild_settings:select': () => ({
-        data: [
-          {
-            guild_id: GUILD_ID,
-            report_inactivity_days: 4,
-            report_inactivity_channel_id: CHANNEL_ID,
-            overview_channel_id: null,
-          },
-        ],
-        error: null,
-      }),
-      'clubs:select': () => ({
-        data: [{ id: 'club-1', tag: 'ABC', name: 'Alpha' }],
-        error: null,
-      }),
-      'club_memberships:select': () => ({
-        data: [{ club_id: 'club-1', player_id: 'player-1', role: 'member' }],
-        error: null,
-      }),
-      'players:select': () => ({
-        data: [{ id: 'player-1', tag: 'P1', name: 'Idle', last_battle_at: daysAgo(9) }],
-        error: null,
-      }),
-      'guild_inactivity_report_posts:select': () => ({ data: null, error: null }),
-      'guild_inactivity_report_posts:upsert': () => ({ data: null, error: { message: 'ledger down' } }),
+  const digestHandlers = (ledger: ReturnType<typeof fakeLedger>): Record<string, Handler> => ({
+    ...ledger.handlers,
+    'guild_settings:select': () => ({
+      data: [
+        {
+          guild_id: GUILD_ID,
+          report_inactivity_days: 4,
+          report_inactivity_channel_id: CHANNEL_ID,
+          overview_channel_id: null,
+        },
+      ],
+      error: null,
+    }),
+    'clubs:select': () => ({
+      data: [{ id: 'club-1', tag: 'ABC', name: 'Alpha' }],
+      error: null,
+    }),
+    'club_memberships:select': () => ({
+      data: [{ club_id: 'club-1', player_id: 'player-1', role: 'member' }],
+      error: null,
+    }),
+    'players:select': () => ({
+      data: [{ id: 'player-1', tag: 'P1', name: 'Idle', last_battle_at: daysAgo(9) }],
+      error: null,
+    }),
+  });
+
+  function stagedUpdates(calls: readonly QueryCall[]): QueryCall[] {
+    return calls.filter((call) => call.table === 'guild_inactivity_report_posts' && call.operation === 'update');
+  }
+
+  it('stages a fresh claim through reserved, loading and sending before posting', async () => {
+    const ledger = fakeLedger();
+    const { db, calls } = fakeDb(digestHandlers(ledger));
+    const post = vi.fn(async (_route: string, _options?: unknown) => ({ id: 'message-1' }));
+    const rest = { post, patch: vi.fn() } as unknown as REST;
+
+    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+      posted: 1,
+      failed: 0,
     });
+
+    const stages = stagedUpdates(calls).map((call) =>
+      String(call.payload?.['message_id']).replace(/^claim:[^:]+:/, ''),
+    );
+    expect(stages).toEqual(['loading', 'sending']);
+    expect(ledger.rows()).toHaveLength(1);
+    expect(ledger.rows()[0]?.message_id).toBe('message-1');
+    expect(post.mock.calls[0]?.[1]).toMatchObject({
+      body: expect.objectContaining({ allowed_mentions: { parse: [] } }),
+    });
+  });
+
+  it('recovers a known pre-send claim instead of posting twice', async () => {
+    const ledger = fakeLedger([
+      {
+        guild_id: GUILD_ID,
+        period_key: '2026-11-21',
+        channel_id: CHANNEL_ID,
+        message_id: 'claim:old-worker:reserved',
+      },
+    ]);
+    const { db, calls } = fakeDb(digestHandlers(ledger));
+    const post = vi.fn(async () => ({ id: 'recovered-message' }));
+    const rest = { post, patch: vi.fn() } as unknown as REST;
+
+    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+      posted: 1,
+      failed: 0,
+    });
+
+    expect(post).toHaveBeenCalledOnce();
+    expect(String(stagedUpdates(calls)[0]?.payload?.['message_id'])).toMatch(
+      /^claim:[^:]+:reserved$/,
+    );
+    expect(ledger.rows()[0]?.message_id).toBe('recovered-message');
+  });
+
+  it('does not repost an uncertain sending or legacy claim', async () => {
+    for (const messageId of ['claim:old-worker:sending', 'claim:old-worker']) {
+      const ledger = fakeLedger([
+        {
+          guild_id: GUILD_ID,
+          period_key: '2026-11-21',
+          channel_id: CHANNEL_ID,
+          message_id: messageId,
+        },
+      ]);
+      const { db } = fakeDb(digestHandlers(ledger));
+      const post = vi.fn(async () => ({ id: 'duplicate-message' }));
+      const rest = { post, patch: vi.fn() } as unknown as REST;
+
+      await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+        posted: 0,
+        failed: 1,
+      });
+
+      expect(post).not.toHaveBeenCalled();
+      expect(ledger.rows()[0]?.message_id).toBe(messageId);
+    }
+  });
+
+  it('edits a message recovered from a delivered sentinel', async () => {
+    const ledger = fakeLedger([
+      {
+        guild_id: GUILD_ID,
+        period_key: '2026-11-21',
+        channel_id: CHANNEL_ID,
+        message_id: 'claim-delivered:old-worker:existing-message',
+      },
+    ]);
+    const { db } = fakeDb(digestHandlers(ledger));
+    const patch = vi.fn(async (_route: string, _options?: unknown) => ({ id: 'existing-message' }));
+    const post = vi.fn(async (_route: string, _options?: unknown) => ({ id: 'unused' }));
+    const rest = { post, patch } as unknown as REST;
+
+    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+      posted: 1,
+      failed: 0,
+    });
+
+    expect(String(patch.mock.calls[0]?.[0])).toContain('existing-message');
+    expect(post).not.toHaveBeenCalled();
+    expect(ledger.rows()[0]?.message_id).toBe('existing-message');
+  });
+
+  it('keeps a sending claim when the ledger cannot record a new post', async () => {
+    const ledger = fakeLedger();
+    ledger.failNextUpserts(2, 'ledger down');
+    const { db } = fakeDb(digestHandlers(ledger));
+    const post = vi.fn(async () => ({ id: 'message-1' }));
+    const rest = { post, patch: vi.fn() } as unknown as REST;
+
+    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+      posted: 0,
+      failed: 1,
+    });
+
+    expect(ledger.rows()[0]?.message_id).toMatch(/^claim:[^:]+:sending$/);
+  });
+
+  it('preserves an edited message ID in a delivered sentinel when recording fails', async () => {
+    const ledger = fakeLedger([
+      {
+        guild_id: GUILD_ID,
+        period_key: '2026-11-21',
+        channel_id: CHANNEL_ID,
+        message_id: 'claim-delivered:old-worker:existing-message',
+      },
+    ]);
+    ledger.failNextUpserts(2, 'ledger down');
+    const { db } = fakeDb(digestHandlers(ledger));
+    const patch = vi.fn(async (_route: string, _options?: unknown) => ({ id: 'edited-message' }));
+    const rest = { post: vi.fn(), patch } as unknown as REST;
+
+    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+      posted: 1,
+      failed: 0,
+    });
+
+    expect(ledger.rows()[0]?.message_id).toMatch(/^claim-delivered:.*:edited-message$/);
+  });
+
+  it('reports a failed guild so the scheduler can retry the digest', async () => {
+    const ledger = fakeLedger();
+    ledger.failNextUpserts(3, 'ledger down');
+    const { db } = fakeDb(digestHandlers(ledger));
     const rest = { post: vi.fn(async () => ({ id: 'message-1' })), patch: vi.fn() } as unknown as REST;
 
     await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
       posted: 0,
       failed: 1,
     });
+
+    expect(ledger.rows()[0]?.message_id).toMatch(/^claim:[^:]+:sending$/);
   });
 });
