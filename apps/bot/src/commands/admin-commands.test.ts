@@ -528,6 +528,19 @@ describe('/sync', () => {
     expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
   });
 
+  it('refreshes the overview when the current period was already synced', async () => {
+    mocks.guard.runManagedSync.mockResolvedValueOnce({
+      kind: 'ran',
+      results: [syncResult({ status: 'skipped', error: 'Sync already completed for this period' })],
+    });
+    const interaction = chat(null);
+
+    await handleSync(interaction);
+
+    expect(mocks.overview.refreshOverviewNow).toHaveBeenCalledOnce();
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
+  });
+
   it('keeps the sync reply when the overview refresh fails', async () => {
     mocks.overview.refreshOverviewNow.mockRejectedValueOnce(new Error('Discord unavailable'));
     const interaction = chat(null);

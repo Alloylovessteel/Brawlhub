@@ -54,12 +54,12 @@ async function postOperatorNotice(result: SyncResult): Promise<void> {
   }
 }
 
-/** Refresh the auto-posted overview immediately after a successful manual sync. */
+/** Refresh the auto-posted overview immediately after a completed or skipped manual sync. */
 async function refreshOverviewAfterSync(
   interaction: ChatInputCommandInteraction,
   result: SyncResult,
 ): Promise<void> {
-  if (result.status !== 'completed') return;
+  if (result.status !== 'completed' && result.status !== 'skipped') return;
   try {
     await refreshOverviewNow(interaction.guildId!, {
       label: interaction.guild?.name ?? null,
