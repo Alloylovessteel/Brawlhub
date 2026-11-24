@@ -40,17 +40,12 @@ const COMPETITION_COLUMNS = [
   'club:clubs!competitions_club_id_fkey(id, tag, name)',
 ].join(', ');
 
-const ENTRY_COLUMNS = [
-  'id', 'competition_id', 'player_id', 'joined_at', 'baseline_trophies',
-  'baseline_source', 'baseline_captured_at',
-  'player:players!competition_entries_player_id_fkey(' +
-    'id, tag, name, trophies, highest_trophies, exp_level, last_synced_at)',
-].join(', ');
-
 const STANDINGS_PAGE_SIZE = 1000;
-// Keyset pages always move strictly backwards, so this only guards against a
-// misbehaving RPC returning an endless stream of rows.
+const ENTRIES_PAGE_SIZE = 1000;
+// Keyset pages always move strictly in one direction, so this only guards
+// against a misbehaving RPC returning an endless stream of rows.
 const MAX_STANDINGS_PAGES = 20;
+const MAX_ENTRY_PAGES = 20;
 
 const ROLES: readonly Role[] = ['owner', 'admin', 'staff', 'member'];
 
@@ -432,8 +427,8 @@ async function readEntryCount(db: DatabaseClient, competitionId: string): Promis
 
 /**
  * Ask the database to recompute join-time baselines once the competition has
- * started. The RPC is idempotent and refuses to run after the first accepted
- * submission, so ignoring its result is safe on later reads.
+ * started. The RPC is idempotent: it preserves baselines once a result has
+ * been accepted, so ignoring its result is safe on later reads.
  */
 async function finalizeBaselinesIfStarted(
   competition: CompetitionRecord,
@@ -716,12 +711,33 @@ export async function loadCompetitionLeaderboard(
   if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
   await finalizeBaselinesIfStarted(competition, db, options.now ?? new Date());
 
-  const entriesResult = await db
-    .from('competition_entries')
-    .select(ENTRY_COLUMNS)
-    .eq('competition_id', competitionId)
-    .order('joined_at', { ascending: true });
-  requireOk(entriesResult.error, 'Read competition entries');
+  // Entries are read through the bounded RPC so a competition with more than
+  // one PostgREST page of entrants cannot silently lose its tail.
+  const entries: CompetitionEntry[] = [];
+  let entryCursor: { joinedAt: string; id: string } | null = null;
+  const seenEntryCursors = new Set<string>();
+  for (let page = 0; page < MAX_ENTRY_PAGES; page += 1) {
+    const rows = await readRpcRows(db, 'push_competition_entries', {
+      p_competition_id: competitionId,
+      p_limit: ENTRIES_PAGE_SIZE,
+      ...(entryCursor === null
+        ? {}
+        : { p_after_joined_at: entryCursor.joinedAt, p_after_id: entryCursor.id }),
+    });
+    for (const value of rows) {
+      const entry = parseEntryRow(value);
+      if (entry !== null) entries.push(entry);
+    }
+    if (rows.length < ENTRIES_PAGE_SIZE) break;
+    const lastRow = record(rows[rows.length - 1]);
+    const joinedAt = asString(lastRow?.['joined_at']);
+    const lastId = asString(lastRow?.['id']);
+    if (joinedAt === null || lastId === null) break;
+    const cursorKey = `${joinedAt}\u0000${lastId}`;
+    if (seenEntryCursors.has(cursorKey)) break;
+    seenEntryCursors.add(cursorKey);
+    entryCursor = { joinedAt, id: lastId };
+  }
 
   // The RPC ranks accepted submissions per entry in SQL before keyset paging,
   // so a burst of newer rows cannot crowd out another entrant's only result.
@@ -751,9 +767,6 @@ export async function loadCompetitionLeaderboard(
     cursor = { submittedAt, id: lastId };
   }
 
-  const entries = (entriesResult.data ?? [])
-    .map((value: unknown) => parseEntryRow(value))
-    .filter((entry): entry is CompetitionEntry => entry !== null);
   const latest = latestAcceptedSubmissions(submissions);
 
   const unranked: Omit<CompetitionLeaderboardRow, 'rank'>[] = entries.map((entry) => {

@@ -221,7 +221,7 @@ function simulatedStandings(rows: readonly Row[]): RpcResponse {
   return { data, error: null };
 }
 
-function createRpcHandler() {
+function createRpcHandler(tables: Tables = baseTables()) {
   return vi.fn((name: string, _args: Row): RpcResponse => {
     if (name === 'push_create_competition') return rpcOk({ id: COMPETITION_ID });
     if (name === 'push_join_competition') {
@@ -239,6 +239,9 @@ function createRpcHandler() {
         trophies: 5_000,
         verificationStatus: 'unverified',
       });
+    }
+    if (name === 'push_competition_entries') {
+      return { data: [...(tables['competition_entries'] ?? [])], error: null };
     }
     // Table-valued RPCs are overridden in the tests that exercise them.
     if (name === 'push_competition_entry_counts' || name === 'push_competition_standings') {
@@ -285,7 +288,7 @@ describe('competition service', () => {
 
   beforeEach(() => {
     tables = baseTables();
-    rpcHandler = createRpcHandler();
+    rpcHandler = createRpcHandler(tables);
     db = createFakeDb(tables, rpcHandler);
   });
 
@@ -586,6 +589,9 @@ describe('competition service', () => {
       }),
     ];
     rpcHandler.mockImplementation((name: string, args: Row): RpcResponse => {
+      if (name === 'push_competition_entries') {
+        return { data: [...(tables['competition_entries'] ?? [])], error: null };
+      }
       if (name === 'push_competition_standings') {
         expect(args['p_competition_id']).toBe(COMPETITION_ID);
         expect(args['p_limit']).toBe(1000);
@@ -610,9 +616,85 @@ describe('competition service', () => {
     expect(view.rows[1]?.gain).toBeNull();
     expect(view.rows[1]?.rank).toBeNull();
     expect(db.queries.filter((query: { table: string }) => query.table === 'competition_submissions')).toEqual([]);
-    expect(
-      db.queries.filter((query: { table: string }) => query.table === 'competition_entries'),
-    ).toHaveLength(1);
+    expect(db.queries.filter((query: { table: string }) => query.table === 'competition_entries')).toEqual([]);
+    expect(rpcHandler).toHaveBeenCalledWith(
+      'push_competition_entries',
+      expect.objectContaining({ p_competition_id: COMPETITION_ID, p_limit: 1000 }),
+    );
+  });
+
+  it('pages competition entries through the RPC beyond the PostgREST row cap', async () => {
+    const baseAt = Date.parse('2026-11-18T01:00:00.000Z');
+    const firstPage = Array.from({ length: 1000 }, (_, index) =>
+      entryRow({
+        id: `entry-${index}`,
+        joined_at: new Date(baseAt + index * 1000).toISOString(),
+        player: playerRow({ id: `player-${index}`, tag: '2C0Y', name: `Player ${index}` }),
+      }),
+    );
+    const tail = entryRow({
+      id: 'entry-1000',
+      joined_at: new Date(baseAt + 1000 * 1000).toISOString(),
+      player: playerRow({ id: 'player-1000', tag: '2C0Y', name: 'Player 1000' }),
+    });
+    rpcHandler.mockImplementation((name: string, args: Row): RpcResponse => {
+      if (name === 'push_competition_entries') {
+        return {
+          data: args['p_after_id'] === undefined ? firstPage : [tail],
+          error: null,
+        };
+      }
+      if (name === 'push_competition_standings') return { data: [], error: null };
+      return rpcOk({});
+    });
+
+    const view = await loadCompetitionLeaderboard(COMPETITION_ID, { db, now: NOW });
+
+    expect(view.rows).toHaveLength(1001);
+    const entryCalls = rpcHandler.mock.calls.filter(([name]) => name === 'push_competition_entries');
+    expect(entryCalls).toHaveLength(2);
+    expect(entryCalls[1]?.[1]).toMatchObject({
+      p_competition_id: COMPETITION_ID,
+      p_after_joined_at: firstPage[999]?.['joined_at'],
+      p_after_id: 'entry-999',
+    });
+    expect(db.queries.filter((query: { table: string }) => query.table === 'competition_entries')).toEqual([]);
+  });
+
+  it('keeps standings readable when finalization preserves baselines for accepted results', async () => {
+    rpcHandler.mockImplementation((name: string): RpcResponse => {
+      if (name === 'push_finalize_competition_baselines') {
+        return rpcOk({
+          preservedExistingSubmissions: true,
+          updatedEntries: 0,
+          finalizedAt: AFTER_START.toISOString(),
+        });
+      }
+      if (name === 'push_competition_entries') return { data: [entryRow()], error: null };
+      if (name === 'push_competition_standings') {
+        return simulatedStandings([submissionRow()]);
+      }
+      return rpcOk({});
+    });
+
+    const view = await loadCompetitionLeaderboard(COMPETITION_ID, { db, now: AFTER_START });
+
+    expect(view.rows).toHaveLength(1);
+    expect(view.rows[0]?.trophies).toBe(5_000);
+    expect(view.rows[0]?.entry.baselineTrophies).toBe(4_000);
+  });
+
+  it('tolerates the legacy submissions_exist finalization response', async () => {
+    rpcHandler.mockImplementation((name: string): RpcResponse => {
+      if (name === 'push_finalize_competition_baselines') return rpcCode('submissions_exist');
+      if (name === 'push_competition_entries') return { data: [entryRow()], error: null };
+      if (name === 'push_competition_standings') return { data: [], error: null };
+      return rpcOk({});
+    });
+
+    await expect(
+      loadCompetitionLeaderboard(COMPETITION_ID, { db, now: AFTER_START }),
+    ).resolves.toMatchObject({ rows: [{ trophies: null }] });
   });
 
   it('finalizes baselines on a standings read once the competition has started', async () => {
