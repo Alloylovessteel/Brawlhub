@@ -234,7 +234,7 @@ beforeEach(() => {
 });
 
 describe('loadReportData', () => {
-  it('counts stored events only for active clubs of the requested guild', async () => {
+  it('counts stored events once for the guild even when both transfer clubs are local', async () => {
     const data = await loadReportData(GUILD_ID, PERIOD);
 
     expect(data.period).toBe(PERIOD);
@@ -266,7 +266,7 @@ describe('loadReportData', () => {
       clubs: 2,
       joins: 1,
       leaves: 1,
-      transfers: 2,
+      transfers: 1,
       roleChanges: 3,
       capacityOpens: 1,
       capacityCloses: 1,

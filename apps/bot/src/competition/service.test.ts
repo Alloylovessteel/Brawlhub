@@ -6,6 +6,7 @@ import {
   joinCompetition,
   listCompetitions,
   loadCompetitionLeaderboard,
+  loadCompetitionRecord,
   CompetitionServiceError,
   resolveCompetitionActor,
   submitCompetitionResult,
@@ -25,6 +26,7 @@ const CLUB_ID = '66666666-6666-4666-8666-666666666666';
 
 function createFakeDb(tables: Tables, rpc: (name: string, args: Row) => RpcResponse) {
   const rpcCalls: { name: string; args: Row }[] = [];
+  const queries: { table: string; limit: number | null }[] = [];
 
   function from(table: string) {
     const state = {
@@ -35,9 +37,12 @@ function createFakeDb(tables: Tables, rpc: (name: string, args: Row) => RpcRespo
     };
 
     async function execute(): Promise<{ data: unknown; error: { message: string } | null }> {
+      queries.push({ table, limit: state.limit });
       let rows = [...(tables[table] ?? [])];
       for (const [field, value] of Object.entries(state.filters)) {
-        rows = rows.filter((row) => row[field] === value);
+        rows = rows.filter((row) =>
+          typeof value === 'function' ? value(row[field]) : row[field] === value,
+        );
       }
       if (state.limit !== null) rows = rows.slice(0, state.limit);
       return {
@@ -50,6 +55,14 @@ function createFakeDb(tables: Tables, rpc: (name: string, args: Row) => RpcRespo
       select: () => builder,
       eq: (field: string, value: unknown) => {
         state.filters[field] = value;
+        return builder;
+      },
+      is: (field: string, value: unknown) => {
+        state.filters[field] = value;
+        return builder;
+      },
+      in: (field: string, values: unknown[]) => {
+        state.filters[field] = (value: unknown) => values.includes(value);
         return builder;
       },
       order: () => {
@@ -75,6 +88,7 @@ function createFakeDb(tables: Tables, rpc: (name: string, args: Row) => RpcRespo
   return {
     from,
     rpcCalls,
+    queries,
     rpc: async (name: string, args: Row): Promise<RpcResponse> => {
       rpcCalls.push({ name, args });
       return rpc(name, args);
@@ -461,11 +475,41 @@ describe('competition service', () => {
     );
   });
 
-  it('lists competitions with entry counts', async () => {
+  it('lists competitions with uncapped entry counts', async () => {
     tables['competition_entries'] = [entryRow(), entryRow({ id: 'entry-2' })];
     const competitions = await listCompetitions({ db });
     expect(competitions).toHaveLength(1);
     expect(competitions[0]?.entryCount).toBe(2);
+    expect(
+      db.queries.filter(
+        (query: { table: string; limit: number | null }) => query.table === 'competition_entries',
+      ),
+    ).toEqual([
+      { table: 'competition_entries', limit: null },
+    ]);
+  });
+
+  it('keeps global competitions visible while hiding other guilds’ club competitions', async () => {
+    tables['clubs'] = [{ id: CLUB_ID, guild_id: 'guild-1', archived_at: null }];
+    tables['competitions'] = [
+      competitionRow(),
+      competitionRow({
+        id: '77777777-7777-4777-8777-777777777777',
+        name: 'Other Guild Cup',
+        club_id: 'other-club',
+        club: { id: 'other-club', tag: 'OTHER', name: 'Other' },
+      }),
+    ];
+
+    const competitions = await listCompetitions({ db, guildId: 'guild-1' });
+    expect(competitions.map((competition) => competition.name)).toEqual(['Midseason Climb']);
+    await expect(
+      loadCompetitionRecord('77777777-7777-4777-8777-777777777777', { db, guildId: 'guild-1' }),
+    ).resolves.toBeNull();
+    await expect(loadCompetitionRecord(COMPETITION_ID, { db, guildId: 'guild-1' })).resolves.toMatchObject({
+      id: COMPETITION_ID,
+      clubId: null,
+    });
   });
 
   it('uses the latest accepted submission, handles negative gains and missing baselines', async () => {
@@ -507,6 +551,14 @@ describe('competition service', () => {
     expect(view.rows[1]?.entry.player.name).toBe('Bravo');
     expect(view.rows[1]?.gain).toBeNull();
     expect(view.rows[1]?.rank).toBeNull();
+    expect(
+      db.queries
+        .filter(
+          (query: { table: string; limit: number | null }) =>
+            query.table === 'competition_entries' || query.table === 'competition_submissions',
+        )
+        .map((query: { table: string; limit: number | null }) => query.limit),
+    ).toEqual([null, null, null]);
   });
 
   it('handles an empty competition without inventing rows', async () => {

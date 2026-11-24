@@ -112,8 +112,11 @@ async function assertCompetitionInGuild(
 ): Promise<CompetitionRecord> {
   if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
   if (guildId === undefined || guildId === null || guildId.trim() === '') return competition;
+  // Global competitions (club_id NULL) are intentionally visible in every
+  // guild; only club-scoped competitions require a matching guild club.
+  if (competition.clubId === null) return competition;
   const guildClubIds = await readGuildClubIds(guildId, db);
-  if (competition.clubId !== null && guildClubIds !== null && guildClubIds.includes(competition.clubId)) {
+  if (guildClubIds !== null && guildClubIds.includes(competition.clubId)) {
     return competition;
   }
   throw new CompetitionServiceError('not_found', errorMessage('not_found'));
@@ -422,11 +425,14 @@ export async function loadCompetitionRecord(
   if (data === null || data === undefined) return null;
   const competition = parseCompetitionRow(data, await readEntryCount(db, competitionId));
   if (competition === null) return null;
-  if (options.guildId !== undefined && options.guildId !== null && options.guildId.trim() !== '') {
+  if (
+    competition.clubId !== null &&
+    options.guildId !== undefined &&
+    options.guildId !== null &&
+    options.guildId.trim() !== ''
+  ) {
     const guildClubIds = await readGuildClubIds(options.guildId, db);
-    if (competition.clubId === null || guildClubIds === null || !guildClubIds.includes(competition.clubId)) {
-      return null;
-    }
+    if (guildClubIds === null || !guildClubIds.includes(competition.clubId)) return null;
   }
   return competition;
 }
@@ -437,20 +443,42 @@ export async function listCompetitions(
 ): Promise<CompetitionRecord[]> {
   const db = options.db ?? createTrustedClient();
   const guildClubIds = await readGuildClubIds(options.guildId, db);
-  let query = db
-    .from('competitions')
-    .select(COMPETITION_COLUMNS)
-    .order('starts_at', { ascending: false })
-    .limit(500);
-  if (guildClubIds !== null) {
-    if (guildClubIds.length === 0) return [];
-    query = query.in('club_id', guildClubIds);
+  const competitionQueries: Array<
+    Promise<{ data: unknown[] | null; error: { message?: string } | null | undefined }>
+  > = [];
+  if (guildClubIds !== null && guildClubIds.length > 0) {
+    competitionQueries.push(
+      (async () =>
+        db
+          .from('competitions')
+          .select(COMPETITION_COLUMNS)
+          .order('starts_at', { ascending: false })
+          .limit(500)
+          .in('club_id', guildClubIds))(),
+    );
   }
-  const [competitionsResult, entriesResult] = await Promise.all([
-    query,
-    db.from('competition_entries').select('competition_id').limit(10_000),
+  // Global competitions have no club_id and are visible to every guild.
+  competitionQueries.push(
+    (async () =>
+      db
+        .from('competitions')
+        .select(COMPETITION_COLUMNS)
+        .order('starts_at', { ascending: false })
+        .limit(500)
+        .is('club_id', null))(),
+  );
+
+  const [competitionResults, entriesResult] = await Promise.all([
+    Promise.all(competitionQueries),
+    db.from('competition_entries').select('competition_id'),
   ]);
-  requireOk(competitionsResult.error, 'Read competitions');
+  const competitionRows: unknown[] = [];
+  for (const result of competitionResults) {
+    requireOk(result.error, 'Read competitions');
+    for (const value of result.data ?? []) {
+      competitionRows.push(value);
+    }
+  }
   requireOk(entriesResult.error, 'Read competition entries');
 
   const counts = new Map<string, number>();
@@ -461,13 +489,14 @@ export async function listCompetitions(
     counts.set(competitionId, (counts.get(competitionId) ?? 0) + 1);
   }
 
-  return (competitionsResult.data ?? [])
+  return competitionRows
     .map((value: unknown) => parseCompetitionRow(value, 0))
     .filter((competition): competition is CompetitionRecord => competition !== null)
     .map((competition) => ({
       ...competition,
       entryCount: counts.get(competition.id) ?? 0,
-    }));
+    }))
+    .sort((left, right) => right.startsAt.localeCompare(left.startsAt));
 }
 
 export async function createCompetition(
@@ -646,14 +675,12 @@ export async function loadCompetitionLeaderboard(
       .from('competition_entries')
       .select(ENTRY_COLUMNS)
       .eq('competition_id', competitionId)
-      .order('joined_at', { ascending: true })
-      .limit(1000),
+      .order('joined_at', { ascending: true }),
     db
       .from('competition_submissions')
       .select(SUBMISSION_COLUMNS)
       .eq('competition_id', competitionId)
-      .order('submitted_at', { ascending: false })
-      .limit(10_000),
+      .order('submitted_at', { ascending: false }),
   ]);
   requireOk(entriesResult.error, 'Read competition entries');
   requireOk(submissionsResult.error, 'Read competition submissions');

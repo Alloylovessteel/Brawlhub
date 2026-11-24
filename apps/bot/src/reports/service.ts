@@ -167,6 +167,7 @@ export async function loadReportData(guildId: string, period: ReportPeriod): Pro
 
   // A transfer appears in both queries, so credit each event/club/field once.
   const credited = new Set<string>();
+  const transferEventIds = new Set<string>();
   const credit = (eventId: string, clubId: string | null, field: 'joins' | 'leaves' | 'transfers') => {
     if (clubId === null) return;
     const summary = byClub.get(clubId);
@@ -211,6 +212,9 @@ export async function loadReportData(guildId: string, period: ReportPeriod): Pro
       } else if (eventType === 'transfer') {
         credit(eventId, fromClubId, 'transfers');
         credit(eventId, toClubId, 'transfers');
+        // Per-club summaries count both sides, but the guild total must count
+        // the transfer event once even when both clubs belong to this guild.
+        transferEventIds.add(eventId);
       }
     }
   }
@@ -251,7 +255,7 @@ export async function loadReportData(guildId: string, period: ReportPeriod): Pro
     clubs: summaries.length,
     joins: summaries.reduce((sum, item) => sum + item.joins, 0),
     leaves: summaries.reduce((sum, item) => sum + item.leaves, 0),
-    transfers: summaries.reduce((sum, item) => sum + item.transfers, 0),
+    transfers: transferEventIds.size,
     roleChanges: summaries.reduce((sum, item) => sum + item.roleChanges, 0),
     capacityOpens: summaries.reduce((sum, item) => sum + item.capacityOpens, 0),
     capacityCloses: summaries.reduce((sum, item) => sum + item.capacityCloses, 0),
