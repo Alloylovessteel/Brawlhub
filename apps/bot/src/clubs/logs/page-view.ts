@@ -110,6 +110,8 @@ export async function loadClubLogView(input: {
   readonly tag?: string | undefined;
   readonly period: ClubLogPeriod;
   readonly now?: Date;
+  /** Upper bound for snapshot reads in completed-window digests. */
+  readonly asOf?: Date;
   /** Override the season baseline, e.g. the start of a completed season digest window. */
   readonly seasonStartIso?: string | undefined;
 }): Promise<ResolvedClubResult<ClubLogView>> {
@@ -118,6 +120,7 @@ export async function loadClubLogView(input: {
     guildId: input.guildId,
     seasonStartIso: input.seasonStartIso ?? getBotConfig().seasonStartIso,
     ...(input.now === undefined ? {} : { now: input.now }),
+    ...(input.asOf === undefined ? {} : { asOf: input.asOf }),
   });
   if (result.kind !== 'ok') return result;
   return { kind: 'ok', value: toClubLogView(result, input.period) };

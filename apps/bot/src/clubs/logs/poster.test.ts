@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
     readPostedClubLogDigests: vi.fn(),
     claimClubLogDigestWindows: vi.fn(),
     releaseClubLogDigestClaims: vi.fn(),
+    markClubLogDigestClaimDelivered: vi.fn(),
     markClubLogDigestPosted: vi.fn(),
   },
   digest: { dueClubLogDigests: vi.fn() },
@@ -152,6 +153,8 @@ beforeEach(() => {
   });
   mocks.service.releaseClubLogDigestClaims.mockReset();
   mocks.service.releaseClubLogDigestClaims.mockResolvedValue(undefined);
+  mocks.service.markClubLogDigestClaimDelivered.mockReset();
+  mocks.service.markClubLogDigestClaimDelivered.mockResolvedValue(undefined);
   mocks.service.markClubLogDigestPosted.mockReset();
   mocks.service.markClubLogDigestPosted.mockResolvedValue(undefined);
   mocks.digest.dueClubLogDigests.mockReset();
@@ -297,6 +300,7 @@ describe('runClubLogDigests', () => {
       tag: 'ALPHA',
       period: 'today',
       now: new Date('2026-11-21T23:59:59.999Z'),
+      asOf: new Date('2026-11-21T23:59:59.999Z'),
     });
     expect(mocks.image.buildClubLogDigestImage).toHaveBeenCalledWith(view(), 'Daily');
     expect(mocks.post).toHaveBeenCalledOnce();
@@ -351,6 +355,7 @@ describe('runClubLogDigests', () => {
       tag: 'ALPHA',
       period: 'season',
       now: seasonBoundary.windowEnd,
+      asOf: seasonBoundary.windowEnd,
       seasonStartIso: SEASON_START,
     });
     expect(mocks.image.buildClubLogDigestImage).toHaveBeenCalledWith(view(), 'Season');
@@ -391,16 +396,36 @@ describe('runClubLogDigests', () => {
     expect(mocks.service.releaseClubLogDigestClaims).not.toHaveBeenCalled();
   });
 
-  it('keeps the claim when the Discord post succeeded but the ledger write failed', async () => {
+  it('persists the known message ID when the Discord post succeeded but the ledger write failed', async () => {
     mocks.service.markClubLogDigestPosted.mockRejectedValue(new Error('ledger down'));
 
     await runClubLogDigests(NOV_22);
 
     expect(mocks.post).toHaveBeenCalledOnce();
     expect(mocks.service.releaseClubLogDigestClaims).not.toHaveBeenCalled();
+    expect(mocks.service.markClubLogDigestClaimDelivered).toHaveBeenCalledWith(GUILD_ID, 'claim-1', [
+      {
+        logId: LOG_ID,
+        period: 'today',
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+    ]);
     expect(mocks.logger.warn).toHaveBeenCalledOnce();
     const warning = mocks.logger.warn.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(warning['keys']).toEqual([`${LOG_ID}:today:2026-11-21`]);
+  });
+
+  it('still keeps the claim when persisting the recovered message ID fails', async () => {
+    mocks.service.markClubLogDigestPosted.mockRejectedValue(new Error('ledger down'));
+    mocks.service.markClubLogDigestClaimDelivered.mockRejectedValue(new Error('sentinel down'));
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.post).toHaveBeenCalledOnce();
+    expect(mocks.service.releaseClubLogDigestClaims).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).toHaveBeenCalledTimes(2);
   });
 
   it('does nothing when no window is due', async () => {

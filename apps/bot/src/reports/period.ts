@@ -83,6 +83,38 @@ export function currentReportPeriod(now: Date, type: ReportType): ReportPeriod {
   };
 }
 
+/**
+ * Latest fully completed period for any clock time. Unlike
+ * `currentReportPeriod`, this never returns an in-progress week or month, so a
+ * delayed or restarted scheduler still describes the last finished window.
+ */
+export function latestCompletedReportPeriod(now: Date, type: ReportType): ReportPeriod {
+  if (type === 'daily') return currentReportPeriod(now, 'daily');
+
+  if (type === 'weekly') {
+    const midnight = utcMidnight(now);
+    const mondayOffset = (midnight.getUTCDay() + 6) % 7;
+    const weekStart = new Date(midnight.getTime() - mondayOffset * DAY_MS);
+    const start = new Date(weekStart.getTime() - 7 * DAY_MS);
+    const { year, week } = isoWeek(new Date(weekStart.getTime() - DAY_MS));
+    return {
+      type,
+      periodKey: `${year}-W${String(week).padStart(2, '0')}`,
+      start,
+      end: weekStart,
+    };
+  }
+
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  return {
+    type,
+    periodKey: start.toISOString().slice(0, 7),
+    start,
+    end,
+  };
+}
+
 function usableChannel(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();

@@ -166,6 +166,31 @@ describe('loadClubLogView', () => {
     });
   });
 
+  it('passes an explicit asOf bound through to the stored leaderboard loader', async () => {
+    const loaded = entry('A', 'Alpha', 25);
+    mocks.loadLeaderboardView.mockResolvedValue({
+      kind: 'ok',
+      value: leaderboardValue([loaded], [loaded]),
+    });
+    const asOf = new Date('2026-11-21T23:59:59.999Z');
+
+    await loadClubLogView({
+      guildId: GUILD_ID,
+      tag: 'ALPHA',
+      period: 'today',
+      now: asOf,
+      asOf,
+    });
+
+    expect(mocks.loadLeaderboardView).toHaveBeenCalledWith({
+      tag: 'ALPHA',
+      guildId: GUILD_ID,
+      seasonStartIso: '2026-01-01T00:00:00.000Z',
+      now: asOf,
+      asOf,
+    });
+  });
+
   it('returns lookup failures unchanged without leaking another guild', async () => {
     mocks.loadLeaderboardView.mockResolvedValue({ kind: 'no-default' });
 

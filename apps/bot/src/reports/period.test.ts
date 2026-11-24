@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { currentReportPeriod, reportChannelFor } from './period';
+import { currentReportPeriod, latestCompletedReportPeriod, reportChannelFor } from './period';
 
 describe('currentReportPeriod', () => {
   it('describes the previous UTC day for daily reports', () => {
@@ -68,6 +68,44 @@ describe('currentReportPeriod', () => {
       start: new Date('2026-12-28T00:00:00.000Z'),
       end: new Date('2027-01-04T00:00:00.000Z'),
     });
+  });
+});
+
+describe('latestCompletedReportPeriod', () => {
+  it('always returns the previous UTC day for daily reports', () => {
+    expect(latestCompletedReportPeriod(new Date('2026-11-20T17:00:00Z'), 'daily')).toEqual(
+      currentReportPeriod(new Date('2026-11-20T17:00:00Z'), 'daily'),
+    );
+  });
+
+  it('never returns an in-progress week at midweek', () => {
+    expect(latestCompletedReportPeriod(new Date('2026-11-20T17:00:00Z'), 'weekly')).toEqual({
+      type: 'weekly',
+      periodKey: '2026-W46',
+      start: new Date('2026-11-09T00:00:00.000Z'),
+      end: new Date('2026-11-16T00:00:00.000Z'),
+    });
+  });
+
+  it('returns the just-ended week at the Monday boundary', () => {
+    expect(latestCompletedReportPeriod(new Date('2026-11-23T00:00:01Z'), 'weekly')).toEqual({
+      type: 'weekly',
+      periodKey: '2026-W47',
+      start: new Date('2026-11-16T00:00:00.000Z'),
+      end: new Date('2026-11-23T00:00:00.000Z'),
+    });
+  });
+
+  it('never returns an in-progress month and rolls over the calendar year', () => {
+    expect(latestCompletedReportPeriod(new Date('2026-11-20T17:00:00Z'), 'monthly')).toEqual({
+      type: 'monthly',
+      periodKey: '2026-10',
+      start: new Date('2026-10-01T00:00:00.000Z'),
+      end: new Date('2026-11-01T00:00:00.000Z'),
+    });
+    expect(latestCompletedReportPeriod(new Date('2026-01-03T12:00:00Z'), 'monthly').periodKey).toBe(
+      '2025-12',
+    );
   });
 });
 

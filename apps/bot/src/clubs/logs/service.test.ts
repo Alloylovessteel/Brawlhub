@@ -159,6 +159,7 @@ import {
   claimClubLogDigestWindows,
   loadClubLogs,
   loadUndeliveredClubLogEvents,
+  markClubLogDigestClaimDelivered,
   markClubLogDigestPosted,
   markClubLogEventsDelivered,
   readPostedClubLogDigests,
@@ -795,6 +796,7 @@ describe('digest post ledger', () => {
     setHandler('guild_club_log_digest_posts:upsert', (call) => ({
       data: (call.payload as Array<Record<string, unknown>>).map((row) => ({ ...row })),
     }));
+    setHandler('guild_club_log_digest_posts:select', () => ({ data: [] }));
 
     const result = await claimClubLogDigestWindows(
       GUILD_ID,
@@ -816,13 +818,10 @@ describe('digest post ledger', () => {
       `${LOG_ID}:today:2026-11-21`,
       `${LOG_ID}:week:2026-11-16`,
     ]);
-    const stale = callsFor('guild_club_log_digest_posts', 'delete')[0];
-    expect(stale?.filters['guild_id']).toBe(GUILD_ID);
-    expect(stale?.likeValue).toEqual({ column: 'message_id', value: 'claim:%' });
-    expect(stale?.ltValue).toEqual({
-      column: 'created_at',
-      value: '2026-11-22T00:00:00.000Z',
-    });
+    expect(callsFor('guild_club_log_digest_posts', 'select').map((call) => call.likeValue)).toEqual([
+      { column: 'message_id', value: 'claim-delivered:%' },
+      { column: 'message_id', value: 'claim:%' },
+    ]);
     const insert = callsFor('guild_club_log_digest_posts', 'upsert')[0];
     expect(insert?.options).toEqual({
       onConflict: 'guild_id,log_id,period,period_key',
@@ -832,6 +831,131 @@ describe('digest post ledger', () => {
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => String(row['message_id']).startsWith('claim:'))).toBe(true);
     expect(rows.every((row) => row['guild_id'] === GUILD_ID)).toBe(true);
+  });
+
+  it('reconciles delivered sentinels into real ledger rows before claiming', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [] }));
+    setHandler('guild_club_log_digest_posts:select', (call) => ({
+      data:
+        call.likeValue?.value === 'claim-delivered:%'
+          ? [
+              {
+                guild_id: GUILD_ID,
+                log_id: LOG_ID,
+                period: 'today',
+                period_key: '2026-11-21',
+                channel_id: CHANNEL_ID,
+                message_id: 'claim-delivered:claim-old:2026-11-21:discord-123',
+              },
+            ]
+          : [],
+    }));
+    let upsertCalls = 0;
+    setHandler('guild_club_log_digest_posts:upsert', (call) => {
+      upsertCalls += 1;
+      return { data: (call.payload as Array<Record<string, unknown>>).map((row) => ({ ...row })) };
+    });
+
+    await claimClubLogDigestWindows(
+      GUILD_ID,
+      [{ logId: LOG_ID, period: 'today', periodKey: '2026-11-21', channelId: CHANNEL_ID }],
+      { now: new Date('2026-11-22T00:10:00.000Z') },
+    );
+
+    const recovery = callsFor('guild_club_log_digest_posts', 'upsert')[0];
+    expect(recovery?.payload).toEqual([
+      {
+        guild_id: GUILD_ID,
+        log_id: LOG_ID,
+        period: 'today',
+        period_key: '2026-11-21',
+        channel_id: CHANNEL_ID,
+        message_id: 'discord-123',
+      },
+    ]);
+    // Reconciliation fills the ledger key, so the new claim loses the upsert.
+    expect(upsertCalls).toBe(2);
+    expect(callsFor('guild_club_log_digest_posts', 'delete')).toHaveLength(0);
+  });
+
+  it('writes the known Discord ID into a delivered sentinel during recovery', async () => {
+    setHandler('guild_club_log_digest_posts:select', () => ({
+      data: [
+        {
+          log_id: LOG_ID,
+          period: 'today',
+          period_key: '2026-11-21',
+          message_id: `claim:claim-1:${LOG_ID}:today:2026-11-21`,
+        },
+      ],
+    }));
+    setHandler('guild_club_log_digest_posts:upsert', () => ({ data: [] }));
+
+    await markClubLogDigestClaimDelivered(GUILD_ID, 'claim-1', [
+      {
+        logId: LOG_ID,
+        period: 'today',
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'discord-456',
+      },
+    ]);
+
+    const call = callsFor('guild_club_log_digest_posts', 'upsert')[0];
+    expect(call?.options).toEqual({
+      onConflict: 'guild_id,log_id,period,period_key',
+      ignoreDuplicates: false,
+    });
+    expect(call?.payload).toEqual([
+      {
+        guild_id: GUILD_ID,
+        log_id: LOG_ID,
+        period: 'today',
+        period_key: '2026-11-21',
+        channel_id: CHANNEL_ID,
+        message_id: 'claim-delivered:claim-1:2026-11-21:discord-456',
+      },
+    ]);
+  });
+
+  it('deletes only stale plain claims and leaves delivered sentinels intact', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [] }));
+    setHandler('guild_club_log_digest_posts:delete', () => ({ data: [] }));
+    setHandler('guild_club_log_digest_posts:upsert', (call) => ({
+      data: (call.payload as Array<Record<string, unknown>>).map((row) => ({ ...row })),
+    }));
+    setHandler('guild_club_log_digest_posts:select', (call) => ({
+      data:
+        call.likeValue?.value === 'claim:%'
+          ? [
+              {
+                message_id: `claim:old:${LOG_ID}:today:2026-11-21`,
+                created_at: '2026-11-21T23:00:00.000Z',
+              },
+              {
+                message_id: 'claim-delivered:old:2026-11-21:discord-789',
+                created_at: '2026-11-21T23:00:00.000Z',
+              },
+            ]
+          : [],
+    }));
+
+    await claimClubLogDigestWindows(
+      GUILD_ID,
+      [{ logId: LOG_ID, period: 'today', periodKey: '2026-11-21', channelId: CHANNEL_ID }],
+      { now: new Date('2026-11-22T00:10:00.000Z') },
+    );
+
+    const deleted = callsFor('guild_club_log_digest_posts', 'delete')[0];
+    expect(deleted?.filters['guild_id']).toBe(GUILD_ID);
+    expect(deleted?.inValues).toEqual({
+      column: 'message_id',
+      values: [`claim:old:${LOG_ID}:today:2026-11-21`],
+    });
   });
 
   it('returns only keys this caller actually inserted', async () => {

@@ -5,7 +5,7 @@ import {
   type Club,
   type ClubMember,
 } from '@brawlhub/brawl-stars';
-import { clearClubLiveCache, loadClubSummaries, loadClubView } from './service';
+import { clearClubLiveCache, loadClubSummaries, loadClubView, loadLeaderboardView } from './service';
 
 type Db = NonNullable<NonNullable<Parameters<typeof loadClubView>[1]>['db']>;
 type QueryCall = {
@@ -288,6 +288,56 @@ describe('club data service', () => {
     const snapshotQuery = calls.find((call) => call.table === 'club_snapshots');
     expect(snapshotQuery?.orders).toContain('captured_at');
     expect(snapshotQuery?.limit).toBeUndefined();
+  });
+
+  it('bounds snapshots, roster and ending trophies by asOf for completed windows', async () => {
+    const later = {
+      ...SNAPSHOT,
+      id: 'snapshot-later',
+      sync_run_id: 'run-later',
+      captured_at: '2026-11-22T10:00:00.000Z',
+      trophies: 1500,
+      raw: {
+        members: [{ tag: '#L8TER', name: 'Later', trophies: 1500, role: 'member' }],
+      },
+    };
+    const laterRun = { ...RUN, id: later.sync_run_id, finished_at: later.captured_at };
+    const asOf = new Date('2026-11-21T23:59:59.999Z');
+    const { db, calls } = createFakeDb({
+      ...standardHandlers(),
+      'sync_runs:select': (call) => {
+        const ids = call.filters['id__in'];
+        return { data: Array.isArray(ids) && ids.includes(laterRun.id) ? [RUN, laterRun] : [RUN] };
+      },
+      'club_snapshots:select': ({ filters }) => ({
+        data: [SNAPSHOT, later].filter((snapshot) =>
+          filters['captured_at__lte'] === undefined ||
+          Date.parse(snapshot.captured_at) <= Date.parse(String(filters['captured_at__lte'])),
+        ),
+      }),
+      'players:select': () => ({ data: [] }),
+      'player_snapshots:select': () => ({ data: [] }),
+      'player_battles:select': () => ({ data: [] }),
+    });
+
+    const result = await loadLeaderboardView({ tag: CLUB.tag, guildId: 'guild-1', asOf }, { db });
+
+    expect(calls.find((call) => call.table === 'club_snapshots')?.filters['captured_at__lte']).toBe(
+      asOf.toISOString(),
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.latestSnapshot?.capturedAt).toBe(SNAPSHOT.captured_at);
+    expect(result.value.members.map((member) => member.tag)).toEqual(['G2P9', 'Q8VR']);
+  });
+
+  it('leaves snapshot reads unbounded when asOf is absent', async () => {
+    const { db, calls } = createFakeDb(standardHandlers());
+
+    await loadLeaderboardView({ tag: CLUB.tag, guildId: 'guild-1', now: new Date() }, { db });
+
+    const snapshotQuery = calls.find((call) => call.table === 'club_snapshots');
+    expect(snapshotQuery?.filters['captured_at__lte']).toBeUndefined();
   });
 
   it('keeps snapshots from completed runs older than the recent-run window', async () => {

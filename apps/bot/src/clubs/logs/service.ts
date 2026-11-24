@@ -37,6 +37,8 @@ const EVENT_KINDS: readonly ClubLogEventKind[] = ['membership', 'role', 'capacit
  * window forever; a live render/post normally finishes in seconds.
  */
 const DIGEST_CLAIM_PREFIX = 'claim:';
+/** A posted-but-unrecorded digest carries its Discord message ID so retry can edit it. */
+const DIGEST_DELIVERED_PREFIX = 'claim-delivered:';
 const DIGEST_CLAIM_TTL_MS = 10 * 60_000;
 const INTEGER_FORMATTER = new Intl.NumberFormat('en-US');
 
@@ -839,8 +841,122 @@ function digestClaimMessageId(claimId: string, key: string): string {
   return `${DIGEST_CLAIM_PREFIX}${claimId}:${key}`;
 }
 
+function digestDeliveredMessageId(
+  claimId: string,
+  periodKey: string,
+  messageId: string,
+): string {
+  return `${DIGEST_DELIVERED_PREFIX}${claimId}:${periodKey}:${messageId}`;
+}
+
 function isDigestClaimMessageId(messageId: string | null): boolean {
   return messageId !== null && messageId.startsWith(DIGEST_CLAIM_PREFIX);
+}
+
+function isDigestSentinel(messageId: string | null): boolean {
+  return (
+    messageId !== null &&
+    (messageId.startsWith(DIGEST_CLAIM_PREFIX) || messageId.startsWith(DIGEST_DELIVERED_PREFIX))
+  );
+}
+
+function parseDigestDeliveredMessageId(value: string | null): {
+  readonly claimId: string;
+  readonly periodKey: string;
+  readonly messageId: string;
+} | null {
+  if (value === null || !value.startsWith(DIGEST_DELIVERED_PREFIX)) return null;
+  const parts = value.slice(DIGEST_DELIVERED_PREFIX.length).split(':');
+  if (parts.length < 3) return null;
+  const [claimId, periodKey, ...messageParts] = parts;
+  const messageId = messageParts.join(':');
+  if (
+    claimId === undefined || claimId === '' ||
+    periodKey === undefined || periodKey === '' ||
+    messageId === ''
+  ) {
+    return null;
+  }
+  return { claimId, periodKey, messageId };
+}
+
+/**
+ * Turn a posted-but-unrecorded sentinel back into a normal ledger row before
+ * any new claims are made. Only sentinels that carry a Discord message ID can
+ * be recovered; an ID-less sentinel is uncertain and stays untouched.
+ */
+async function reconcileDeliveredDigestClaims(
+  guildId: string,
+  db: DatabaseClient,
+): Promise<void> {
+  const result = await db
+    .from('guild_club_log_digest_posts')
+    .select('log_id, period, period_key, channel_id, message_id')
+    .eq('guild_id', guildId)
+    .like('message_id', `${DIGEST_DELIVERED_PREFIX}%`);
+  requireOk(result.error, 'Read delivered club log digest claims');
+
+  const rows: Array<Record<string, unknown>> = [];
+  for (const item of result.data ?? []) {
+    const row = record(item);
+    const parsed = parseDigestDeliveredMessageId(asString(row?.['message_id']));
+    const logId = eventId(row?.['log_id']);
+    const period = asString(row?.['period']);
+    const periodKey = asString(row?.['period_key']);
+    const channelId = asString(row?.['channel_id']);
+    if (
+      parsed === null || logId === null || period === null ||
+      !isClubLogPeriod(period) || periodKey === null || channelId === null ||
+      parsed.periodKey !== periodKey
+    ) {
+      continue;
+    }
+    rows.push({
+      guild_id: guildId,
+      log_id: logId,
+      period,
+      period_key: periodKey,
+      channel_id: channelId,
+      message_id: parsed.messageId,
+    });
+  }
+  if (rows.length === 0) return;
+
+  const saved = await db.from('guild_club_log_digest_posts').upsert(rows, {
+    onConflict: 'guild_id,log_id,period,period_key',
+    ignoreDuplicates: false,
+  });
+  requireOk(saved.error, 'Recover club log digest post');
+}
+
+/** Delete only stale plain claims; never remove a delivered sentinel. */
+async function releaseStaleDigestClaims(
+  guildId: string,
+  db: DatabaseClient,
+  staleBefore: string,
+): Promise<void> {
+  const result = await db
+    .from('guild_club_log_digest_posts')
+    .select('message_id, created_at')
+    .eq('guild_id', guildId)
+    .like('message_id', `${DIGEST_CLAIM_PREFIX}%`);
+  requireOk(result.error, 'Read stale club log digest claims');
+  const staleBeforeMs = Date.parse(staleBefore);
+  const staleIds = (result.data ?? []).flatMap((item) => {
+    const row = record(item);
+    const messageId = asString(row?.['message_id']);
+    const createdAt = asString(row?.['created_at']);
+    if (messageId === null || !isDigestClaimMessageId(messageId) || createdAt === null) return [];
+    const createdMs = Date.parse(createdAt);
+    return !Number.isNaN(createdMs) && createdMs < staleBeforeMs ? [messageId] : [];
+  });
+  if (staleIds.length === 0) return;
+  const deleted = await db
+    .from('guild_club_log_digest_posts')
+    .delete()
+    .eq('guild_id', guildId)
+    .in('message_id', staleIds);
+  requireOk(deleted.error, 'Reclaim stale club log digest claims');
 }
 
 /**
@@ -860,13 +976,10 @@ export async function claimClubLogDigestWindows(
   const now = options.now;
   const nowMs = now instanceof Date && Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
   const staleBefore = new Date(nowMs - DIGEST_CLAIM_TTL_MS).toISOString();
-  const reclaimed = await db
-    .from('guild_club_log_digest_posts')
-    .delete()
-    .eq('guild_id', parsedGuildId)
-    .like('message_id', `${DIGEST_CLAIM_PREFIX}%`)
-    .lt('created_at', staleBefore);
-  requireOk(reclaimed.error, 'Reclaim stale club log digest claims');
+  // Reconciliation must precede claiming: a recovered row then blocks a fresh
+  // claim by duplicate key, so a live message is never posted twice.
+  await reconcileDeliveredDigestClaims(parsedGuildId, db);
+  await releaseStaleDigestClaims(parsedGuildId, db, staleBefore);
 
   const allowedLogIds = new Set((await loadClubLogRows(parsedGuildId, { db })).map((log) => log.id));
   const unique = new Map<string, ClubLogDigestClaimInput>();
@@ -947,7 +1060,7 @@ export async function readPostedClubLogDigests(
     const logId = eventId(row?.['log_id']);
     const period = asString(row?.['period']);
     const periodKey = asString(row?.['period_key']);
-    if (isDigestClaimMessageId(asString(row?.['message_id']))) continue;
+    if (isDigestSentinel(asString(row?.['message_id']))) continue;
     if (logId === null || period === null || !isClubLogPeriod(period) || periodKey === null) {
       continue;
     }
@@ -986,4 +1099,58 @@ export async function markClubLogDigestPosted(
     ignoreDuplicates: false,
   });
   requireOk(saved.error, 'Record club log digest post');
+}
+
+/**
+ * If the real ledger write fails after Discord accepted the post, keep the
+ * message ID in the sentinel. The next claim reconciles it into a delivered
+ * row and edits that message instead of posting the same window again.
+ */
+export async function markClubLogDigestClaimDelivered(
+  guildId: string,
+  claimId: string,
+  posts: readonly ClubLogDigestPost[],
+  options: ClubLogServiceOptions = {},
+): Promise<void> {
+  const parsedGuildId = requireGuildId(guildId);
+  if (claimId === '' || posts.length === 0) return;
+  const db = dbFor(options);
+
+  const current = await db
+    .from('guild_club_log_digest_posts')
+    .select('log_id, period, period_key, message_id')
+    .eq('guild_id', parsedGuildId);
+  requireOk(current.error, 'Read club log digest claims');
+  const byKey = new Map<string, string | null>();
+  for (const item of current.data ?? []) {
+    const row = record(item);
+    const logId = eventId(row?.['log_id']);
+    const period = asString(row?.['period']);
+    const periodKey = asString(row?.['period_key']);
+    if (logId === null || period === null || !isClubLogPeriod(period) || periodKey === null) {
+      continue;
+    }
+    byKey.set(digestKey(logId, period, periodKey), asString(row?.['message_id']));
+  }
+
+  const rows = posts.flatMap((post) => {
+    const key = digestKey(post.logId, post.period, post.periodKey);
+    // Never overwrite a row that another writer already completed.
+    if (byKey.get(key) !== digestClaimMessageId(claimId, key)) return [];
+    return [{
+      guild_id: parsedGuildId,
+      log_id: post.logId,
+      period: post.period,
+      period_key: post.periodKey,
+      channel_id: post.channelId,
+      message_id: digestDeliveredMessageId(claimId, post.periodKey, post.messageId),
+    }];
+  });
+  if (rows.length === 0) return;
+
+  const saved = await db.from('guild_club_log_digest_posts').upsert(rows, {
+    onConflict: 'guild_id,log_id,period,period_key',
+    ignoreDuplicates: false,
+  });
+  requireOk(saved.error, 'Persist club log digest message ID');
 }

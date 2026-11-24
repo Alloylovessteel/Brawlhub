@@ -1,23 +1,27 @@
+import { randomUUID } from 'node:crypto';
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import { REST, Routes } from 'discord.js';
 import { getBotConfig } from '../config';
 import { buildReportEmbed } from './embed';
+import { normalizeInactivityDays } from './inactivity';
 import {
-  currentReportPeriod,
+  latestCompletedReportPeriod,
   REPORT_TYPES,
   reportChannelFor,
   type ReportChannelSettings,
   type ReportPeriod,
   type ReportType,
 } from './period';
-import type { MutableClubSummary, ReportClubSummary, ReportPostRow } from './types';
+import type { MutableClubSummary, ReportClubSummary } from './types';
 
 const logger = createLogger('bot');
 const REDACTED = '[REDACTED]';
 const MAX_REPORT_CLUBS = 25;
 const MAX_EVENT_ROWS = 10_000;
 const LEDGER_WRITE_ATTEMPTS = 2;
+const REPORT_CLAIM_PREFIX = 'claim:';
+const REPORT_DELIVERED_PREFIX = 'claim-delivered:';
 
 export interface ReportData {
   readonly period: ReportPeriod;
@@ -47,12 +51,20 @@ export interface PostScheduledReportResult {
   readonly messageId: string | null;
   /** False when Discord accepted the message but the ledger write failed. */
   readonly recorded?: boolean;
+  /** This caller won the fresh sentinel for the period. */
+  readonly claimed?: boolean;
+  /** Another caller owns the period; no Discord call was made. */
+  readonly skipped?: boolean;
   readonly error?: string;
 }
 
 export interface ScheduledReportRunResult {
   /** Report types with at least one failed guild post; safe to retry this period. */
   readonly failedTypes: readonly ReportType[];
+  /** Types where every guild already had an in-progress claim. */
+  readonly skippedTypes: readonly ReportType[];
+  /** Types where this run acquired fresh claims. */
+  readonly claimedTypes: readonly ReportType[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -100,13 +112,38 @@ function withinPeriod(value: unknown, startMs: number, endMs: number): boolean {
   return !Number.isNaN(timestamp) && timestamp >= startMs && timestamp < endMs;
 }
 
-function parsePostRow(value: unknown): ReportPostRow | null {
-  const candidate = asRecord(value);
-  if (candidate === null) return null;
-  return {
-    messageId: asString(candidate['message_id']),
-    channelId: asString(candidate['channel_id']),
-  };
+function reportClaimMessageId(claimId: string): string {
+  return `${REPORT_CLAIM_PREFIX}${claimId}`;
+}
+
+function reportDeliveredClaimMessageId(claimId: string, messageId: string): string {
+  return `${REPORT_DELIVERED_PREFIX}${claimId}:${messageId}`;
+}
+
+function isReportClaim(messageId: string | null): boolean {
+  return (
+    messageId !== null &&
+    (messageId.startsWith(REPORT_CLAIM_PREFIX) || messageId.startsWith(REPORT_DELIVERED_PREFIX))
+  );
+}
+
+/**
+ * A delivered sentinel carries the Discord message ID, so it is durable even
+ * before reconciliation. Only an ID-less plain claim means "not delivered".
+ */
+function isDeliveredReportMessage(messageId: string | null): boolean {
+  if (messageId === null) return false;
+  if (messageId.startsWith(REPORT_DELIVERED_PREFIX)) {
+    return parseReportDeliveredClaim(messageId) !== null;
+  }
+  return !messageId.startsWith(REPORT_CLAIM_PREFIX);
+}
+
+function parseReportDeliveredClaim(messageId: string): string | null {
+  if (!messageId.startsWith(REPORT_DELIVERED_PREFIX)) return null;
+  const separator = messageId.indexOf(':', REPORT_DELIVERED_PREFIX.length);
+  const recoveredId = separator === -1 ? null : messageId.slice(separator + 1);
+  return recoveredId === null || recoveredId === '' ? null : recoveredId;
 }
 
 /**
@@ -272,10 +309,87 @@ export async function postScheduledReport(
     return { posted: false, messageId: null, error: 'No report channel configured' };
   }
 
+  const db = createTrustedClient();
+  const claimId = randomUUID();
+  const claimMessageId = reportClaimMessageId(claimId);
+  const ledgerOptions = { onConflict: 'guild_id,report_type,period_key' } as const;
+  let ownsClaim = false;
+  let existingMessageId: string | null = null;
+  /** Ledger value we are replacing; used to keep a recovered ID on write failure. */
+  let expectedPriorValue: string | null = null;
+
+  const releaseClaim = async (): Promise<void> => {
+    if (!ownsClaim) return;
+    try {
+      await db
+        .from('guild_report_posts')
+        .delete()
+        .eq('guild_id', input.guildId)
+        .eq('report_type', input.period.type)
+        .eq('period_key', input.period.periodKey)
+        .eq('message_id', claimMessageId);
+    } catch {
+      // Keep the original failure as the result; the next tick can retry.
+    }
+  };
+
+  // Reserve before any data load or Discord call so two workers cannot both
+  // conclude they own the period. A lost race is a skip, never a duplicate.
+  try {
+    const reserved = await db
+      .from('guild_report_posts')
+      .upsert(
+        {
+          guild_id: input.guildId,
+          report_type: input.period.type,
+          period_key: input.period.periodKey,
+          channel_id: channelId,
+          message_id: claimMessageId,
+        },
+        { ...ledgerOptions, ignoreDuplicates: true },
+      )
+      .select('message_id');
+    requireOk(reserved.error, 'Reserve report post');
+    ownsClaim = (reserved.data ?? []).some(
+      (item) => asString(asRecord(item)?.['message_id']) === claimMessageId,
+    );
+    if (ownsClaim) expectedPriorValue = claimMessageId;
+
+    if (!ownsClaim) {
+      const current = await db
+        .from('guild_report_posts')
+        .select('message_id')
+        .eq('guild_id', input.guildId)
+        .eq('report_type', input.period.type)
+        .eq('period_key', input.period.periodKey)
+        .maybeSingle();
+      requireOk(current.error, 'Read report post');
+      const currentMessageId = asString(asRecord(current.data)?.['message_id']);
+      if (currentMessageId === null || currentMessageId === claimMessageId) {
+        return { posted: false, messageId: null, skipped: true };
+      }
+      if (isReportClaim(currentMessageId)) {
+        const recoveredId = parseReportDeliveredClaim(currentMessageId);
+        if (recoveredId === null) {
+          // A post may have been attempted but its ID was never persisted.
+          return { posted: false, messageId: null, skipped: true };
+        }
+        existingMessageId = recoveredId;
+        expectedPriorValue = currentMessageId;
+      } else {
+        existingMessageId = currentMessageId;
+        expectedPriorValue = currentMessageId;
+      }
+    }
+  } catch (error: unknown) {
+    return { posted: false, messageId: null, error: safeError(error, input.token) };
+  }
+
   let data: ReportData;
   try {
     data = await loadReportData(input.guildId, input.period);
   } catch (error: unknown) {
+    await releaseClaim();
     return { posted: false, messageId: null, error: safeError(error, input.token) };
   }
 
@@ -289,33 +403,18 @@ export async function postScheduledReport(
     allowed_mentions: { parse: [] },
     flags: 0,
   };
-  const db = createTrustedClient();
-
-  let existing: ReportPostRow | null = null;
-  try {
-    const result = await db
-      .from('guild_report_posts')
-      .select('message_id, channel_id')
-      .eq('guild_id', input.guildId)
-      .eq('report_type', input.period.type)
-      .eq('period_key', input.period.periodKey)
-      .maybeSingle();
-    requireOk(result.error, 'Read report post');
-    existing = parsePostRow(result.data);
-  } catch (error: unknown) {
-    return { posted: false, messageId: null, error: safeError(error, input.token) };
-  }
 
   let messageId: string | null = null;
-  if (existing?.messageId !== null && existing?.messageId !== undefined) {
+  if (existingMessageId !== null) {
     try {
       const message = (await input.rest.patch(
-        Routes.channelMessage(channelId, existing.messageId),
+        Routes.channelMessage(channelId, existingMessageId),
         { body },
       )) as { id?: string } | undefined;
-      messageId = asString(message?.id) ?? existing.messageId;
+      messageId = asString(message?.id) ?? existingMessageId;
     } catch (error: unknown) {
       if (!isUnknownMessage(error)) {
+        await releaseClaim();
         return { posted: false, messageId: null, error: safeError(error, input.token) };
       }
     }
@@ -328,9 +427,11 @@ export async function postScheduledReport(
       })) as { id?: string } | undefined;
       messageId = asString(message?.id);
     } catch (error: unknown) {
+      await releaseClaim();
       return { posted: false, messageId: null, error: safeError(error, input.token) };
     }
     if (messageId === null) {
+      await releaseClaim();
       return {
         posted: false,
         messageId: null,
@@ -346,7 +447,6 @@ export async function postScheduledReport(
     channel_id: channelId,
     message_id: messageId,
   };
-  const ledgerOptions = { onConflict: 'guild_id,report_type,period_key' } as const;
   let recordError: string | null = null;
   for (let attempt = 0; attempt < LEDGER_WRITE_ATTEMPTS; attempt += 1) {
     try {
@@ -361,14 +461,123 @@ export async function postScheduledReport(
     }
   }
   if (recordError !== null) {
-    return { posted: true, messageId, recorded: false, error: recordError };
+    // Discord already has the message. Keep its ID where the next claim can
+    // find it so a retry edits that message instead of posting another one.
+    if (expectedPriorValue !== null) {
+      try {
+        const current = await db
+          .from('guild_report_posts')
+          .select('message_id')
+          .eq('guild_id', input.guildId)
+          .eq('report_type', input.period.type)
+          .eq('period_key', input.period.periodKey)
+          .maybeSingle();
+        if (asString(asRecord(current.data)?.['message_id']) === expectedPriorValue) {
+          await db.from('guild_report_posts').upsert(
+            { ...ledgerPayload, message_id: reportDeliveredClaimMessageId(claimId, messageId) },
+            ledgerOptions,
+          );
+        }
+      } catch {
+        // An ID-less claim is uncertain; a later attempt skips instead of posting.
+      }
+    }
+    return { posted: true, messageId, recorded: false, claimed: ownsClaim, error: recordError };
   }
 
-  return { posted: true, messageId };
+  return { posted: true, messageId, claimed: ownsClaim };
+}
+
+export interface MissingReportDeliveries {
+  /** Latest fully completed periods with a configured guild still missing a durable message. */
+  readonly periods: readonly ReportPeriod[];
+  /** Current UTC inactivity day key when a configured guild is still missing a durable post. */
+  readonly inactivityPeriodKey: string | null;
+}
+
+/**
+ * Durable delivery state for the scheduler. Ledger keys are authoritative and
+ * scoped per guild, so a restart, a missed UTC boundary, or one failed guild
+ * cannot hide another guild's undelivered period.
+ */
+export async function readMissingReportDeliveries(now: Date): Promise<MissingReportDeliveries> {
+  const db = createTrustedClient();
+  const expected = REPORT_TYPES.map((type) => latestCompletedReportPeriod(now, type));
+  const inactivityPeriodKey = now.toISOString().slice(0, 10);
+
+  const [settings, posts, inactivity] = await Promise.all([
+    db
+      .from('guild_settings')
+      .select(
+        'guild_id, overview_channel_id, report_daily_channel_id, report_weekly_channel_id, report_monthly_channel_id, report_inactivity_days, report_inactivity_channel_id',
+      )
+      .or(
+        'overview_channel_id.not.is.null,report_daily_channel_id.not.is.null,report_weekly_channel_id.not.is.null,report_monthly_channel_id.not.is.null,report_inactivity_channel_id.not.is.null',
+      ),
+    db.from('guild_report_posts').select('guild_id, report_type, period_key, message_id'),
+    db.from('guild_inactivity_report_posts').select('guild_id, period_key, message_id'),
+  ]);
+  requireOk(settings.error, 'Read report guilds');
+  requireOk(posts.error, 'Read report post ledger');
+  requireOk(inactivity.error, 'Read inactivity report post ledger');
+
+  const guilds = (settings.data ?? [])
+    .map(parseScheduledGuild)
+    .filter((guild): guild is ScheduledGuild => guild !== null);
+  const posted = new Set<string>();
+  for (const item of posts.data ?? []) {
+    const row = asRecord(item);
+    const guildId = asString(row?.['guild_id']);
+    const type = asString(row?.['report_type']);
+    const periodKey = asString(row?.['period_key']);
+    const messageId = asString(row?.['message_id']);
+    if (
+      guildId === null || type === null || periodKey === null ||
+      !isDeliveredReportMessage(messageId)
+    ) {
+      continue;
+    }
+    posted.add(`${guildId}:${type}:${periodKey}`);
+  }
+  const inactivityPosted = new Set<string>();
+  for (const item of inactivity.data ?? []) {
+    const row = asRecord(item);
+    const guildId = asString(row?.['guild_id']);
+    const periodKey = asString(row?.['period_key']);
+    const messageId = asString(row?.['message_id']);
+    if (
+      guildId === null || periodKey !== inactivityPeriodKey ||
+      !isDeliveredReportMessage(messageId)
+    ) {
+      continue;
+    }
+    inactivityPosted.add(guildId);
+  }
+
+  const missingTypes = new Set<ReportType>();
+  for (const period of expected) {
+    const targets = guilds.filter((guild) => reportChannelFor(guild, period.type) !== null);
+    if (targets.some((guild) => !posted.has(`${guild.guildId}:${period.type}:${period.periodKey}`))) {
+      missingTypes.add(period.type);
+    }
+  }
+  const inactivityMissing = guilds.some(
+    (guild) =>
+      guild.inactivityDays !== null &&
+      guild.inactivityChannelId !== null &&
+      !inactivityPosted.has(guild.guildId),
+  );
+
+  return {
+    periods: expected.filter((period) => missingTypes.has(period.type)),
+    inactivityPeriodKey: inactivityMissing ? inactivityPeriodKey : null,
+  };
 }
 
 interface ScheduledGuild extends ReportChannelSettings {
   readonly guildId: string;
+  readonly inactivityDays: number | null;
+  readonly inactivityChannelId: string | null;
 }
 
 function parseScheduledGuild(value: unknown): ScheduledGuild | null {
@@ -381,6 +590,9 @@ function parseScheduledGuild(value: unknown): ScheduledGuild | null {
     reportDailyChannelId: asString(row['report_daily_channel_id']),
     reportWeeklyChannelId: asString(row['report_weekly_channel_id']),
     reportMonthlyChannelId: asString(row['report_monthly_channel_id']),
+    inactivityDays: normalizeInactivityDays(row['report_inactivity_days']),
+    inactivityChannelId:
+      asString(row['report_inactivity_channel_id']) ?? asString(row['overview_channel_id']),
   };
 }
 
@@ -394,11 +606,13 @@ export async function runScheduledReports(
   types: readonly ReportType[] = REPORT_TYPES,
 ): Promise<ScheduledReportRunResult> {
   const failedTypes = new Set<ReportType>();
+  const skippedTypes = new Set<ReportType>();
+  const claimedTypes = new Set<ReportType>();
   const token = getBotConfig().token;
   if (token === undefined) {
     logger.warn('Scheduled reports skipped: DISCORD_TOKEN is not configured');
     for (const type of types) failedTypes.add(type);
-    return { failedTypes: [...failedTypes] };
+    return { failedTypes: [...failedTypes], skippedTypes: [], claimedTypes: [] };
   }
 
   let guilds: ScheduledGuild[];
@@ -420,16 +634,16 @@ export async function runScheduledReports(
       error: safeError(error, token),
     });
     for (const type of types) failedTypes.add(type);
-    return { failedTypes: [...failedTypes] };
+    return { failedTypes: [...failedTypes], skippedTypes: [], claimedTypes: [] };
   }
 
-  if (guilds.length === 0) return { failedTypes: [] };
+  if (guilds.length === 0) return { failedTypes: [], skippedTypes: [], claimedTypes: [] };
   const rest = new REST({ version: '10' }).setToken(token);
 
   for (const guild of guilds) {
     for (const type of types) {
       try {
-        const period = currentReportPeriod(now, type);
+        const period = latestCompletedReportPeriod(now, type);
         const channelId = reportChannelFor(guild, type);
         if (channelId === null) continue;
         const result = await postScheduledReport({
@@ -440,6 +654,11 @@ export async function runScheduledReports(
           token,
           guildLabel: null,
         });
+        if (result.skipped === true) {
+          skippedTypes.add(type);
+          continue;
+        }
+        if (result.claimed === true) claimedTypes.add(type);
         if (!result.posted || result.recorded === false || result.error !== undefined) {
           failedTypes.add(type);
           logger.warn('Scheduled report was not fully recorded', {
@@ -461,5 +680,9 @@ export async function runScheduledReports(
     }
   }
 
-  return { failedTypes: [...failedTypes] };
+  return {
+    failedTypes: [...failedTypes],
+    skippedTypes: [...skippedTypes],
+    claimedTypes: [...claimedTypes],
+  };
 }

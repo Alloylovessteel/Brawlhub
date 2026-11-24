@@ -549,12 +549,15 @@ function readRawBadgeId(raw: unknown): number | null {
 function latestCompletedSnapshot(
   snapshots: readonly ClubSnapshot[],
   completedRunIds: ReadonlySet<string>,
+  asOfMs?: number,
 ): ClubSnapshot | null {
   let latest: ClubSnapshot | null = null;
   for (const snapshot of snapshots) {
     if (!completedRunIds.has(snapshot.syncRunId)) continue;
-    if (Number.isNaN(Date.parse(snapshot.capturedAt))) continue;
-    if (latest === null || Date.parse(snapshot.capturedAt) > Date.parse(latest.capturedAt)) {
+    const capturedMs = Date.parse(snapshot.capturedAt);
+    if (Number.isNaN(capturedMs)) continue;
+    if (asOfMs !== undefined && capturedMs > asOfMs) continue;
+    if (latest === null || capturedMs > Date.parse(latest.capturedAt)) {
       latest = snapshot;
     }
   }
@@ -564,9 +567,11 @@ function latestCompletedSnapshot(
 function snapshotRoster(
   snapshots: readonly ClubSnapshot[],
   completedRunIds: ReadonlySet<string>,
+  asOfMs?: number,
 ): { roster: RosterMember[]; capturedAt: string } | null {
   const eligible = snapshots
     .filter((snapshot) => completedRunIds.has(snapshot.syncRunId))
+    .filter((snapshot) => asOfMs === undefined || Date.parse(snapshot.capturedAt) <= asOfMs)
     .sort((a, b) => Date.parse(a.capturedAt) - Date.parse(b.capturedAt));
 
   for (let index = eligible.length - 1; index >= 0; index -= 1) {
@@ -757,12 +762,17 @@ export async function readCompletedRuns(db: DatabaseClient): Promise<SyncRunReco
 }
 
 /** Newest first so any server-side row cap can never hide the latest snapshot. */
-async function readSnapshots(clubId: string, db: DatabaseClient): Promise<ClubSnapshot[]> {
-  const { data, error } = await db
+async function readSnapshots(
+  clubId: string,
+  db: DatabaseClient,
+  asOfIso?: string,
+): Promise<ClubSnapshot[]> {
+  let query = db
     .from('club_snapshots')
     .select(SNAPSHOT_COLUMNS)
-    .eq('club_id', clubId)
-    .order('captured_at', { ascending: false });
+    .eq('club_id', clubId);
+  if (asOfIso !== undefined) query = query.lte('captured_at', asOfIso);
+  const { data, error } = await query.order('captured_at', { ascending: false });
   requireOk(error, 'Read club history');
   return (data ?? [])
     .map((row: unknown) => parseSnapshotRow(row))
@@ -1201,9 +1211,14 @@ function progressionFor(
 async function readSyncedClubView(
   club: ClubRecord,
   db: DatabaseClient,
+  asOf?: Date,
 ): Promise<SyncedClubView> {
+  const asOfIso = asOf instanceof Date && Number.isFinite(asOf.getTime())
+    ? asOf.toISOString()
+    : undefined;
+  const asOfMs = asOfIso === undefined ? undefined : Date.parse(asOfIso);
   const [snapshots, recentRuns] = await Promise.all([
-    readSnapshots(club.id, db),
+    readSnapshots(club.id, db, asOfIso),
     readCompletedRuns(db),
   ]);
   const runs = mergeRuns(recentRuns, await readCompletedRunsForIds(
@@ -1211,8 +1226,8 @@ async function readSyncedClubView(
     db,
   ));
   const completedRunIds = new Set(runs.map((run) => run.id));
-  const latestSnapshot = latestCompletedSnapshot(snapshots, completedRunIds);
-  const snapshotRosterResult = snapshotRoster(snapshots, completedRunIds);
+  const latestSnapshot = latestCompletedSnapshot(snapshots, completedRunIds, asOfMs);
+  const snapshotRosterResult = snapshotRoster(snapshots, completedRunIds, asOfMs);
   const roster = snapshotRosterResult?.roster ?? (await readMembershipRoster(club.id, db));
 
   return {
@@ -1237,7 +1252,12 @@ export interface ClubProgressionOptions extends ClubReadOptions {
 
 /** Load stored roster data for a registered club without contacting the API. */
 export async function loadSyncedClub(
-  input: { readonly tag?: string | undefined; readonly guildId?: string | null | undefined },
+  input: {
+    readonly tag?: string | undefined;
+    readonly guildId?: string | null | undefined;
+    /** Optional upper bound for snapshot/roster reads, used by completed-window digests. */
+    readonly asOf?: Date;
+  },
   options: ClubReadOptions = {},
 ): Promise<ResolvedClubResult<SyncedClubView>> {
   const db = options.db ?? createTrustedClient();
@@ -1249,7 +1269,7 @@ export async function loadSyncedClub(
   if (failure !== null) return failure;
   if (club === null) return { kind: 'no-default' };
 
-  return { kind: 'ok', value: await readSyncedClubView(club, db) };
+  return { kind: 'ok', value: await readSyncedClubView(club, db, input.asOf) };
 }
 
 async function enrichRoster(
@@ -1268,7 +1288,11 @@ async function enrichRoster(
 
 /** Load the latest synchronised roster with stored player details. */
 export async function loadMemberView(
-  input: { readonly tag?: string | undefined; readonly guildId?: string | null | undefined },
+  input: {
+    readonly tag?: string | undefined;
+    readonly guildId?: string | null | undefined;
+    readonly asOf?: Date;
+  },
   options: ClubReadOptions = {},
 ): Promise<ResolvedClubResult<MemberView>> {
   const db = options.db ?? createTrustedClient();
@@ -1290,6 +1314,8 @@ export async function loadLeaderboardView(
     readonly tag?: string | undefined;
     readonly guildId?: string | null | undefined;
     readonly now?: Date;
+    /** Upper bound for club snapshot reads; omitted by interactive callers. */
+    readonly asOf?: Date;
     readonly seasonStartIso?: string | undefined;
   },
   options: ClubReadOptions = {},

@@ -10,6 +10,7 @@ import {
   claimClubLogDigestWindows,
   loadClubLogs,
   loadUndeliveredClubLogEvents,
+  markClubLogDigestClaimDelivered,
   markClubLogDigestPosted,
   markClubLogEventsDelivered,
   readClubLogGuildIds,
@@ -202,6 +203,9 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
             tag: log.clubTag,
             period: boundary.period,
             now: boundary.windowEnd,
+            // A completed window must read the roster and ending trophies that
+            // existed at its boundary, not a later snapshot captured since then.
+            asOf: boundary.windowEnd,
             ...(boundary.period === 'season'
               ? { seasonStartIso: boundary.windowStart.toISOString() }
               : {}),
@@ -255,8 +259,17 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
         try {
           await markClubLogDigestPosted(guildId, saved);
         } catch (error) {
-          // The messages are already live. Keep the claim sentinel so stale
-          // recovery is the only path that can revisit this window.
+          // The messages are already live: persist their IDs in the sentinel so
+          // reconciliation can turn them into real ledger rows and never repost.
+          try {
+            await markClubLogDigestClaimDelivered(guildId, claim.claimId, saved);
+          } catch (recoveryError) {
+            logger.warn('Club trophy digest message IDs could not be persisted', {
+              guildId,
+              keys: saved.map((post) => `${post.logId}:${post.period}:${post.periodKey}`),
+              error: safeError(recoveryError, token),
+            });
+          }
           logger.warn('Club trophy digest ledger write failed; claim kept for recovery', {
             guildId,
             keys: saved.map((post) => `${post.logId}:${post.period}:${post.periodKey}`),

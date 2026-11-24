@@ -2,12 +2,11 @@ import { createLogger } from '@brawlhub/logging';
 import { REST } from 'discord.js';
 import { getBotConfig } from '../config.js';
 import { postInactivityReports } from './inactivity.js';
-import { currentReportPeriod, REPORT_TYPES, type ReportType } from './period';
-import { runScheduledReports, type ScheduledReportRunResult } from './service';
+import { REPORT_TYPES, type ReportType } from './period';
+import { readMissingReportDeliveries, runScheduledReports } from './service';
 
 const logger = createLogger('bot');
 const TICK_MS = 60_000;
-const BOUNDARY_WINDOW_MINUTES = 5;
 const IMMEDIATE_DELAY_MS = 30_000;
 const REDACTED = '[REDACTED]';
 
@@ -45,9 +44,7 @@ function runInactivitySafely(now: Date, onComplete: (succeeded: boolean) => void
 
 /** Start the in-process UTC report schedule; returns a stop function for shutdown. */
 export function startReportsSchedule(): () => void {
-  const lastRun = new Map<ReportType, string>();
   const inFlight = new Set<ReportType>();
-  let lastInactivityKey: string | null = null;
   let inactivityInFlight = false;
 
   const launchReports = (
@@ -57,16 +54,13 @@ export function startReportsSchedule(): () => void {
     markComplete: boolean,
   ): void => {
     if (types.length === 0) return;
+    // Delivery is recorded durably by the poster, so `markComplete` no longer
+    // updates an in-memory marker. It stays on the startup call to make the
+    // "never advance durable state at startup" rule explicit.
+    void markComplete;
     for (const type of types) inFlight.add(type);
     void runScheduledReports(now, types).then(
-      (result: ScheduledReportRunResult | undefined) => {
-        if (!markComplete) return;
-        const failed = new Set<ReportType>(result?.failedTypes ?? []);
-        for (const type of types) {
-          if (failed.has(type)) continue;
-          lastRun.set(type, currentReportPeriod(now, type).periodKey);
-        }
-      },
+      undefined,
       (error: unknown) => {
         logger.warn('Scheduled reports tick failed', {
           reason,
@@ -80,31 +74,33 @@ export function startReportsSchedule(): () => void {
 
   const tick = (): void => {
     const now = new Date();
-    if (now.getUTCHours() !== 0 || now.getUTCMinutes() >= BOUNDARY_WINDOW_MINUTES) return;
+    void readMissingReportDeliveries(now).then(
+      ({ periods, inactivityPeriodKey }) => {
+        const retryable = periods
+          .map((period) => period.type)
+          .filter((type) => !inFlight.has(type));
+        if (retryable.length > 0) launchReports(now, retryable, 'durable ledger check', true);
 
-    const inactivityKey = now.toISOString().slice(0, 10);
-    if (
-      getBotConfig().token !== undefined &&
-      lastInactivityKey !== inactivityKey &&
-      !inactivityInFlight
-    ) {
-      inactivityInFlight = true;
-      runInactivitySafely(now, (succeeded) => {
-        inactivityInFlight = false;
-        // Advance the digest marker only once every configured guild succeeded.
-        if (succeeded) lastInactivityKey = inactivityKey;
-      });
-    }
-
-    const due: ReportType[] = ['daily'];
-    if (now.getUTCDay() === 1) due.push('weekly');
-    if (now.getUTCDate() === 1) due.push('monthly');
-
-    const retryable = due.filter((type) => {
-      const periodKey = currentReportPeriod(now, type).periodKey;
-      return lastRun.get(type) !== periodKey && !inFlight.has(type);
-    });
-    if (retryable.length > 0) launchReports(now, retryable, 'UTC boundary', true);
+        if (
+          inactivityPeriodKey !== null &&
+          getBotConfig().token !== undefined &&
+          !inactivityInFlight
+        ) {
+          inactivityInFlight = true;
+          runInactivitySafely(now, (succeeded) => {
+            inactivityInFlight = false;
+            if (succeeded) {
+              logger.debug('Inactivity delivery state refreshed', { periodKey: inactivityPeriodKey });
+            }
+          });
+        }
+      },
+      (error: unknown) => {
+        logger.warn('Scheduled report delivery state could not be read', {
+          error: safeScheduleError(error),
+        });
+      },
+    );
   };
 
   const intervalTimer = setInterval(tick, TICK_MS);
@@ -117,7 +113,6 @@ export function startReportsSchedule(): () => void {
 
   logger.info('Scheduled reports enabled', {
     tickMs: TICK_MS,
-    boundaryWindowMinutes: BOUNDARY_WINDOW_MINUTES,
     immediateOnStart: process.env.REPORTS_IMMEDIATE_ON_START === '1',
   });
 

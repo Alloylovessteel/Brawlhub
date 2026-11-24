@@ -3,7 +3,7 @@ import { Routes, type REST } from 'discord.js';
 
 interface Call {
   table: string;
-  operation: 'select' | 'insert' | 'upsert';
+  operation: 'select' | 'insert' | 'upsert' | 'delete';
   payload: any;
   options: any;
   filters: Record<string, unknown>;
@@ -52,6 +52,11 @@ vi.mock('@brawlhub/database', () => {
       this.operation = 'upsert';
       this.payload = payload;
       this.options = options;
+      return this;
+    }
+
+    delete(): this {
+      this.operation = 'delete';
       return this;
     }
 
@@ -133,7 +138,7 @@ vi.mock('@brawlhub/database', () => {
   return { createTrustedClient: () => ({ from: (table: string) => new FakeQuery(table) }) };
 });
 
-import { loadReportData, postScheduledReport } from './service';
+import { loadReportData, postScheduledReport, readMissingReportDeliveries } from './service';
 import { currentReportPeriod } from './period';
 
 const GUILD_ID = '111111111111111111';
@@ -316,12 +321,34 @@ describe('postScheduledReport', () => {
     return { patch, post } as unknown as REST;
   }
 
-  it('edits the existing message and records the same message ID', async () => {
+  /** Simulate an atomic reserve: null existing means this caller wins. */
+  function installReservation(
+    existingMessageId: string | null,
+    finalUpsert: Handler = () => ({ data: null }),
+  ): void {
+    let insertedClaim: string | null = null;
+    setHandler('guild_report_posts:upsert', (call) => {
+      const options = call.options as Record<string, unknown> | undefined;
+      if (options?.['ignoreDuplicates'] !== true) return finalUpsert(call);
+      const payload = call.payload as Record<string, unknown>;
+      insertedClaim = typeof payload['message_id'] === 'string' ? payload['message_id'] : null;
+      return {
+        data: existingMessageId === null ? [{ message_id: insertedClaim }] : [],
+      };
+    });
     setHandler('guild_report_posts:select', () => ({
-      data: { message_id: 'existing-message', channel_id: 'old-channel' },
+      data:
+        existingMessageId === null
+          ? insertedClaim === null
+            ? null
+            : { message_id: insertedClaim, channel_id: CHANNEL_ID }
+          : { message_id: existingMessageId, channel_id: CHANNEL_ID },
     }));
+  }
+
+  it('edits the existing message and records the same message ID', async () => {
     const upsert = vi.fn(() => ({ data: null }));
-    setHandler('guild_report_posts:upsert', upsert);
+    installReservation('existing-message', upsert);
     const patch = vi.fn(async () => ({ id: 'existing-message' }));
     const post = vi.fn(async () => ({ id: 'unused' }));
 
@@ -334,14 +361,27 @@ describe('postScheduledReport', () => {
       guildLabel: 'Test Guild',
     });
 
-    expect(result).toEqual({ posted: true, messageId: 'existing-message' });
+    expect(result).toEqual({ posted: true, messageId: 'existing-message', claimed: false });
+    const reserve = fake.calls.find(
+      (call) =>
+        call.table === 'guild_report_posts' &&
+        call.operation === 'upsert' &&
+        (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] === true,
+    );
+    expect(reserve?.options).toEqual({
+      onConflict: 'guild_id,report_type,period_key',
+      ignoreDuplicates: true,
+    });
     expect(patch).toHaveBeenCalledWith(Routes.channelMessage(CHANNEL_ID, 'existing-message'), {
       body: expect.objectContaining({ embeds: expect.any(Array) }),
     });
     expect(post).not.toHaveBeenCalled();
     expect(upsert).toHaveBeenCalledOnce();
     const upsertCall = fake.calls.find(
-      (call) => call.table === 'guild_report_posts' && call.operation === 'upsert',
+      (call) =>
+        call.table === 'guild_report_posts' &&
+        call.operation === 'upsert' &&
+        (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
     );
     expect(upsertCall?.payload).toMatchObject({
       guild_id: GUILD_ID,
@@ -354,9 +394,8 @@ describe('postScheduledReport', () => {
   });
 
   it('posts a new message and upserts the ledger row when none exists', async () => {
-    setHandler('guild_report_posts:select', () => ({ data: null }));
     const upsert = vi.fn(() => ({ data: null }));
-    setHandler('guild_report_posts:upsert', upsert);
+    installReservation(null, upsert);
     const patch = vi.fn(async () => ({ id: 'unused' }));
     const post = vi.fn(async () => ({ id: 'new-message' }));
 
@@ -369,13 +408,19 @@ describe('postScheduledReport', () => {
       guildLabel: null,
     });
 
-    expect(result).toEqual({ posted: true, messageId: 'new-message' });
+    expect(result).toEqual({ posted: true, messageId: 'new-message', claimed: true });
     expect(patch).not.toHaveBeenCalled();
     expect(post).toHaveBeenCalledWith(Routes.channelMessages(CHANNEL_ID), {
       body: expect.objectContaining({ embeds: expect.any(Array) }),
     });
     expect(upsert).toHaveBeenCalledOnce();
-    expect(fake.calls.find((call) => call.operation === 'upsert')?.payload).toMatchObject({
+    expect(
+      fake.calls.find(
+        (call) =>
+          call.operation === 'upsert' &&
+          (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
+      )?.payload,
+    ).toMatchObject({
       message_id: 'new-message',
       channel_id: CHANNEL_ID,
       guild_id: GUILD_ID,
@@ -384,10 +429,9 @@ describe('postScheduledReport', () => {
     });
   });
 
-  it('reports an unrecorded post when the ledger write keeps failing', async () => {
-    setHandler('guild_report_posts:select', () => ({ data: null }));
+  it('reports an unrecorded post and keeps the recovered ID in the sentinel', async () => {
     const upsert = vi.fn(() => ({ data: null, error: { message: 'ledger down' } }));
-    setHandler('guild_report_posts:upsert', upsert);
+    installReservation(null, upsert);
     const patch = vi.fn(async () => ({ id: 'unused' }));
     const post = vi.fn(async () => ({ id: 'new-message' }));
 
@@ -404,17 +448,46 @@ describe('postScheduledReport', () => {
       posted: true,
       messageId: 'new-message',
       recorded: false,
+      claimed: true,
       error: expect.stringContaining('ledger down'),
     });
-    expect(upsert).toHaveBeenCalledTimes(2);
+    expect(upsert).toHaveBeenCalledTimes(3);
+    const sentinelWrite = fake.calls.filter(
+      (call) => call.table === 'guild_report_posts' && call.operation === 'upsert',
+    ).at(-1);
+    expect((sentinelWrite?.payload as Record<string, unknown>)['message_id']).toMatch(
+      /^claim-delivered:.*:new-message$/,
+    );
+  });
+
+  it('keeps the edited message ID when recording an existing report fails', async () => {
+    const upsert = vi.fn(() => ({ data: null, error: { message: 'ledger down' } }));
+    installReservation('existing-message', upsert);
+    const patch = vi.fn(async () => ({ id: 'edited-message' }));
+    const post = vi.fn(async () => ({ id: 'unused' }));
+
+    const result = await postScheduledReport({
+      rest: fakeRest(patch, post),
+      guildId: GUILD_ID,
+      period: PERIOD,
+      channelId: CHANNEL_ID,
+      token: TOKEN,
+      guildLabel: null,
+    });
+
+    expect(result).toMatchObject({ posted: true, messageId: 'edited-message', recorded: false });
+    expect(post).not.toHaveBeenCalled();
+    const sentinelWrite = fake.calls.filter(
+      (call) => call.table === 'guild_report_posts' && call.operation === 'upsert',
+    ).at(-1);
+    expect((sentinelWrite?.payload as Record<string, unknown>)['message_id']).toMatch(
+      /^claim-delivered:.*:edited-message$/,
+    );
   });
 
   it('posts a replacement when the stored message is unknown', async () => {
-    setHandler('guild_report_posts:select', () => ({
-      data: { message_id: 'deleted-message', channel_id: CHANNEL_ID },
-    }));
     const upsert = vi.fn(() => ({ data: null }));
-    setHandler('guild_report_posts:upsert', upsert);
+    installReservation('deleted-message', upsert);
     const patch = vi.fn(async () => {
       throw { code: 10008, message: 'Unknown Message' };
     });
@@ -429,18 +502,22 @@ describe('postScheduledReport', () => {
       guildLabel: null,
     });
 
-    expect(result).toEqual({ posted: true, messageId: 'replacement-message' });
+    expect(result).toEqual({ posted: true, messageId: 'replacement-message', claimed: false });
     expect(upsert).toHaveBeenCalledOnce();
-    expect(fake.calls.find((call) => call.operation === 'upsert')?.payload).toMatchObject({
+    expect(
+      fake.calls.find(
+        (call) =>
+          call.operation === 'upsert' &&
+          (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
+      )?.payload,
+    ).toMatchObject({
       message_id: 'replacement-message',
       channel_id: CHANNEL_ID,
     });
   });
 
   it('redacts the Discord token from errors', async () => {
-    setHandler('guild_report_posts:select', () => ({
-      data: { message_id: 'existing-message', channel_id: CHANNEL_ID },
-    }));
+    installReservation('existing-message');
     const patch = vi.fn(async () => {
       throw new Error(`request failed for ${TOKEN}`);
     });
@@ -478,5 +555,158 @@ describe('postScheduledReport', () => {
     expect(patch).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
     expect(fake.calls).toHaveLength(0);
+  });
+
+  it('skips a period already claimed by another worker', async () => {
+    installReservation('claim:other-worker');
+    const patch = vi.fn(async () => ({ id: 'unused' }));
+    const post = vi.fn(async () => ({ id: 'unused' }));
+
+    const result = await postScheduledReport({
+      rest: fakeRest(patch, post),
+      guildId: GUILD_ID,
+      period: PERIOD,
+      channelId: CHANNEL_ID,
+      token: TOKEN,
+      guildLabel: null,
+    });
+
+    expect(result).toEqual({ posted: false, messageId: null, skipped: true });
+    expect(patch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(
+      fake.calls.some(
+        (call) =>
+          call.operation === 'upsert' &&
+          (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
+      ),
+    ).toBe(false);
+  });
+
+  it('edits a message recovered from a delivered sentinel', async () => {
+    const upsert = vi.fn(() => ({ data: null }));
+    installReservation('claim-delivered:old-claim:recovered-message', upsert);
+    const patch = vi.fn(async () => ({ id: 'recovered-message' }));
+    const post = vi.fn(async () => ({ id: 'unused' }));
+
+    const result = await postScheduledReport({
+      rest: fakeRest(patch, post),
+      guildId: GUILD_ID,
+      period: PERIOD,
+      channelId: CHANNEL_ID,
+      token: TOKEN,
+      guildLabel: null,
+    });
+
+    expect(result).toEqual({ posted: true, messageId: 'recovered-message', claimed: false });
+    expect(patch).toHaveBeenCalledWith(Routes.channelMessage(CHANNEL_ID, 'recovered-message'), {
+      body: expect.objectContaining({ embeds: expect.any(Array) }),
+    });
+    expect(post).not.toHaveBeenCalled();
+    const finalUpsert = fake.calls.find(
+      (call) =>
+        call.operation === 'upsert' &&
+        (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
+    );
+    expect((finalUpsert?.payload as Record<string, unknown>)['message_id']).toBe(
+      'recovered-message',
+    );
+  });
+});
+
+describe('readMissingReportDeliveries', () => {
+  const NOW = new Date('2026-11-20T17:00:00.000Z');
+  const SETTINGS = [
+    {
+      guild_id: GUILD_ID,
+      overview_channel_id: CHANNEL_ID,
+      report_daily_channel_id: null,
+      report_weekly_channel_id: null,
+      report_monthly_channel_id: null,
+      report_inactivity_days: 1,
+      report_inactivity_channel_id: null,
+    },
+    {
+      guild_id: OTHER_GUILD_ID,
+      overview_channel_id: CHANNEL_ID,
+      report_daily_channel_id: null,
+      report_weekly_channel_id: null,
+      report_monthly_channel_id: null,
+      report_inactivity_days: 1,
+      report_inactivity_channel_id: null,
+    },
+  ];
+
+  beforeEach(() => {
+    setHandler('guild_settings:select', () => ({ data: SETTINGS }));
+    setHandler('guild_report_posts:select', () => ({ data: [] }));
+    setHandler('guild_inactivity_report_posts:select', () => ({ data: [] }));
+  });
+
+  it('returns the latest completed periods when no durable messages exist', async () => {
+    const missing = await readMissingReportDeliveries(NOW);
+
+    expect(missing.periods.map((period) => period.periodKey)).toEqual([
+      '2026-11-19',
+      '2026-W46',
+      '2026-10',
+    ]);
+    expect(missing.inactivityPeriodKey).toBe('2026-11-20');
+  });
+
+  it('treats real and delivered-sentinel messages as durable but ignores plain claims', async () => {
+    setHandler('guild_report_posts:select', () => ({
+      data: [
+        { guild_id: GUILD_ID, report_type: 'daily', period_key: '2026-11-19', message_id: '123' },
+        { guild_id: OTHER_GUILD_ID, report_type: 'daily', period_key: '2026-11-19', message_id: '456' },
+        { guild_id: GUILD_ID, report_type: 'weekly', period_key: '2026-W46', message_id: 'claim:claim-1' },
+        {
+          guild_id: OTHER_GUILD_ID,
+          report_type: 'weekly',
+          period_key: '2026-W46',
+          message_id: 'claim-delivered:c:recovered',
+        },
+        {
+          guild_id: GUILD_ID,
+          report_type: 'monthly',
+          period_key: '2026-10',
+          message_id: 'claim-delivered:c:recovered',
+        },
+        { guild_id: OTHER_GUILD_ID, report_type: 'monthly', period_key: '2026-10', message_id: '789' },
+      ],
+    }));
+    setHandler('guild_inactivity_report_posts:select', () => ({
+      data: [
+        { guild_id: GUILD_ID, period_key: '2026-11-20', message_id: '111' },
+        { guild_id: OTHER_GUILD_ID, period_key: '2026-11-20', message_id: '222' },
+      ],
+    }));
+
+    const missing = await readMissingReportDeliveries(NOW);
+
+    expect(missing.periods.map((period) => period.type)).toEqual(['weekly']);
+    expect(missing.inactivityPeriodKey).toBeNull();
+  });
+
+  it('keeps a period missing when only one configured guild has a ledger row', async () => {
+    setHandler('guild_report_posts:select', () => ({
+      data: [
+        { guild_id: GUILD_ID, report_type: 'daily', period_key: '2026-11-19', message_id: '123' },
+      ],
+    }));
+
+    const missing = await readMissingReportDeliveries(NOW);
+
+    expect(missing.periods.map((period) => period.type)).toEqual(['daily', 'weekly', 'monthly']);
+  });
+
+  it('keeps the inactivity day missing when only one configured guild has a ledger row', async () => {
+    setHandler('guild_inactivity_report_posts:select', () => ({
+      data: [{ guild_id: GUILD_ID, period_key: '2026-11-20', message_id: '111' }],
+    }));
+
+    const missing = await readMissingReportDeliveries(NOW);
+
+    expect(missing.inactivityPeriodKey).toBe('2026-11-20');
   });
 });
