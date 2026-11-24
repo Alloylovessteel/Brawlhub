@@ -108,7 +108,7 @@ const SNAPSHOT_COLUMNS = [
 ].join(', ');
 
 const MEMBERSHIP_COLUMNS =
-  'player_id, role, valid_to, player:players!club_memberships_player_id_fkey(tag, name, trophies)';
+  'player_id, role, valid_from, valid_to, player:players!club_memberships_player_id_fkey(tag, name, trophies)';
 
 export function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -782,14 +782,38 @@ async function readSnapshots(
 async function readMembershipRoster(
   clubId: string,
   db: DatabaseClient,
+  asOfIso?: string,
 ): Promise<RosterMember[]> {
-  const { data, error } = await db
-    .from('club_memberships')
-    .select(MEMBERSHIP_COLUMNS)
-    .eq('club_id', clubId)
-    .is('valid_to', null);
-  requireOk(error, 'Read synced roster');
-  return parseMembershipRoster(data);
+  if (asOfIso === undefined) {
+    const { data, error } = await db
+      .from('club_memberships')
+      .select(MEMBERSHIP_COLUMNS)
+      .eq('club_id', clubId)
+      .is('valid_to', null);
+    requireOk(error, 'Read synced roster');
+    return parseMembershipRoster(data);
+  }
+
+  // A completed window cannot use today's open roster. Read intervals that
+  // existed at the boundary: started on or before it and either still open or
+  // closed strictly after it.
+  const [open, closed] = await Promise.all([
+    db
+      .from('club_memberships')
+      .select(MEMBERSHIP_COLUMNS)
+      .eq('club_id', clubId)
+      .lte('valid_from', asOfIso)
+      .is('valid_to', null),
+    db
+      .from('club_memberships')
+      .select(MEMBERSHIP_COLUMNS)
+      .eq('club_id', clubId)
+      .lte('valid_from', asOfIso)
+      .gt('valid_to', asOfIso),
+  ]);
+  requireOk(open.error, 'Read historical synced roster');
+  requireOk(closed.error, 'Read historical synced roster');
+  return parseMembershipRoster([...(open.data ?? []), ...(closed.data ?? [])]);
 }
 
 async function resolveClub(input: {
@@ -1228,7 +1252,8 @@ async function readSyncedClubView(
   const completedRunIds = new Set(runs.map((run) => run.id));
   const latestSnapshot = latestCompletedSnapshot(snapshots, completedRunIds, asOfMs);
   const snapshotRosterResult = snapshotRoster(snapshots, completedRunIds, asOfMs);
-  const roster = snapshotRosterResult?.roster ?? (await readMembershipRoster(club.id, db));
+  const roster =
+    snapshotRosterResult?.roster ?? (await readMembershipRoster(club.id, db, asOfIso));
 
   return {
     club,

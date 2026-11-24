@@ -54,6 +54,11 @@ function createFakeDb(handlers: Record<string, Handler>): {
       return this;
     }
 
+    gt(column: string, value: unknown): this {
+      this.filters[`${column}__gt`] = value;
+      return this;
+    }
+
     is(column: string, value: unknown): this {
       this.filters[column] = value;
       return this;
@@ -329,6 +334,61 @@ describe('club data service', () => {
     if (result.kind !== 'ok') return;
     expect(result.value.latestSnapshot?.capturedAt).toBe(SNAPSHOT.captured_at);
     expect(result.value.members.map((member) => member.tag)).toEqual(['G2P9', 'Q8VR']);
+  });
+
+  it('falls back to historical membership intervals instead of today\'s roster for a completed window', async () => {
+    const asOf = new Date('2026-11-21T23:59:59.999Z');
+    const membership = (
+      tag: string,
+      name: string,
+      validFrom: string,
+      validTo: string | null,
+    ) => ({
+      player_id: `player-${tag}`,
+      role: 'member',
+      valid_from: validFrom,
+      valid_to: validTo,
+      player: { tag, name, trophies: 100 },
+    });
+    const rows = [
+      membership('#Q8VR', 'Open member', '2026-11-01T00:00:00.000Z', null),
+      membership('#C2LP', 'Past member', '2026-11-01T00:00:00.000Z', '2026-11-25T00:00:00.000Z'),
+      membership('#G2P9', 'Joined later', '2026-11-22T00:00:00.000Z', null),
+      membership('#Y8CQ', 'Left at boundary', '2026-11-01T00:00:00.000Z', asOf.toISOString()),
+    ];
+    const { db, calls } = createFakeDb({
+      ...standardHandlers(),
+      'club_snapshots:select': () => ({ data: [] }),
+      'club_memberships:select': ({ filters }) => {
+        const fromBound = Date.parse(String(filters['valid_from__lte']));
+        const toBound = filters['valid_to__gt'];
+        return {
+          data: rows.filter((row) => {
+            if (Date.parse(row.valid_from) > fromBound) return false;
+            return toBound === undefined
+              ? row.valid_to === null
+              : row.valid_to !== null && Date.parse(row.valid_to) > Date.parse(String(toBound));
+          }),
+        };
+      },
+      'players:select': () => ({ data: [] }),
+      'player_snapshots:select': () => ({ data: [] }),
+      'player_battles:select': () => ({ data: [] }),
+    });
+
+    const result = await loadLeaderboardView({ tag: CLUB.tag, guildId: 'guild-1', asOf }, { db });
+
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.members.map((member) => member.tag)).toEqual(['Q8VR', 'C2LP']);
+    const membershipCalls = calls.filter((call) => call.table === 'club_memberships');
+    expect(membershipCalls).toHaveLength(2);
+    expect(membershipCalls.map((call) => call.filters['valid_from__lte'])).toEqual([
+      asOf.toISOString(),
+      asOf.toISOString(),
+    ]);
+    expect(membershipCalls.map((call) => call.filters['valid_to'])).toEqual([null, undefined]);
+    expect(membershipCalls[1]?.filters['valid_to__gt']).toBe(asOf.toISOString());
   });
 
   it('leaves snapshot reads unbounded when asOf is absent', async () => {
