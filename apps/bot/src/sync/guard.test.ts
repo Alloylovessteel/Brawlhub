@@ -12,6 +12,7 @@ function result(status: SyncResult['status'] = 'completed'): SyncResult {
     snapshotsWritten: 3,
     membershipEvents: 4,
     notificationsSent: 0,
+    battlesCollected: 0,
     error: undefined,
     affectedClubIds: ['club-1'],
   };

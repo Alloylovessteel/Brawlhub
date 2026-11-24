@@ -39,7 +39,7 @@ vi.mock('@brawlhub/database', () => {
     ) {}
 
     select(_columns?: string, options?: unknown): this {
-      this.operationOptions = options;
+      if (this.operation === 'select') this.operationOptions = options;
       return this;
     }
 
@@ -380,20 +380,43 @@ const NEW_BATTLE: BattleLogItem = {
   event: { mode: 'gemGrab', map: 'Battlefield' },
   battle: { type: 'ranked', result: 'victory', trophyChange: 9 },
 };
+const LATE_BATTLE: BattleLogItem = {
+  battleTime: '20260101T000500.000Z',
+  event: { mode: 'gemGrab', map: 'Battlefield' },
+  battle: { type: 'ranked', result: 'defeat', trophyChange: -6 },
+};
 
 function setupBattleSync(input: {
   lastBattleAt: string | null;
   battles: BattleLogItem[];
+  storedBattleTimes?: string[];
 }): void {
   setupSuccessfulSync();
   fake.state.handlers['players:select'] = (call) => {
     if (call.mode === 'array') {
       return { data: [{ id: 'player-1', last_battle_at: input.lastBattleAt }] };
     }
-    return { data: { id: 'player-1', tag: 'G2P9', name: 'Player One' } };
+    return {
+      data: {
+        id: 'player-1',
+        tag: 'G2P9',
+        name: 'Player One',
+        last_battle_at: input.lastBattleAt,
+      },
+    };
   };
   fake.state.handlers['players:update'] = () => ({ data: [] });
-  fake.state.handlers['player_battles:upsert'] = () => ({ data: [] });
+  const stored = new Set(input.storedBattleTimes ?? []);
+  fake.state.handlers['player_battles:upsert'] = (call) => {
+    const rows = (Array.isArray(call.payload) ? call.payload : [call.payload]) as Array<{
+      battle_time: string;
+    }>;
+    const inserted = rows
+      .filter((row) => !stored.has(row.battle_time))
+      .map((row, index) => ({ id: `inserted-${index}`, battle_time: row.battle_time }));
+    for (const row of inserted) stored.add(row.battle_time);
+    return { data: inserted };
+  };
   fake.api.current = apiClient({ getBattleLog: async () => input.battles });
 }
 
@@ -602,6 +625,14 @@ describe('runSync', () => {
     const first = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(first.status).toBe('completed');
     expect(first.notificationsSent).toBe(1);
+    expect(callsFor('notifications', 'insert')[0]?.payload).toMatchObject({
+      event_id: 'event-1',
+      delivery_status: 'pending',
+    });
+    expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
+      delivery_status: 'sent',
+      discord_message_id: 'message-1',
+    });
 
     const second = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(second.status).toBe('completed');
@@ -659,6 +690,120 @@ describe('runSync', () => {
     expect(delivered).toEqual([
       { clubName: 'Alpha', fromClubName: 'Old Club', toClubName: 'Alpha' },
     ]);
+  });
+
+  it('retries an interrupted claim instead of treating it as delivered', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['membership_events:select'] = () => ({
+      data: [
+        {
+          id: 'event-interrupted',
+          player_id: 'player-1',
+          event_type: 'join',
+          from_club_id: null,
+          to_club_id: 'club-1',
+          detected_at: T0.toISOString(),
+          player: { tag: 'G2P9', name: 'Player One' },
+          to_club: { name: 'Alpha' },
+        },
+      ],
+    });
+    fake.state.handlers['notifications:select'] = (call) => ({
+      data: Array.isArray(call.filters['event_id'])
+        ? []
+        : [{ id: 'claim-pending', delivery_status: 'pending' }],
+    });
+    fake.state.handlers['notifications:insert'] = () => ({
+      error: { code: '23505', message: 'duplicate key value' },
+    });
+    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+
+    let sends = 0;
+    const notifier = {
+      channelId: 'channel-1',
+      send: async () => {
+        sends += 1;
+        return `message-${sends}`;
+      },
+    };
+
+    const result = await runSync({ now: T0, guildId: 'guild-test', notifier });
+
+    expect(result.status).toBe('completed');
+    expect(result.notificationsSent).toBe(1);
+    expect(sends).toBe(1);
+    expect(callsFor('notifications', 'insert')[0]?.payload).toMatchObject({
+      delivery_status: 'pending',
+    });
+    expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
+      delivery_status: 'sent',
+      discord_message_id: 'message-1',
+    });
+  });
+
+  it('filters claimed events before applying the announcement limit', async () => {
+    setupSuccessfulSync();
+    const event = (id: string, offsetMs: number) => ({
+      id,
+      player_id: 'player-1',
+      event_type: 'join',
+      from_club_id: null,
+      to_club_id: 'club-1',
+      detected_at: new Date(T0.getTime() - offsetMs).toISOString(),
+      player: { tag: 'G2P9', name: 'Player One' },
+      to_club: { name: 'Alpha' },
+    });
+    const claimed = Array.from({ length: 20 }, (_, index) => event(`claimed-${index}`, index));
+    const pending = event('pending-old', 60 * 60 * 1000);
+    fake.state.handlers['membership_events:select'] = () => ({ data: [...claimed, pending] });
+    fake.state.handlers['notifications:select'] = (call) => ({
+      data: Array.isArray(call.filters['event_id'])
+        ? claimed.map((item) => ({ event_id: item.id, delivery_status: 'sent' }))
+        : [],
+    });
+    fake.state.handlers['notifications:insert'] = () => ({ data: [{ id: 'claim-pending-old' }] });
+    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+
+    const delivered: string[] = [];
+    const notifier = {
+      channelId: 'channel-1',
+      send: async (input: { eventId: string }) => {
+        delivered.push(input.eventId);
+        return 'message-late';
+      },
+    };
+
+    const result = await runSync({ now: T0, guildId: 'guild-test', notifier });
+
+    expect(result.status).toBe('completed');
+    expect(result.notificationsSent).toBe(1);
+    expect(delivered).toEqual(['pending-old']);
+    expect(callsFor('membership_events', 'select')).toHaveLength(2);
+    expect(callsFor('membership_events', 'select').every((call) => call.limit === undefined)).toBe(
+      true,
+    );
+  });
+
+  it('renews the sync lock while a long run is in progress', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['rpc:renew_sync_lock'] = (call) => ({
+      data: (call.payload as { p_token: string }).p_token,
+    });
+    fake.api.current = apiClient({
+      getClub: async (tag) => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { tag: `#${tag}`, name: 'Alpha', trophies: 12_000 };
+      },
+    });
+
+    const result = await runSync({
+      now: T0,
+      guildId: 'guild-test',
+      lockRenewalIntervalMs: 5,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(callsFor('rpc:renew_sync_lock', 'select').length).toBeGreaterThan(0);
   });
 
   it('skips when another process already holds the database lock', async () => {
@@ -741,37 +886,41 @@ describe('runSync', () => {
     expect(state.playerHash).toBeDefined();
   });
 
-  it('upserts only battles newer than the stored last_battle_at', async () => {
+  it('offers every fetched battle but counts only rows the database inserted', async () => {
     setupBattleSync({
       lastBattleAt: '2026-01-01T00:00:00.000Z',
       battles: [OLD_BATTLE, NEW_BATTLE],
+      storedBattleTimes: ['2026-01-01T00:00:00.000Z'],
     });
 
     const result = await runSync({ now: T0, guildId: 'guild-test' });
 
     expect(result.status).toBe('completed');
+    expect(result.battlesCollected).toBe(1);
     const upserts = callsFor('player_battles', 'upsert');
     expect(upserts).toHaveLength(1);
-    expect(upserts[0]?.payload).toHaveLength(1);
-    expect(upserts[0]?.payload[0]).toMatchObject({
-      player_id: 'player-1',
-      battle_time: '2026-01-01T00:10:00.000Z',
+    expect(upserts[0]?.payload).toHaveLength(2);
+    expect(upserts[0]?.options).toEqual({
+      onConflict: 'player_id,battle_key',
+      ignoreDuplicates: true,
     });
     expect(callsFor('players', 'update')[0]?.payload).toEqual({
       last_battle_at: '2026-01-01T00:10:00.000Z',
     });
   });
 
-  it('skips battle writes when the stored log is already current', async () => {
+  it('re-upserts current battles without counting them as new', async () => {
     setupBattleSync({
       lastBattleAt: '2026-01-01T00:10:00.000Z',
       battles: [OLD_BATTLE, NEW_BATTLE],
+      storedBattleTimes: ['2026-01-01T00:00:00.000Z', '2026-01-01T00:10:00.000Z'],
     });
 
     const result = await runSync({ now: T0, guildId: 'guild-test' });
 
     expect(result.status).toBe('completed');
-    expect(callsFor('player_battles', 'upsert')).toHaveLength(0);
+    expect(result.battlesCollected).toBe(0);
+    expect(callsFor('player_battles', 'upsert')[0]?.payload).toHaveLength(2);
     expect(callsFor('players', 'update')).toHaveLength(0);
   });
 
@@ -781,9 +930,26 @@ describe('runSync', () => {
     const result = await runSync({ now: T0, guildId: 'guild-test' });
 
     expect(result.status).toBe('completed');
-    const upserts = callsFor('player_battles', 'upsert');
-    expect(upserts).toHaveLength(1);
-    expect(upserts[0]?.payload).toHaveLength(2);
+    expect(result.battlesCollected).toBe(2);
+    expect(callsFor('player_battles', 'upsert')[0]?.payload).toHaveLength(2);
+  });
+
+  it('does not drop a late battle older than the stored last_battle_at', async () => {
+    setupBattleSync({
+      lastBattleAt: '2026-01-01T00:10:00.000Z',
+      battles: [OLD_BATTLE, LATE_BATTLE, NEW_BATTLE],
+      storedBattleTimes: ['2026-01-01T00:00:00.000Z', '2026-01-01T00:10:00.000Z'],
+    });
+
+    const result = await runSync({ now: T0, guildId: 'guild-test' });
+
+    expect(result.status).toBe('completed');
+    expect(result.battlesCollected).toBe(1);
+    const payload = callsFor('player_battles', 'upsert')[0]?.payload as Array<{
+      battle_time: string;
+    }>;
+    expect(payload.map((row) => row.battle_time)).toContain('2026-01-01T00:05:00.000Z');
+    expect(callsFor('players', 'update')).toHaveLength(0);
   });
 });
 
@@ -794,6 +960,15 @@ describe('recoverInterruptedSyncs', () => {
         data: [
           { id: 'run-1', scope: 'guild:guild-1' },
           { id: 'run-2', scope: 'guild:guild-1' },
+        ],
+      }),
+      'sync_locks:select': () => ({
+        data: [
+          {
+            scope: 'guild:guild-1',
+            locked_by: 'old-token',
+            locked_until: '2026-11-20T03:00:00.000Z',
+          },
         ],
       }),
       'sync_runs:update': () => ({ data: [] }),
@@ -822,6 +997,43 @@ describe('recoverInterruptedSyncs', () => {
       locked_at: null,
       locked_until: null,
     });
+  });
+
+  it('leaves runs alone when another process still holds their lock', async () => {
+    setHandlers({
+      'sync_runs:select': () => ({
+        data: [
+          { id: 'run-active', scope: 'guild:guild-active' },
+          { id: 'run-stale', scope: 'guild:guild-stale' },
+        ],
+      }),
+      'sync_locks:select': () => ({
+        data: [
+          {
+            scope: 'guild:guild-active',
+            locked_by: 'live-token',
+            locked_until: '2026-11-20T04:00:00.000Z',
+          },
+          {
+            scope: 'guild:guild-stale',
+            locked_by: null,
+            locked_until: null,
+          },
+        ],
+      }),
+      'sync_runs:update': () => ({ data: [] }),
+      'sync_locks:update': () => ({ data: [] }),
+    });
+
+    const outcome = await recoverInterruptedSyncs(
+      undefined as never,
+      '2026-11-20T03:40:00.000Z',
+    );
+
+    expect(outcome).toEqual({ recoveredRuns: 1, clearedScopes: ['guild:guild-stale'] });
+    const runUpdate = callsFor('sync_runs', 'update')[0];
+    expect(runUpdate?.filters['id']).toEqual(['run-stale']);
+    expect(callsFor('sync_locks', 'update')[0]?.filters['scope']).toEqual(['guild:guild-stale']);
   });
 
   it('does nothing when no runs are interrupted', async () => {

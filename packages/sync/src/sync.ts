@@ -34,6 +34,8 @@ export const SYNC_INTERVAL_MINUTES = 15;
 
 const STALE_RUN_MS = 30 * 60 * 1000;
 const SYNC_LOCK_TTL_SECONDS = 30 * 60;
+/** Refresh the held lock well before its TTL while a long sync is running. */
+const SYNC_LOCK_RENEW_INTERVAL_MS = 5 * 60 * 1000;
 /** Official Brawl Stars club member capacity; a club is "full" at this count. */
 const CLUB_CAPACITY = 30;
 const DEFAULT_API_TIMEOUT_MS = 30_000;
@@ -87,40 +89,6 @@ export function buildBattleKey(item: BattleLogItem): string {
   return battleKey(item);
 }
 
-const LAST_BATTLE_LOOKUP_CHUNK_SIZE = 100;
-
-/** Reads the newest battle already stored for each player, in batched lookups. */
-async function readLastBattleTimes(
-  db: SupabaseClient,
-  playerIds: ReadonlyArray<string>,
-): Promise<Map<string, string>> {
-  const lastBattleTimes = new Map<string, string>();
-  for (let index = 0; index < playerIds.length; index += LAST_BATTLE_LOOKUP_CHUNK_SIZE) {
-    const chunk = playerIds.slice(index, index + LAST_BATTLE_LOOKUP_CHUNK_SIZE);
-    const { data, error } = await db
-      .from('players')
-      .select('id, last_battle_at')
-      .in('id', [...chunk]);
-    if (error) {
-      // Treat unreadable cutoffs as unknown: writing an old battle again is
-      // harmless (the unique key dedupes it), while skipping one is not.
-      log.warn('Could not read stored last battle times', {
-        chunkSize: chunk.length,
-        reason: error.message,
-      });
-      continue;
-    }
-    for (const row of data ?? []) {
-      const item = row as { id?: unknown; last_battle_at?: unknown } | null;
-      if (typeof item?.id !== 'string') continue;
-      if (typeof item.last_battle_at !== 'string') continue;
-      if (Number.isNaN(Date.parse(item.last_battle_at))) continue;
-      lastBattleTimes.set(item.id, item.last_battle_at);
-    }
-  }
-  return lastBattleTimes;
-}
-
 export interface CollectedBattleLog {
   readonly playerId: string;
   readonly key: string;
@@ -135,9 +103,9 @@ export interface CollectedBattleLog {
 
 export interface CollectBattleLogsOptions {
   /**
-   * Emit every valid official battle to onCollected, including rows older than
-   * the shared player cutoff. Storage and `last_battle_at` still use only the
-   * fresh rows. Live delivery uses this so its own ledger is the dedupe source.
+   * Emit every valid official battle to onCollected before the deduped write.
+   * Kept for live delivery, whose own ledger is the authoritative dedupe source;
+   * scheduled sync emits after a successful write instead.
    */
   readonly emitAllBattles?: boolean;
   /** Called for every battle row accepted for storage, for live delivery readers. */
@@ -153,8 +121,9 @@ export interface CollectBattleLogsOptions {
 
 /**
  * Shared battle-log collector for scheduled sync and opted-in live tracking.
- * It owns cutoff filtering, `player_battles` writes and `last_battle_at`
- * advancement so both callers use identical dedupe semantics.
+ * Every valid official battle is offered to the deduped `player_battles` write;
+ * a late-arriving older battle is never discarded just because a newer one was
+ * already seen. Only genuinely inserted rows are counted.
  */
 export async function collectBattleLogs(
   db: SupabaseClient,
@@ -166,7 +135,6 @@ export async function collectBattleLogs(
 ): Promise<number> {
   const byPlayer = new Map<string, string>();
   for (const state of states) byPlayer.set(state.playerId, state.tag);
-  const lastBattleTimes = await readLastBattleTimes(db, [...byPlayer.keys()]);
   let inserted = 0;
 
   for (const [playerId, tag] of byPlayer) {
@@ -183,9 +151,7 @@ export async function collectBattleLogs(
       continue;
     }
 
-    const cutoff = lastBattleTimes.get(playerId) ?? null;
-    const cutoffMs = cutoff === null ? null : Date.parse(cutoff);
-    const parsedRows = items
+    const rows = items
       .map((item) => {
         const battleTime = parseBattleTime(item.battleTime);
         if (battleTime === null) return null;
@@ -206,56 +172,43 @@ export async function collectBattleLogs(
         };
       })
       .filter((row): row is NonNullable<typeof row> => row !== null);
-    const rows = parsedRows.filter(
-      (row) => cutoffMs === null || Date.parse(row.battle_time) > cutoffMs,
-    );
-    const collectableRows = options.emitAllBattles === true ? parsedRows : rows;
-
-    if (options.emitAllBattles === true) {
-      for (const row of collectableRows) {
-        options.onCollected?.({
-          playerId: row.player_id,
-          key: row.battle_key,
-          battleTime: row.battle_time,
-          mode: row.mode,
-          map: row.map,
-          battleType: row.battle_type,
-          result: row.result,
-          trophyChange: row.trophy_change,
-          raw: row.raw,
-        });
-      }
-    }
     if (rows.length === 0) continue;
 
-    const { error } = await db
+    const emit = (row: NonNullable<typeof rows[number]>): void => {
+      options.onCollected?.({
+        playerId: row.player_id,
+        key: row.battle_key,
+        battleTime: row.battle_time,
+        mode: row.mode,
+        map: row.map,
+        battleType: row.battle_type,
+        result: row.result,
+        trophyChange: row.trophy_change,
+        raw: row.raw,
+      });
+    };
+    if (options.emitAllBattles === true) {
+      for (const row of rows) emit(row);
+    }
+
+    const result = await db
       .from('player_battles')
-      .upsert(rows, { onConflict: 'player_id,battle_key', ignoreDuplicates: true });
-    if (error) {
+      .upsert(rows, { onConflict: 'player_id,battle_key', ignoreDuplicates: true })
+      .select('id');
+    if (result.error) {
       log.warn('Battle log write failed', {
         tag,
         syncRunId,
-        reason: error.message,
+        reason: result.error.message,
       });
-      options.onError?.({ playerId, tag, phase: 'write', error });
+      options.onError?.({ playerId, tag, phase: 'write', error: result.error });
       continue;
     }
-    inserted += rows.length;
+    const insertedRows = Array.isArray(result.data) ? result.data : [];
+    inserted += insertedRows.length;
 
     if (options.emitAllBattles !== true) {
-      for (const row of rows) {
-        options.onCollected?.({
-          playerId: row.player_id,
-          key: row.battle_key,
-          battleTime: row.battle_time,
-          mode: row.mode,
-          map: row.map,
-          battleType: row.battle_type,
-          result: row.result,
-          trophyChange: row.trophy_change,
-          raw: row.raw,
-        });
-      }
+      for (const row of rows) emit(row);
     }
 
     const latest = rows.reduce<string | null>((max, row) => {
@@ -322,6 +275,7 @@ export interface SyncResult {
   snapshotsWritten: number;
   membershipEvents: number;
   notificationsSent: number;
+  battlesCollected: number;
   error: string | undefined;
   affectedClubIds: string[];
   /** Optional operator-notification context; no database schema change. */
@@ -924,6 +878,64 @@ async function releaseSyncLock(
   }
 }
 
+/** Extend the TTL of a lock still owned by this sync process. */
+export async function renewSyncLock(
+  db: SupabaseClient,
+  scope: string,
+  token: string,
+): Promise<boolean> {
+  const result = await db.rpc('renew_sync_lock', {
+    p_scope: scope,
+    p_token: token,
+    p_ttl_seconds: SYNC_LOCK_TTL_SECONDS,
+  });
+  requireOk(result.error, 'Renew sync lock');
+  return result.data === token;
+}
+
+/**
+ * Heartbeat that keeps a long-running sync's lock alive. Renewal failures are
+ * logged but never abort the sync; the final release still happens in `finally`.
+ */
+function startSyncLockRenewal(
+  db: SupabaseClient,
+  scope: string,
+  token: string,
+  intervalMs: number,
+): () => Promise<void> {
+  let stopped = false;
+  let inFlight: Promise<void> | null = null;
+
+  const renew = async (): Promise<void> => {
+    if (stopped || inFlight !== null) return;
+    inFlight = (async () => {
+      try {
+        const held = await renewSyncLock(db, scope, token);
+        if (!held) log.warn('Sync lock renewal lost ownership', { scope });
+      } catch (error) {
+        log.warn('Sync lock renewal failed', { scope, reason: sanitizeError(error) });
+      }
+    })();
+    try {
+      await inFlight;
+    } finally {
+      inFlight = null;
+    }
+  };
+
+  const timer = setInterval(() => {
+    void renew();
+  }, Math.max(1, intervalMs));
+  const nodeTimer = timer as unknown as { unref?: () => void };
+  nodeTimer.unref?.();
+
+  return async () => {
+    stopped = true;
+    clearInterval(timer);
+    if (inFlight !== null) await inFlight;
+  };
+}
+
 export interface SyncRecoveryResult {
   readonly recoveredRuns: number;
   readonly clearedScopes: string[];
@@ -932,8 +944,8 @@ export interface SyncRecoveryResult {
 /**
  * Clear run rows and lock claims left behind when a process exits mid-sync.
  * Called once on bot startup so a restart never blocks syncing until the
- * 30-minute lock TTL expires. Safe to call repeatedly: it only touches rows
- * that are still marked `running` with no `finished_at`.
+ * 30-minute lock TTL expires. Scopes with a still-active lock are left alone,
+ * so a healthy process is never marked failed by a concurrent startup.
  */
 export async function recoverInterruptedSyncs(
   db: SupabaseClient = createTrustedClient(),
@@ -951,36 +963,71 @@ export async function recoverInterruptedSyncs(
     return { recoveredRuns: 0, clearedScopes: [] };
   }
 
-  const reason = 'Sync interrupted by process restart';
-  const finished = await db
-    .from('sync_runs')
-    .update({ status: 'failed', error: reason, last_error: reason, finished_at: nowIso })
-    .in(
-      'id',
-      rows.map((row) => row.id),
-    );
-  requireOk(finished.error, 'Mark interrupted sync runs failed');
-
-  const scopes = [
+  const allScopes = [
     ...new Set(
       rows
         .map((row) => row.scope)
         .filter((scope): scope is string => typeof scope === 'string' && scope.trim() !== ''),
     ),
   ];
-  if (scopes.length > 0) {
+  // A live process may still hold the lock for a scope with an old run row.
+  // Only scopes whose lock is absent, released or expired are recoverable.
+  const activeScopes = new Set<string>();
+  const nowMs = Date.parse(nowIso);
+  if (allScopes.length > 0) {
+    const locks = await db
+      .from('sync_locks')
+      .select('scope, locked_by, locked_until')
+      .in('scope', allScopes);
+    requireOk(locks.error, 'Read sync locks for recovery');
+    for (const item of locks.data ?? []) {
+      const row = item as { scope?: unknown; locked_by?: unknown; locked_until?: unknown };
+      const scope = typeof row.scope === 'string' ? row.scope : null;
+      if (scope === null || typeof row.locked_by !== 'string' || row.locked_by.length === 0) {
+        continue;
+      }
+      const until = typeof row.locked_until === 'string' ? Date.parse(row.locked_until) : Number.NaN;
+      if (Number.isNaN(until) || until >= nowMs) activeScopes.add(scope);
+    }
+  }
+
+  const recoverable = rows.filter(
+    (row) => typeof row.scope !== 'string' || !activeScopes.has(row.scope),
+  );
+  if (recoverable.length === 0) {
+    return { recoveredRuns: 0, clearedScopes: [] };
+  }
+
+  const reason = 'Sync interrupted by process restart';
+  const finished = await db
+    .from('sync_runs')
+    .update({ status: 'failed', error: reason, last_error: reason, finished_at: nowIso })
+    .in(
+      'id',
+      recoverable.map((row) => row.id),
+    );
+  requireOk(finished.error, 'Mark interrupted sync runs failed');
+
+  const clearedScopes = [
+    ...new Set(
+      recoverable
+        .map((row) => row.scope)
+        .filter((scope): scope is string => typeof scope === 'string' && scope.trim() !== ''),
+    ),
+  ];
+  if (clearedScopes.length > 0) {
     const cleared = await db
       .from('sync_locks')
       .update({ locked_by: null, locked_at: null, locked_until: null })
-      .in('scope', scopes);
+      .in('scope', clearedScopes);
     requireOk(cleared.error, 'Clear interrupted sync locks');
   }
 
   log.warn('Recovered interrupted sync state', {
-    runs: rows.length,
-    scopes: scopes.join(', '),
+    runs: recoverable.length,
+    scopes: clearedScopes.join(', '),
   });
-  return { recoveredRuns: rows.length, clearedScopes: scopes };
+  return { recoveredRuns: recoverable.length, clearedScopes };
 }
 
 /** Writes event + membership changes in one Postgres transaction. */
@@ -1168,15 +1215,13 @@ async function readPendingEvents(
       .select(columns)
       .in('to_club_id', [...clubIds])
       .gte('detected_at', sinceIso)
-      .order('detected_at', { ascending: false })
-      .limit(MAX_NOTIFICATIONS_PER_SYNC),
+      .order('detected_at', { ascending: false }),
     db
       .from('membership_events')
       .select(columns)
       .in('from_club_id', [...clubIds])
       .gte('detected_at', sinceIso)
-      .order('detected_at', { ascending: false })
-      .limit(MAX_NOTIFICATIONS_PER_SYNC),
+      .order('detected_at', { ascending: false }),
   ]);
   requireOk(toEvents.error, 'Read membership events by destination club');
   requireOk(fromEvents.error, 'Read membership events by source club');
@@ -1193,12 +1238,18 @@ async function readPendingEvents(
     }
     rows.set(row.id, row);
   }
-  return [...rows.values()]
-    .sort((a, b) => b.detected_at.localeCompare(a.detected_at) || a.id.localeCompare(b.id))
-    .slice(0, MAX_NOTIFICATIONS_PER_SYNC);
+  return [...rows.values()].sort(
+    (a, b) => b.detected_at.localeCompare(a.detected_at) || a.id.localeCompare(b.id),
+  );
 }
 
-/** Events that already have a notification claim must never be announced again. */
+type NotificationDeliveryStatus = 'pending' | 'sent' | 'failed';
+
+function deliveryStatus(value: unknown): NotificationDeliveryStatus | null {
+  return value === 'pending' || value === 'sent' || value === 'failed' ? value : null;
+}
+
+/** Only a delivered claim suppresses an announcement; interrupted ones retry. */
 async function readClaimedEventIds(
   db: SupabaseClient,
   events: readonly PendingEventRow[],
@@ -1206,15 +1257,58 @@ async function readClaimedEventIds(
   if (events.length === 0) return new Set();
   const result = await db
     .from('notifications')
-    .select('event_id')
-    .in('event_id', [...new Set(events.map((event) => event.id))]);
+    .select('event_id, delivery_status')
+    .in('event_id', [...new Set(events.map((event) => event.id))])
+    .eq('delivery_status', 'sent');
   requireOk(result.error, 'Read notification claims');
   const claimed = new Set<string>();
   for (const item of result.data ?? []) {
-    const id = (item as { event_id?: unknown } | null)?.event_id;
-    if (typeof id === 'string') claimed.add(id);
+    const row = item as { event_id?: unknown; delivery_status?: unknown } | null;
+    const id = row?.event_id;
+    // Legacy rows predate the status column and were only created for delivery.
+    const status = deliveryStatus(row?.delivery_status);
+    if (typeof id === 'string' && (status === null || status === 'sent')) claimed.add(id);
   }
   return claimed;
+}
+
+/** Reuse a pending/failed claim after a unique conflict; sent claims stay skipped. */
+async function claimNotification(
+  db: SupabaseClient,
+  input: SyncNotificationInput,
+  channelId: string,
+): Promise<string | null> {
+  const insert = await db
+    .from('notifications')
+    .insert({
+      event_type: input.eventType,
+      event_id: input.eventId,
+      channel_id: channelId,
+      kind: input.eventType,
+      delivery_status: 'pending',
+    })
+    .select('id')
+    .maybeSingle();
+  if (insert.error !== null && insert.error !== undefined) {
+    if (!isUniqueViolation(insert.error)) {
+      throw new Error(`Claim notification: ${sanitizeError(insert.error)}`);
+    }
+    const existing = await db
+      .from('notifications')
+      .select('id, delivery_status')
+      .eq('event_id', input.eventId)
+      .eq('channel_id', channelId)
+      .eq('kind', input.eventType)
+      .maybeSingle();
+    requireOk(existing.error, 'Read existing notification claim');
+    const row = existing.data as { id?: unknown; delivery_status?: unknown } | null;
+    const status = deliveryStatus(row?.delivery_status);
+    if (status === 'sent') return null;
+    const id = row?.id;
+    return typeof id === 'string' && id.length > 0 ? id : null;
+  }
+  const id = (insert.data as { id?: unknown } | null)?.id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
 }
 
 async function writeSnapshot(db: SupabaseClient, write: SnapshotWrite): Promise<boolean> {
@@ -1320,41 +1414,37 @@ async function sendNotifications(
       continue;
     }
 
-    const claim = await db
-      .from('notifications')
-      .insert({
-        event_type: input.eventType,
-        event_id: input.eventId,
-        channel_id: channelId,
-        kind: input.eventType,
-      })
-      .select('id')
-      .maybeSingle();
-    if (claim.error !== null && claim.error !== undefined) {
-      if (isUniqueViolation(claim.error)) {
-        continue; // Already claimed (or already sent) on a previous attempt.
-      }
-      throw new Error(`Claim notification: ${sanitizeError(claim.error)}`);
-    }
-    const claimId = ((claim.data ?? null) as IdRow | null)?.id;
-    if (claimId === undefined) {
-      continue;
+    const claimId = await claimNotification(db, input, channelId);
+    if (claimId === null) {
+      continue; // Already delivered on a previous attempt.
     }
 
     try {
       const messageId = await withTimeout(notifier.send(input), timeoutMs, 'notifier.send');
-      if (messageId !== undefined) {
-        const update = await db
-          .from('notifications')
-          .update({ discord_message_id: messageId })
-          .eq('id', claimId);
-        requireOk(update.error, 'Update notification claim');
-      }
+      const update = await db
+        .from('notifications')
+        .update({
+          delivery_status: 'sent',
+          discord_message_id: messageId ?? null,
+          delivered_at: new Date().toISOString(),
+        })
+        .eq('id', claimId);
+      requireOk(update.error, 'Update notification claim');
       sent += 1;
     } catch (error) {
-      // Release the claim so a later run can retry delivery.
-      await db.from('notifications').delete().eq('id', claimId);
-      log.warn('Notification delivery failed; claim released', {
+      // Mark the claim as failed instead of deleting it: a later run can reuse
+      // the row, and a delivered claim is never confused with an interrupted one.
+      const failed = await db
+        .from('notifications')
+        .update({ delivery_status: 'failed' })
+        .eq('id', claimId);
+      if (failed.error !== null && failed.error !== undefined) {
+        log.warn('Could not mark notification claim failed', {
+          eventId: input.eventId,
+          reason: sanitizeError(failed.error),
+        });
+      }
+      log.warn('Notification delivery failed; claim marked for retry', {
         eventId: input.eventId,
         reason: sanitizeError(error),
       });
@@ -1373,6 +1463,8 @@ export interface RunSyncOptions {
   notifierForGuild?: (guildId: string) => SyncNotifier | undefined | Promise<SyncNotifier | undefined>;
   client?: BrawlStarsClient;
   guildId?: string;
+  /** Testable override for the lock heartbeat interval. */
+  lockRenewalIntervalMs?: number;
 }
 
 async function listGuildIdsWithRegisteredClubs(db: SupabaseClient): Promise<string[]> {
@@ -1530,6 +1622,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
   } = { membersExpected: 0, membersSucceeded: 0, memberFailures: [] };
   const lockToken = randomUUID();
   let lockHeld = false;
+  let stopLockRenewal: (() => Promise<void>) | undefined;
 
   try {
     try {
@@ -1549,6 +1642,12 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     if (!lockHeld) {
       return skippedResult('', 'Another sync process holds the database lock', requestedGuildId);
     }
+    stopLockRenewal = startSyncLockRenewal(
+      db,
+      scope,
+      lockToken,
+      options?.lockRenewalIntervalMs ?? SYNC_LOCK_RENEW_INTERVAL_MS,
+    );
 
     const acquired = await acquireRun(db, scope, periodStartIso, nowIso, nowMs, clubIds, clubTags);
     if (acquired.kind === 'skip') {
@@ -1700,7 +1799,8 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
           event.detected_at,
           remainingMembers,
         );
-      });
+      })
+      .slice(0, MAX_NOTIFICATIONS_PER_SYNC);
 
     // 5. Capacity transitions and snapshots (snapshots are skipped when the
     //    payload digest is unchanged). Read the previous count before writing
@@ -1820,6 +1920,9 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       ...memberCounts,
     };
   } finally {
+    if (stopLockRenewal !== undefined) {
+      await stopLockRenewal();
+    }
     if (lockHeld) {
       await releaseSyncLock(db, scope, lockToken);
     }

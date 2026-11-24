@@ -70,6 +70,7 @@ function result(overrides: Partial<SyncResult> = {}): SyncResult {
     snapshotsWritten: 604,
     membershipEvents: 2,
     notificationsSent: 0,
+    battlesCollected: 0,
     error: undefined,
     affectedClubIds: [],
     guildId: GUILD_ID,

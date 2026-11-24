@@ -199,7 +199,14 @@ describe('runLiveBattlePoll', () => {
     });
     expect(sentA).toHaveLength(2);
     expect(sentB).toHaveLength(2);
-    expect(calls.filter((call) => call.table === 'player_battles' && call.op === 'upsert')).toHaveLength(1);
+    expect(
+      calls.filter(
+        (call) =>
+          call.table === 'player_battles' &&
+          call.op === 'upsert' &&
+          Array.isArray(call.args[0]),
+      ),
+    ).toHaveLength(1);
     expect(calls.filter((call) => call.table === 'live_battle_polls' && call.op === 'insert')).toHaveLength(2);
     expect(calls.filter((call) => call.table === 'live_battle_deliveries' && call.op === 'upsert')).toHaveLength(4);
     const deactivated = calls.find(
