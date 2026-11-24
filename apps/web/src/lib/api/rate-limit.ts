@@ -5,6 +5,7 @@ interface RateLimitBucket {
 
 interface RateLimitStore {
   buckets: Map<string, RateLimitBucket>;
+  nextPruneAt: number;
 }
 
 const globalStore = globalThis as typeof globalThis & {
@@ -12,13 +13,41 @@ const globalStore = globalThis as typeof globalThis & {
 };
 
 const store: RateLimitStore =
-  globalStore.__brawlhubRateLimitStore ?? { buckets: new Map<string, RateLimitBucket>() };
+  globalStore.__brawlhubRateLimitStore ?? {
+    buckets: new Map<string, RateLimitBucket>(),
+    nextPruneAt: Number.POSITIVE_INFINITY,
+  };
+if (typeof store.nextPruneAt !== 'number') {
+  store.nextPruneAt = Number.POSITIVE_INFINITY;
+}
 globalStore.__brawlhubRateLimitStore = store;
 
 export interface RateLimitResult {
   allowed: boolean;
   remaining: number;
   retryAfterSeconds: number;
+}
+
+/** Remove expired buckets so long-lived processes do not retain stale keys. */
+export function pruneRateLimits(now: number = Date.now()): number {
+  let pruned = 0;
+  let earliestResetAt = Number.POSITIVE_INFINITY;
+  for (const [bucketKey, bucket] of store.buckets) {
+    if (bucket.resetAt <= now) {
+      store.buckets.delete(bucketKey);
+      pruned += 1;
+    } else if (bucket.resetAt < earliestResetAt) {
+      earliestResetAt = bucket.resetAt;
+    }
+  }
+  store.nextPruneAt = earliestResetAt;
+  return pruned;
+}
+
+/** Reset all web rate-limit buckets (used by tests). */
+export function clearRateLimits(): void {
+  store.buckets.clear();
+  store.nextPruneAt = Number.POSITIVE_INFINITY;
 }
 
 /**
@@ -31,9 +60,13 @@ export function checkRateLimit(
   windowMs: number,
   now = Date.now(),
 ): RateLimitResult {
+  if (now >= store.nextPruneAt) pruneRateLimits(now);
+
   const existing = store.buckets.get(key);
   if (existing === undefined || existing.resetAt <= now) {
-    store.buckets.set(key, { count: 1, resetAt: now + windowMs });
+    const resetAt = now + windowMs;
+    store.buckets.set(key, { count: 1, resetAt });
+    if (resetAt < store.nextPruneAt) store.nextPruneAt = resetAt;
     return { allowed: true, remaining: limit - 1, retryAfterSeconds: 0 };
   }
 

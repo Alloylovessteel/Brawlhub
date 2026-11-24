@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { checkBotRateLimit, clearBotRateLimits } from './rate-limit';
+import { checkBotRateLimit, clearBotRateLimits, pruneBotRateLimits } from './rate-limit';
 
 describe('checkBotRateLimit', () => {
   beforeEach(() => clearBotRateLimits());
@@ -27,5 +27,14 @@ describe('checkBotRateLimit', () => {
   it('tracks keys independently', () => {
     checkBotRateLimit('sync:1', 1, 60_000, 0);
     expect(checkBotRateLimit('sync:2', 1, 60_000, 0).allowed).toBe(true);
+  });
+
+  it('prunes expired buckets instead of retaining them indefinitely', () => {
+    checkBotRateLimit('sync:short', 1, 1_000, 0);
+    checkBotRateLimit('sync:long', 1, 2_000, 0);
+
+    expect(pruneBotRateLimits(1_000)).toBe(1);
+    expect(pruneBotRateLimits(2_001)).toBe(1);
+    expect(pruneBotRateLimits(2_001)).toBe(0);
   });
 });

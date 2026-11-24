@@ -169,6 +169,11 @@ function baseTables(): Tables {
     discord_users: [
       { discord_user_id: OWNER_DISCORD, username: 'owner' },
       { discord_user_id: ADMIN_DISCORD, username: 'admin' },
+      { discord_user_id: MEMBER_DISCORD, username: 'blacklisted-player' },
+    ],
+    player_verifications: [
+      { player_id: PLAYER_ID, profile_id: MEMBER_PROFILE, status: 'active' },
+      { player_id: OTHER_PLAYER_ID, profile_id: OWNER_PROFILE, status: 'removed' },
     ],
     blacklists: [
       blacklistRow(),
@@ -441,9 +446,17 @@ describe('moderation service', () => {
       limit: 500,
     });
     expect(db.queries.some((query) => query.table === 'discord_users')).toBe(true);
+    expect(
+      db.queries.some(
+        (query) =>
+          query.table === 'player_verifications' &&
+          query.select === 'player_id, profile_id' &&
+          query.filters.status === 'active',
+      ),
+    ).toBe(true);
   });
 
-  it('filters active entries case-insensitively by player, reason or creator ID', async () => {
+  it('filters active entries by player, reason, creator and verified target Discord identity', async () => {
     const byPlayer = await listActiveBlacklists(
       { search: 'bravo' },
       { db: db as any, actorDiscordUserId: OWNER_DISCORD },
@@ -461,6 +474,18 @@ describe('moderation service', () => {
       { db: db as any, actorDiscordUserId: OWNER_DISCORD },
     );
     expect(byCreator.entries.map((entry) => entry.id)).toEqual([OTHER_BLACKLIST_ID]);
+
+    const byTargetDiscordId = await listActiveBlacklists(
+      { search: MEMBER_DISCORD },
+      { db: db as any, actorDiscordUserId: OWNER_DISCORD },
+    );
+    expect(byTargetDiscordId.entries.map((entry) => entry.id)).toEqual([BLACKLIST_ID]);
+
+    const byTargetUsername = await listActiveBlacklists(
+      { search: 'BLACKLISTED-PLAYER' },
+      { db: db as any, actorDiscordUserId: OWNER_DISCORD },
+    );
+    expect(byTargetUsername.entries.map((entry) => entry.id)).toEqual([BLACKLIST_ID]);
   });
 
   it('returns an empty list without inventing entries', async () => {

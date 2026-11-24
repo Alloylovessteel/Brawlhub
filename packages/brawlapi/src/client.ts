@@ -115,39 +115,48 @@ export function createBrawlApiClient(options: BrawlApiClientOptions = {}): Brawl
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let response: Response;
     try {
-      response = await fetchFn(`${baseUrl}${path}`, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        signal: controller.signal,
-      });
-    } catch (error) {
-      throw new BrawlApiError(
-        `BrawlAPI request failed: ${error instanceof Error ? error.message : 'network error'}`,
-      );
+      let response: Response;
+      try {
+        response = await fetchFn(`${baseUrl}${path}`, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        });
+      } catch (error) {
+        throw new BrawlApiError(
+          `BrawlAPI request failed: ${error instanceof Error ? error.message : 'network error'}`,
+        );
+      }
+
+      if (!response.ok) {
+        throw new BrawlApiError(`BrawlAPI request failed with status ${response.status}`);
+      }
+
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw new BrawlApiError(
+            `BrawlAPI request failed: ${error instanceof Error ? error.message : 'network error'}`,
+          );
+        }
+        throw new BrawlApiError('BrawlAPI returned invalid JSON');
+      }
+
+      const parsed = schema.safeParse(payload);
+      if (!parsed.success) {
+        throw new BrawlApiError('BrawlAPI returned an unexpected response shape');
+      }
+
+      cache.set(key, { value: parsed.data, expiresAt: nowFn() + cacheTtlMs });
+      return parsed.data;
     } finally {
+      // The timeout must also cover body reads; a stalled `response.json()`
+      // would otherwise keep the request alive after the timer was cleared.
       clearTimeout(timer);
     }
-
-    if (!response.ok) {
-      throw new BrawlApiError(`BrawlAPI request failed with status ${response.status}`);
-    }
-
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new BrawlApiError('BrawlAPI returned invalid JSON');
-    }
-
-    const parsed = schema.safeParse(payload);
-    if (!parsed.success) {
-      throw new BrawlApiError('BrawlAPI returned an unexpected response shape');
-    }
-
-    cache.set(key, { value: parsed.data, expiresAt: nowFn() + cacheTtlMs });
-    return parsed.data;
   }
 
   function cachedValue<T>(key: string): T | undefined {

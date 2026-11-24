@@ -65,6 +65,21 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function hangingBodyResponse(signal: AbortSignal | null | undefined): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: () =>
+      new Promise<unknown>((_resolve, reject) => {
+        if (signal?.aborted) {
+          reject(new Error('Aborted'));
+          return;
+        }
+        signal?.addEventListener('abort', () => reject(new Error('Aborted')), { once: true });
+      }),
+  } as unknown as Response;
+}
+
 function routingFetch(extra: Record<string, unknown> = {}): {
   fetchFn: typeof fetch;
   requested: string[];
@@ -155,6 +170,16 @@ describe('createBrawlApiClient', () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
 
     client.clearCache();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies the timeout while reading the response body', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_input, init) =>
+      hangingBodyResponse(init?.signal),
+    );
+    const client = createBrawlApiClient({ baseUrl: BASE_URL, fetchFn, timeoutMs: 10 });
+
+    await expect(client.getIconCatalog()).rejects.toThrow(/BrawlAPI request failed/);
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 });

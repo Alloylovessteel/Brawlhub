@@ -236,21 +236,24 @@ export async function listActiveBlacklists(
   if (!canManageBlacklists(actor)) fail('forbidden');
 
   const db = dbFor(options);
-  const [blacklistsResult, profilesResult, playersResult, discordUsersResult] = await Promise.all([
-    db
-      .from('blacklists')
-      .select('id, player_id, reason, created_by, expires_at, created_at, status')
-      .eq('status', 'active')
-      .order('created_at', { ascending: false })
-      .limit(500),
-    db.from('profiles').select('id, discord_user_id'),
-    db.from('players').select('id, tag, name'),
-    db.from('discord_users').select('discord_user_id, username'),
-  ]);
+  const [blacklistsResult, profilesResult, playersResult, discordUsersResult, verificationsResult] =
+    await Promise.all([
+      db
+        .from('blacklists')
+        .select('id, player_id, reason, created_by, expires_at, created_at, status')
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .limit(500),
+      db.from('profiles').select('id, discord_user_id'),
+      db.from('players').select('id, tag, name'),
+      db.from('discord_users').select('discord_user_id, username'),
+      db.from('player_verifications').select('player_id, profile_id').eq('status', 'active'),
+    ]);
   requireOk(blacklistsResult.error, 'Read blacklists');
   requireOk(profilesResult.error, 'Read profiles');
   requireOk(playersResult.error, 'Read players');
   requireOk(discordUsersResult.error, 'Read Discord users');
+  requireOk(verificationsResult.error, 'Read player verifications');
 
   const creatorDiscordIds = new Map<string, string>();
   for (const value of profilesResult.data ?? []) {
@@ -278,6 +281,21 @@ export async function listActiveBlacklists(
     }
   }
 
+  // A blacklisted player may be searchable by the Discord account that verified
+  // that Brawl Stars player, not just by player tag/name or the staff creator.
+  const discordIdsByPlayer = new Map<string, Set<string>>();
+  for (const value of verificationsResult.data ?? []) {
+    const row = record(value);
+    const playerId = asString(row?.['player_id']);
+    const profileId = asString(row?.['profile_id']);
+    if (playerId === null || profileId === null) continue;
+    const discordUserId = creatorDiscordIds.get(profileId);
+    if (discordUserId === undefined) continue;
+    const ids = discordIdsByPlayer.get(playerId) ?? new Set<string>();
+    ids.add(discordUserId);
+    discordIdsByPlayer.set(playerId, ids);
+  }
+
   const search = (asString(input.search ?? null) ?? '').trim().toLowerCase();
   const entries: BlacklistEntry[] = [];
   for (const value of blacklistsResult.data ?? []) {
@@ -296,12 +314,16 @@ export async function listActiveBlacklists(
       createdByDiscordId === null ? null : usernamesByDiscordId.get(createdByDiscordId) ?? null;
 
     if (search !== '') {
+      const targetDiscordIds =
+        playerId === null ? [] : [...(discordIdsByPlayer.get(playerId) ?? [])];
       const haystack = [
         player?.tag ?? '',
         player?.name ?? '',
         reason,
         createdByDiscordId ?? '',
         creatorUsername ?? '',
+        ...targetDiscordIds,
+        ...targetDiscordIds.map((discordUserId) => usernamesByDiscordId.get(discordUserId) ?? ''),
       ]
         .join('\n')
         .toLowerCase();

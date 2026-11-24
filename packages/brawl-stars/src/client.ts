@@ -161,10 +161,12 @@ export function createBrawlStarsClient(options?: BrawlStarsClientOptions): Brawl
       );
     }
 
-    await acquireSlot();
     const url = `${baseUrl}${path}`;
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      // Every attempt is an API request, including retries, so each one needs
+      // its own throttle slot. Otherwise a retry bypasses the minimum spacing.
+      await acquireSlot();
       const controller = new AbortController();
       let timedOut = false;
       const timer: ReturnType<typeof setTimeout> = setTimeout(() => {

@@ -69,24 +69,31 @@ describe('createBrawlStarsClient', () => {
     expect(delays[0] ?? 0).toBeLessThanOrEqual(250);
   });
 
-  it('retries a 429 response once and returns the successful response', async () => {
+  it('retries a 429 response once and spaces the retry with a throttle slot', async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse({ reason: 'slow down' }, 429, { 'retry-after': '0' }))
       .mockResolvedValueOnce(jsonResponse(playerBody));
     const sleepFn = vi.fn(async () => {});
+    const throttleDelays: number[] = [];
 
     const client = createBrawlStarsClient({
       apiKey: API_KEY,
       baseUrl: BASE_URL,
       fetchFn,
       sleepFn,
+      minIntervalMs: 250,
+      throttleSleepFn: async (delayMs) => {
+        throttleDelays.push(delayMs);
+      },
     });
     const player = await client.getPlayer('#g2p9');
 
     expect(player.trophies).toBe(500);
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(sleepFn).toHaveBeenCalledTimes(1);
+    expect(throttleDelays).toHaveLength(1);
+    expect(throttleDelays[0] ?? 0).toBeGreaterThan(0);
   });
 
   it('throws a sanitized error whose message never contains the API key', async () => {
@@ -129,6 +136,7 @@ describe('createBrawlStarsClient', () => {
       baseUrl: BASE_URL,
       fetchFn,
       sleepFn,
+      minIntervalMs: 0,
     });
 
     await expect(client.getPlayer('#G2P9')).rejects.toBeInstanceOf(BrawlStarsApiError);
