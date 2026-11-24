@@ -202,10 +202,86 @@ function rpcCode(code: string): RpcResponse {
   return { data: { ok: false, code }, error: null };
 }
 
-function createRpcHandler() {
-  return vi.fn((name: string, _args: Row): RpcResponse => {
+/** In-memory stand-in for moderation_blacklist_list, including pre-limit filtering. */
+function listRpcFromTables(tables: Tables, args: Row): RpcResponse {
+  const search = (typeof args['p_search'] === 'string' ? args['p_search'] : '').trim().toLowerCase();
+  const profileDiscordIds = new Map<string, string>();
+  for (const row of tables['profiles'] ?? []) {
+    const id = typeof row['id'] === 'string' ? row['id'] : null;
+    const discordId = typeof row['discord_user_id'] === 'string' ? row['discord_user_id'] : null;
+    if (id !== null && discordId !== null) profileDiscordIds.set(id, discordId);
+  }
+  const usernames = new Map<string, string>();
+  for (const row of tables['discord_users'] ?? []) {
+    const discordId = typeof row['discord_user_id'] === 'string' ? row['discord_user_id'] : null;
+    const username = typeof row['username'] === 'string' ? row['username'] : null;
+    if (discordId !== null && username !== null) usernames.set(discordId, username);
+  }
+  const targetIdsByPlayer = new Map<string, string[]>();
+  for (const row of tables['player_verifications'] ?? []) {
+    if (row['status'] !== 'active') continue;
+    const playerId = typeof row['player_id'] === 'string' ? row['player_id'] : null;
+    const profileId = typeof row['profile_id'] === 'string' ? row['profile_id'] : null;
+    if (playerId === null || profileId === null) continue;
+    const discordId = profileDiscordIds.get(profileId);
+    if (discordId === undefined) continue;
+    targetIdsByPlayer.set(playerId, [...(targetIdsByPlayer.get(playerId) ?? []), discordId]);
+  }
+
+  const entries = (tables['blacklists'] ?? [])
+    .filter((row) => row['status'] === 'active')
+    .map((row) => {
+      const playerId = typeof row['player_id'] === 'string' ? row['player_id'] : null;
+      const player = (tables['players'] ?? []).find((candidate) => candidate['id'] === playerId);
+      const createdByProfileId =
+        typeof row['created_by'] === 'string' ? row['created_by'] : null;
+      const createdByDiscordId =
+        createdByProfileId === null ? null : profileDiscordIds.get(createdByProfileId) ?? null;
+      const targetIds = playerId === null ? [] : targetIdsByPlayer.get(playerId) ?? [];
+      return {
+        id: String(row['id']),
+        playerId,
+        playerTag: typeof player?.['tag'] === 'string' ? player['tag'] : null,
+        playerName: typeof player?.['name'] === 'string' ? player['name'] : null,
+        reason: String(row['reason']),
+        createdByProfileId,
+        createdByDiscordId,
+        createdAt: String(row['created_at']),
+        expiresAt: typeof row['expires_at'] === 'string' ? row['expires_at'] : null,
+        removedAt: null,
+        haystack: [
+          typeof player?.['tag'] === 'string' ? player['tag'] : '',
+          typeof player?.['name'] === 'string' ? player['name'] : '',
+          String(row['reason']),
+          createdByDiscordId ?? '',
+          createdByDiscordId === null ? '' : usernames.get(createdByDiscordId) ?? '',
+          ...targetIds,
+          ...targetIds.map((id) => usernames.get(id) ?? ''),
+        ]
+          .join('\n')
+          .toLowerCase(),
+      };
+    })
+    .filter((entry) => search === '' || entry.haystack.includes(search))
+    .sort((left, right) =>
+      right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id),
+    )
+    .map(({ haystack: _haystack, ...entry }) => entry);
+
+  const limit =
+    typeof args['p_limit'] === 'number' ? Math.max(1, Math.floor(args['p_limit'])) : 100;
+  const offset =
+    typeof args['p_offset'] === 'number' ? Math.max(0, Math.floor(args['p_offset'])) : 0;
+  return rpcOk({ entries: entries.slice(offset, offset + limit), total: entries.length });
+}
+
+function createRpcHandler(tables: Tables) {
+  return vi.fn((name: string, args: Row): RpcResponse => {
     if (name === 'moderation_blacklist_add') {
       return rpcOk({ id: BLACKLIST_ID, createdAt: CREATED_AT });
+    }
+    if (name === 'moderation_blacklist_list') {
+      return listRpcFromTables(tables, args);
     }
     return rpcOk({ id: BLACKLIST_ID, removedAt: REMOVED_AT });
   });
@@ -269,7 +345,7 @@ describe('moderation service', () => {
       ...(tables['players'] ?? []),
       playerRow({ id: OTHER_PLAYER_ID, tag: 'P0RQ', name: 'Bravo' }),
     ];
-    rpcHandler = createRpcHandler();
+    rpcHandler = createRpcHandler(tables);
     db = createFakeDb(tables, rpcHandler);
   });
 
@@ -437,23 +513,21 @@ describe('moderation service', () => {
     });
     expect(view.entries[1]?.playerName).toBe('Bravo');
     expect(view.entries[1]?.createdByDiscordId).toBe(ADMIN_DISCORD);
+    expect(view.total).toBe(2);
 
-    const blacklistQuery = db.queries.find((query) => query.table === 'blacklists');
-    expect(blacklistQuery).toMatchObject({
-      select: 'id, player_id, reason, created_by, expires_at, created_at, status',
-      filters: { status: 'active' },
-      order: { field: 'created_at', ascending: false },
-      limit: 500,
+    expect(db.rpcCalls).toContainEqual({
+      name: 'moderation_blacklist_list',
+      args: {
+        p_actor_profile_id: OWNER_PROFILE,
+        p_actor_discord_id: OWNER_DISCORD,
+        p_search: null,
+        p_limit: 100,
+        p_offset: 0,
+      },
     });
-    expect(db.queries.some((query) => query.table === 'discord_users')).toBe(true);
-    expect(
-      db.queries.some(
-        (query) =>
-          query.table === 'player_verifications' &&
-          query.select === 'player_id, profile_id' &&
-          query.filters.status === 'active',
-      ),
-    ).toBe(true);
+    // Search, ordering, identity joins and counting all live in the RPC.
+    expect(db.queries.some((query) => query.table === 'blacklists')).toBe(false);
+    expect(db.queries.some((query) => query.table === 'player_verifications')).toBe(false);
   });
 
   it('filters active entries by player, reason, creator and verified target Discord identity', async () => {
@@ -486,6 +560,48 @@ describe('moderation service', () => {
       { db: db as any, actorDiscordUserId: OWNER_DISCORD },
     );
     expect(byTargetUsername.entries.map((entry) => entry.id)).toEqual([BLACKLIST_ID]);
+    expect(
+      db.rpcCalls
+        .filter((call) => call.name === 'moderation_blacklist_list')
+        .map((call) => call.args['p_search']),
+    ).toEqual(['bravo', 'SPAMMING', ADMIN_DISCORD, MEMBER_DISCORD, 'BLACKLISTED-PLAYER']);
+  });
+
+  it('passes explicit page, limit and offset through to the list RPC', async () => {
+    const view = await listActiveBlacklists(
+      { search: 'a', page: 3, limit: 5, offset: 10 },
+      { db: db as any, actorDiscordUserId: OWNER_DISCORD },
+    );
+
+    expect(view.total).toBe(2);
+    expect(view.entries).toEqual([]);
+    expect(db.rpcCalls.at(-1)).toEqual({
+      name: 'moderation_blacklist_list',
+      args: {
+        p_actor_profile_id: OWNER_PROFILE,
+        p_actor_discord_id: OWNER_DISCORD,
+        p_search: 'a',
+        p_limit: 5,
+        p_offset: 10,
+      },
+    });
+  });
+
+  it('derives the list offset from the page when no offset is supplied', async () => {
+    await listActiveBlacklists(
+      { page: 3, limit: 5 },
+      { db: db as any, actorDiscordUserId: OWNER_DISCORD },
+    );
+
+    expect(db.rpcCalls.at(-1)?.args['p_offset']).toBe(10);
+  });
+
+  it('propagates list RPC failures', async () => {
+    rpcHandler.mockImplementationOnce(() => ({ data: null, error: { message: 'list failed' } }));
+
+    await expect(
+      listActiveBlacklists({}, { db: db as any, actorDiscordUserId: OWNER_DISCORD }),
+    ).rejects.toThrow('moderation_blacklist_list failed');
   });
 
   it('returns an empty list without inventing entries', async () => {

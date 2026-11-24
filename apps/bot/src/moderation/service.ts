@@ -46,6 +46,19 @@ export class ModerationServiceError extends Error {
   }
 }
 
+declare module './types' {
+  interface ListBlacklistsInput {
+    readonly page?: number;
+    readonly limit?: number;
+    readonly offset?: number;
+  }
+
+  interface BlacklistListView {
+    /** Total matching rows across every page, reported by the database RPC. */
+    readonly total?: number;
+  }
+}
+
 interface RpcResult extends Record<string, unknown> {
   readonly ok?: boolean;
   readonly code?: string;
@@ -215,15 +228,51 @@ export async function removeBlacklist(
   return { id, removedAt };
 }
 
-function parsePlayerIdentity(value: unknown): { readonly tag: string; readonly name: string } | null {
-  const player = parsePlayerRow(value);
-  if (player === null) return null;
-  return { tag: player.tag, name: player.name };
+function normalizeBlacklistEntry(value: unknown): BlacklistEntry | null {
+  const row = record(value);
+  if (row === null) return null;
+  const id = asString(row['id']);
+  const reason = asString(row['reason']);
+  const createdAt = asString(row['createdAt']) ?? asString(row['created_at']);
+  if (id === null || reason === null || createdAt === null) return null;
+  return {
+    id,
+    playerId: asString(row['playerId']) ?? asString(row['player_id']),
+    playerTag: asString(row['playerTag']) ?? asString(row['player_tag']),
+    playerName: asString(row['playerName']) ?? asString(row['player_name']),
+    reason,
+    createdByProfileId:
+      asString(row['createdByProfileId']) ?? asString(row['created_by']),
+    createdByDiscordId:
+      asString(row['createdByDiscordId']) ?? asString(row['created_by_discord_id']),
+    createdAt,
+    expiresAt: asString(row['expiresAt']) ?? asString(row['expires_at']),
+    removedAt: asString(row['removedAt']) ?? asString(row['removed_at']),
+  };
+}
+
+function normalizeBlacklistPage(input: ListBlacklistsInput): { limit: number; offset: number } {
+  const requestedLimit =
+    typeof input.limit === 'number' && Number.isFinite(input.limit)
+      ? Math.floor(input.limit)
+      : 100;
+  const limit = Math.min(Math.max(requestedLimit, 1), 100);
+  const requestedOffset =
+    typeof input.offset === 'number' && Number.isFinite(input.offset)
+      ? Math.floor(input.offset)
+      : null;
+  if (requestedOffset !== null) return { limit, offset: Math.max(0, requestedOffset) };
+  const page =
+    typeof input.page === 'number' && Number.isFinite(input.page)
+      ? Math.floor(input.page)
+      : 1;
+  return { limit, offset: Math.max(0, page - 1) * limit };
 }
 
 /**
- * Read active blacklists and join player/creator identity in memory. The trusted
- * client is required because blacklist RLS only exposes rows to global admins.
+ * Read one filtered blacklist page from the trusted RPC. Searching, ordering,
+ * counting and identity joins all happen in the database before the page is
+ * returned, so no capped in-memory identity reads can distort the result.
  */
 export async function listActiveBlacklists(
   input: ListBlacklistsInput,
@@ -235,115 +284,22 @@ export async function listActiveBlacklists(
   const actor = await resolveModerationActor(actorDiscordUserId, options);
   if (!canManageBlacklists(actor)) fail('forbidden');
 
-  const db = dbFor(options);
-  const [blacklistsResult, profilesResult, playersResult, discordUsersResult, verificationsResult] =
-    await Promise.all([
-      db
-        .from('blacklists')
-        .select('id, player_id, reason, created_by, expires_at, created_at, status')
-        .eq('status', 'active')
-        .order('created_at', { ascending: false })
-        .limit(500),
-      db.from('profiles').select('id, discord_user_id'),
-      db.from('players').select('id, tag, name'),
-      db.from('discord_users').select('discord_user_id, username'),
-      db.from('player_verifications').select('player_id, profile_id').eq('status', 'active'),
-    ]);
-  requireOk(blacklistsResult.error, 'Read blacklists');
-  requireOk(profilesResult.error, 'Read profiles');
-  requireOk(playersResult.error, 'Read players');
-  requireOk(discordUsersResult.error, 'Read Discord users');
-  requireOk(verificationsResult.error, 'Read player verifications');
+  const { limit, offset } = normalizeBlacklistPage(input);
+  const result = await runRpc(dbFor(options), 'moderation_blacklist_list', {
+    p_actor_profile_id: actor.profileId,
+    p_actor_discord_id: actor.discordUserId,
+    p_search: input.search ?? null,
+    p_limit: limit,
+    p_offset: offset,
+  });
+  expectOk(result);
 
-  const creatorDiscordIds = new Map<string, string>();
-  for (const value of profilesResult.data ?? []) {
-    const row = record(value);
-    const id = asString(row?.['id']);
-    const discordUserId = asString(row?.['discord_user_id']);
-    if (id !== null && discordUserId !== null) creatorDiscordIds.set(id, discordUserId);
-  }
-
-  const playersById = new Map<string, { readonly tag: string; readonly name: string }>();
-  for (const value of playersResult.data ?? []) {
-    const row = record(value);
-    const id = asString(row?.['id']);
-    const identity = parsePlayerIdentity(row);
-    if (id !== null && identity !== null) playersById.set(id, identity);
-  }
-
-  const usernamesByDiscordId = new Map<string, string>();
-  for (const value of discordUsersResult.data ?? []) {
-    const row = record(value);
-    const discordUserId = asString(row?.['discord_user_id']);
-    const username = asString(row?.['username']);
-    if (discordUserId !== null && username !== null) {
-      usernamesByDiscordId.set(discordUserId, username);
-    }
-  }
-
-  // A blacklisted player may be searchable by the Discord account that verified
-  // that Brawl Stars player, not just by player tag/name or the staff creator.
-  const discordIdsByPlayer = new Map<string, Set<string>>();
-  for (const value of verificationsResult.data ?? []) {
-    const row = record(value);
-    const playerId = asString(row?.['player_id']);
-    const profileId = asString(row?.['profile_id']);
-    if (playerId === null || profileId === null) continue;
-    const discordUserId = creatorDiscordIds.get(profileId);
-    if (discordUserId === undefined) continue;
-    const ids = discordIdsByPlayer.get(playerId) ?? new Set<string>();
-    ids.add(discordUserId);
-    discordIdsByPlayer.set(playerId, ids);
-  }
-
-  const search = (asString(input.search ?? null) ?? '').trim().toLowerCase();
-  const entries: BlacklistEntry[] = [];
-  for (const value of blacklistsResult.data ?? []) {
-    const row = record(value);
-    const id = asString(row?.['id']);
-    const reason = asString(row?.['reason']);
-    const createdAt = asString(row?.['created_at']);
-    if (row === null || id === null || reason === null || createdAt === null) continue;
-
-    const playerId = asString(row['player_id']);
-    const player = playerId === null ? null : playersById.get(playerId) ?? null;
-    const createdByProfileId = asString(row['created_by']);
-    const createdByDiscordId =
-      createdByProfileId === null ? null : creatorDiscordIds.get(createdByProfileId) ?? null;
-    const creatorUsername =
-      createdByDiscordId === null ? null : usernamesByDiscordId.get(createdByDiscordId) ?? null;
-
-    if (search !== '') {
-      const targetDiscordIds =
-        playerId === null ? [] : [...(discordIdsByPlayer.get(playerId) ?? [])];
-      const haystack = [
-        player?.tag ?? '',
-        player?.name ?? '',
-        reason,
-        createdByDiscordId ?? '',
-        creatorUsername ?? '',
-        ...targetDiscordIds,
-        ...targetDiscordIds.map((discordUserId) => usernamesByDiscordId.get(discordUserId) ?? ''),
-      ]
-        .join('\n')
-        .toLowerCase();
-      if (!haystack.includes(search)) continue;
-    }
-
-    entries.push({
-      id,
-      playerId,
-      playerTag: player?.tag ?? null,
-      playerName: player?.name ?? null,
-      reason,
-      createdByProfileId,
-      createdByDiscordId,
-      createdAt,
-      expiresAt: asString(row['expires_at']),
-      removedAt: null,
-    });
-  }
-
-  entries.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
-  return { entries, generatedAt: new Date() };
+  const entries = (Array.isArray(result['entries']) ? result['entries'] : [])
+    .map(normalizeBlacklistEntry)
+    .filter((entry): entry is BlacklistEntry => entry !== null);
+  const total =
+    typeof result['total'] === 'number' && Number.isFinite(result['total'])
+      ? result['total']
+      : entries.length;
+  return { entries, total, generatedAt: new Date() };
 }

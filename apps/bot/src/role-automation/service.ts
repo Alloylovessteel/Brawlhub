@@ -9,7 +9,7 @@
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Client, Guild, GuildMember } from 'discord.js';
+import type { Collection, Client, Guild, GuildMember } from 'discord.js';
 import { AdminServiceError, recordAdminAudit } from '../admin/service.js';
 import type { AdminActor } from '../admin/types.js';
 import { asNumber, asString, record, requireOk } from '../clubs/service.js';
@@ -450,12 +450,40 @@ function buildDesiredAssignments(context: ReconcileContext): Map<string, Desired
   return desired;
 }
 
-async function fetchMember(guild: Guild, discordUserId: string): Promise<GuildMember | null> {
+type MemberLookup =
+  | { readonly status: 'found'; readonly member: GuildMember }
+  | { readonly status: 'missing'; readonly error: string | null }
+  | { readonly status: 'unresolved'; readonly error: string };
+
+/** Discord reports Unknown Member as 10007 / 404; other failures are not proof of absence. */
+function isConfirmedMemberMissing(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false;
+  const candidate = error as { code?: unknown; status?: unknown; message?: unknown };
+  return (
+    candidate.code === 10007 ||
+    candidate.status === 404 ||
+    (typeof candidate.message === 'string' && /unknown member/i.test(candidate.message))
+  );
+}
+
+async function lookupMember(guild: Guild, discordUserId: string): Promise<MemberLookup> {
   try {
-    return await guild.members.fetch(discordUserId);
-  } catch {
-    return null;
+    const member = await guild.members.fetch(discordUserId);
+    return member == null
+      ? { status: 'missing', error: null }
+      : { status: 'found', member };
+  } catch (error) {
+    if (isConfirmedMemberMissing(error)) {
+      return { status: 'missing', error: errorMessage(error) };
+    }
+    return { status: 'unresolved', error: errorMessage(error) };
   }
+}
+
+/** Found-only lookup for the single-user hook, which never closes ledger rows. */
+async function fetchMember(guild: Guild, discordUserId: string): Promise<GuildMember | null> {
+  const lookup = await lookupMember(guild, discordUserId);
+  return lookup.status === 'found' ? lookup.member : null;
 }
 
 async function mutateRolePlan(
@@ -596,7 +624,7 @@ async function finishSyncRun(input: {
   readonly db: SupabaseClient;
   readonly runId: string;
   readonly guildId: string;
-  readonly status: 'completed' | 'failed';
+  readonly status: 'completed' | 'partial' | 'failed';
   readonly counts: MutableCounts;
   readonly lastError?: string;
 }): Promise<void> {
@@ -778,19 +806,45 @@ export async function reconcileGuildRoles(
     runId = await startSyncRun(parsedGuildId, db);
     const context = await loadReconcileContext(parsedGuildId, db);
     const desiredByUser = buildDesiredAssignments(context);
-    const members = await guild.members.fetch().catch(() => null);
+    let members: Collection<string, GuildMember> | null = null;
+    let memberListError: string | null = null;
+    try {
+      members = await guild.members.fetch();
+    } catch (error) {
+      memberListError = errorMessage(error);
+    }
+    const partialErrors: string[] = [];
+    if (memberListError !== null) {
+      partialErrors.push(`Member list unavailable: ${memberListError}`);
+    }
     const processed = new Set<string>();
 
     for (const [discordUserId, desired] of desiredByUser) {
       processed.add(discordUserId);
-      const member = members?.get(discordUserId) ?? (await fetchMember(guild, discordUserId));
-      if (member === null) {
+      const cached = members?.get(discordUserId);
+      const lookup: MemberLookup =
+        cached === undefined
+          ? await lookupMember(guild, discordUserId)
+          : { status: 'found', member: cached };
+      if (lookup.status === 'missing') {
+        // A desired user who is confirmed absent still has any open ledger row
+        // revoked; otherwise the later cleanup skips them as already processed.
+        const byRole = context.assignments.get(discordUserId);
+        if (byRole !== undefined && byRole.size > 0) {
+          await revokeAssignments(db, parsedGuildId, discordUserId, [...byRole.keys()]);
+        }
         counts.membersNotFound += 1;
+        continue;
+      }
+      if (lookup.status === 'unresolved') {
+        counts.membersNotFound += 1;
+        counts.errorCount += 1;
+        partialErrors.push(`${discordUserId}: ${lookup.error}`);
         continue;
       }
       await applyForMember({
         guildId: parsedGuildId,
-        member,
+        member: lookup.member,
         desired,
         context,
         db,
@@ -798,7 +852,36 @@ export async function reconcileGuildRoles(
       });
     }
 
-    if (members !== null) {
+    if (members === null) {
+      // The full roster is unavailable. Every active assignment user still gets
+      // an individual member lookup, including users with no desired role. Only
+      // a confirmed missing member closes a ledger row; an unreadable member
+      // leaves it open and is counted as an error in a partial run.
+      for (const [discordUserId, byRole] of context.assignments) {
+        if (processed.has(discordUserId)) continue;
+        processed.add(discordUserId);
+        const lookup = await lookupMember(guild, discordUserId);
+        if (lookup.status === 'found') {
+          await applyForMember({
+            guildId: parsedGuildId,
+            member: lookup.member,
+            desired: undefined,
+            context,
+            db,
+            counts,
+          });
+          continue;
+        }
+        if (lookup.status === 'missing') {
+          await revokeAssignments(db, parsedGuildId, discordUserId, [...byRole.keys()]);
+          counts.membersNotFound += 1;
+          continue;
+        }
+        counts.membersNotFound += 1;
+        counts.errorCount += 1;
+        partialErrors.push(`${discordUserId}: ${lookup.error}`);
+      }
+    } else {
       for (const member of members.values()) {
         if (processed.has(member.id)) continue;
         const holdsManagedRole = [...member.roles.cache.keys()].some((roleId) =>
@@ -814,30 +897,28 @@ export async function reconcileGuildRoles(
           counts,
         });
       }
-    } else {
-      // Members could not be listed; still close active ledger rows we can no
-      // longer confirm, without touching any Discord role we cannot see.
-      for (const [discordUserId, byRole] of context.assignments) {
-        if (processed.has(discordUserId)) continue;
-        await revokeAssignments(db, parsedGuildId, discordUserId, [...byRole.keys()]);
-      }
-    }
 
-    // Users who left the guild (or lost their link) have no member object to
-    // mutate; close their ledger rows without guessing at Discord state.
-    if (members !== null) {
+      // Users who left the guild (or lost their link) have no member object to
+      // mutate; close their ledger rows without guessing at Discord state.
       for (const [discordUserId, byRole] of context.assignments) {
         if (processed.has(discordUserId) || members.has(discordUserId)) continue;
         await revokeAssignments(db, parsedGuildId, discordUserId, [...byRole.keys()]);
       }
     }
 
+    const status = memberListError === null ? 'completed' : 'partial';
     await finishSyncRun({
       db,
       runId,
       guildId: parsedGuildId,
-      status: 'completed',
+      status,
       counts,
+      ...(status === 'partial'
+        ? {
+            lastError:
+              partialErrors.join('; ').slice(0, 2000) || memberListError || 'Member list unavailable',
+          }
+        : {}),
     });
     return {
       guildId: parsedGuildId,

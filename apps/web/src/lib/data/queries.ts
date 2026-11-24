@@ -198,17 +198,53 @@ export async function getClubById(
   };
 }
 
-async function getPlayerIdsForClubScope(
+const WEB_SCOPE_PAGE_SIZE = 1000;
+const WEB_SCOPE_MAX_PAGES = 1000;
+
+/**
+ * Read a complete distinct player-id scope through the database RPC. Keyset
+ * pagination continues until the final short page, so a club scope is never a
+ * partial in-memory set that gets intersected with another capped query.
+ */
+async function getScopedPlayerIds(
   clubIds: readonly string[],
+  currentOnly: boolean,
 ): Promise<{ ids: string[]; error: string | null }> {
   if (clubIds.length === 0) return { ids: [], error: null };
-  const supabase = await createServerSupabaseClient();
-  const { data, error } = await supabase
-    .from('club_memberships')
-    .select('player_id')
-    .in('club_id', [...clubIds]);
-  if (error !== null && error !== undefined) return { ids: [], error: error.message };
-  return { ids: [...new Set((data ?? []).map((row) => String(row.player_id)))], error: null };
+  const db = createTrustedClient();
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  let after: string | null = null;
+
+  for (let page = 0; page < WEB_SCOPE_MAX_PAGES; page += 1) {
+    const { data, error } = await db.rpc('web_scoped_player_ids', {
+      p_club_ids: [...clubIds],
+      p_current_only: currentOnly,
+      p_limit: WEB_SCOPE_PAGE_SIZE,
+      p_after: after,
+    });
+    if (error !== null && error !== undefined) {
+      return { ids: [], error: error.message };
+    }
+
+    const rows = Array.isArray(data) ? data : [];
+    if (rows.length === 0) break;
+    let last: string | null = null;
+    for (const value of rows) {
+      const row = value as AnyRecord;
+      const id = typeof row?.['player_id'] === 'string' ? row['player_id'] : null;
+      if (id === null) continue;
+      last = id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+    if (last === null || rows.length < WEB_SCOPE_PAGE_SIZE) break;
+    if (after !== null && last === after) break;
+    after = last;
+  }
+
+  return { ids, error: null };
 }
 
 export async function getPlayers(input: {
@@ -223,37 +259,22 @@ export async function getPlayers(input: {
   const page = input.page ?? 1;
   const pageSize = input.pageSize ?? 50;
 
-  let scopedPlayerIds: string[] | undefined;
-  if (input.allowedClubIds !== undefined) {
-    const scoped = await getPlayerIdsForClubScope(input.allowedClubIds);
-    if (scoped.error !== null) return emptyResult(scoped.error);
-    scopedPlayerIds = scoped.ids;
-    if (scopedPlayerIds.length === 0) return emptyResult(null);
-  }
-
-  let playerIds: string[] | undefined;
+  let scopeClubIds: readonly string[] | undefined = input.allowedClubIds;
   if (input.clubId !== undefined) {
     const validClubId = parseUuid(input.clubId);
     if (validClubId === null) return emptyResult('Invalid club id');
     if (input.allowedClubIds !== undefined && !input.allowedClubIds.includes(validClubId)) {
       return emptyResult(null);
     }
-    const membershipResult = await supabase
-      .from('club_memberships')
-      .select('player_id')
-      .eq('club_id', validClubId)
-      .is('valid_to', null);
-    if (membershipResult.error !== null && membershipResult.error !== undefined) {
-      return emptyResult(membershipResult.error.message);
-    }
-    playerIds = (membershipResult.data ?? []).map((row) => String(row.player_id));
-    if (scopedPlayerIds !== undefined) {
-      const allowed = new Set(scopedPlayerIds);
-      playerIds = playerIds.filter((id) => allowed.has(id));
-    }
-    if (playerIds.length === 0) return emptyResult(null);
-  } else if (scopedPlayerIds !== undefined) {
-    playerIds = scopedPlayerIds;
+    scopeClubIds = [validClubId];
+  }
+
+  let playerIds: string[] | undefined;
+  if (scopeClubIds !== undefined) {
+    const scoped = await getScopedPlayerIds(scopeClubIds, true);
+    if (scoped.error !== null) return emptyResult(scoped.error);
+    if (scoped.ids.length === 0) return emptyResult(null);
+    playerIds = scoped.ids;
   }
 
   let query = supabase
@@ -287,7 +308,7 @@ export async function getPlayerById(
   if (validId === null) return emptyResult('Invalid player id');
   if (scopeEmpty(options.allowedClubIds)) return emptyResult(null);
   if (options.allowedClubIds !== undefined) {
-    const scoped = await getPlayerIdsForClubScope(options.allowedClubIds);
+    const scoped = await getScopedPlayerIds(options.allowedClubIds, true);
     if (scoped.error !== null) return emptyResult(scoped.error);
     if (!scoped.ids.includes(validId)) return emptyResult(null);
   }
@@ -444,7 +465,7 @@ export async function getPlayerSnapshots(
   if (validId === null) return emptyResult('Invalid player id');
   if (scopeEmpty(input.allowedClubIds)) return emptyResult(null);
   if (input.allowedClubIds !== undefined) {
-    const scoped = await getPlayerIdsForClubScope(input.allowedClubIds);
+    const scoped = await getScopedPlayerIds(input.allowedClubIds, false);
     if (scoped.error !== null) return emptyResult(scoped.error);
     if (!scoped.ids.includes(validId)) return emptyResult(null);
   }
@@ -471,7 +492,7 @@ export async function getPlayerBattles(
   if (validId === null) return emptyResult('Invalid player id');
   if (scopeEmpty(input.allowedClubIds)) return emptyResult(null);
   if (input.allowedClubIds !== undefined) {
-    const scoped = await getPlayerIdsForClubScope(input.allowedClubIds);
+    const scoped = await getScopedPlayerIds(input.allowedClubIds, false);
     if (scoped.error !== null) return emptyResult(scoped.error);
     if (!scoped.ids.includes(validId)) return emptyResult(null);
   }
@@ -492,15 +513,23 @@ export async function getPlayerBattles(
   return { rows: (data ?? []) as PlayerBattleRow[], count: count ?? 0, error: errorText(error) };
 }
 
-export async function getSyncRuns(limit = 20): Promise<QueryResult<SyncRunRow>> {
+export async function getSyncRuns(
+  limit = 20,
+  options: { clubIds?: readonly string[] } = {},
+): Promise<QueryResult<SyncRunRow>> {
   const supabase = await createServerSupabaseClient();
-  const { data, error } = await supabase
+  let query = supabase
     .from('sync_runs')
     .select(
       'id, scope, period_start, status, started_at, finished_at, error, last_error, records_processed, affected_club_ids, club_tags',
     )
-    .order('started_at', { ascending: false })
-    .limit(Math.min(Math.max(limit, 1), 100));
+    .order('started_at', { ascending: false });
+  if (options.clubIds !== undefined) {
+    const clubIds = [...options.clubIds];
+    if (clubIds.length === 0) return emptyResult<SyncRunRow>(null);
+    query = query.overlaps('affected_club_ids', clubIds);
+  }
+  const { data, error } = await query.limit(Math.min(Math.max(limit, 1), 100));
   return { rows: (data ?? []) as SyncRunRow[], count: data?.length ?? 0, error: errorText(error) };
 }
 
@@ -644,7 +673,7 @@ export async function getAllPlayerSnapshots(
   if (scopeEmpty(options.clubIds) || scopeEmpty(options.playerIds)) return emptyResult(null);
   let playerScope: string[] | undefined;
   if (options.clubIds !== undefined) {
-    const scoped = await getPlayerIdsForClubScope(options.clubIds);
+    const scoped = await getScopedPlayerIds(options.clubIds, false);
     if (scoped.error !== null) return emptyResult(scoped.error);
     playerScope = scoped.ids;
     if (playerScope.length === 0) return emptyResult(null);
@@ -695,7 +724,7 @@ export async function getSnapshotCollectionStart(
 
   let playerIds: string[] | undefined;
   if (options.clubIds !== undefined) {
-    const scoped = await getPlayerIdsForClubScope(options.clubIds);
+    const scoped = await getScopedPlayerIds(options.clubIds, false);
     if (scoped.error !== null) return { capturedAt: null, error: scoped.error };
     playerIds = scoped.ids;
   }
@@ -744,45 +773,50 @@ export interface OverviewData {
   error: string | null;
 }
 
+interface OverviewStats {
+  readonly clubs: number;
+  readonly players: number;
+  readonly memberships: number;
+  readonly trophyCount: number;
+  readonly trophySum: number;
+  readonly trophyAverage: number | null;
+}
+
+function parseOverviewStats(value: unknown): OverviewStats {
+  const row = typeof value === 'object' && value !== null ? (value as AnyRecord) : {};
+  const numberValue = (key: string): number =>
+    typeof row[key] === 'number' && Number.isFinite(row[key]) ? row[key] : 0;
+  const average =
+    typeof row['trophy_average'] === 'number' && Number.isFinite(row['trophy_average'])
+      ? row['trophy_average']
+      : null;
+  const trophyCount = numberValue('trophy_count');
+  const trophySum = numberValue('trophy_sum');
+  return {
+    clubs: numberValue('clubs'),
+    players: numberValue('players'),
+    memberships: numberValue('memberships'),
+    trophyCount,
+    trophySum,
+    trophyAverage: average ?? (trophyCount > 0 ? Math.round(trophySum / trophyCount) : null),
+  };
+}
+
 export async function getOverview(options: { clubIds?: readonly string[] } = {}): Promise<OverviewData> {
   const clubIds = options.clubIds;
+  const db = createTrustedClient();
+  const statsResult = await db.rpc('web_overview_stats', {
+    p_club_ids: clubIds === undefined ? null : [...clubIds],
+  });
+  const stats = parseOverviewStats(statsResult.data);
+  const statsError = errorText(statsResult.error);
+
   const [clubs, players, syncRuns, events] = await Promise.all([
     getClubs({ page: 1, pageSize: 1, ...(clubIds === undefined ? {} : { clubIds: [...clubIds] }) }),
     getPlayers({ page: 1, pageSize: 1, ...(clubIds === undefined ? {} : { allowedClubIds: [...clubIds] }) }),
-    getSyncRuns(10),
+    getSyncRuns(10, { ...(clubIds === undefined ? {} : { clubIds: [...clubIds] }) }),
     getRecentEvents(12, { ...(clubIds === undefined ? {} : { allowedClubIds: [...clubIds] }) }),
   ]);
-
-  const supabase = await createServerSupabaseClient();
-  let membershipCountQuery = supabase
-    .from('club_memberships')
-    .select('*', { count: 'exact', head: true })
-    .is('valid_to', null);
-  if (clubIds !== undefined) {
-    membershipCountQuery = scopeEmpty(clubIds)
-      ? membershipCountQuery.in('club_id', ['00000000-0000-0000-0000-000000000000'])
-      : membershipCountQuery.in('club_id', [...clubIds]);
-  }
-  const membershipResult = await membershipCountQuery;
-
-  let trophyValues: number[] = [];
-  if (scopeEmpty(clubIds)) {
-    trophyValues = [];
-  } else if (clubIds !== undefined) {
-    const scopedPlayers = await getPlayerIdsForClubScope(clubIds);
-    if (scopedPlayers.error === null && scopedPlayers.ids.length > 0) {
-      const trophyResult = await supabase.from('players').select('trophies').in('id', scopedPlayers.ids);
-      trophyValues = (trophyResult.data ?? [])
-        .map((row) => row.trophies)
-        .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-    }
-  } else {
-    const trophyResult = await supabase.from('players').select('trophies');
-    trophyValues = (trophyResult.data ?? [])
-      .map((row) => row.trophies)
-      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-  }
-  const totalTrophies = trophyValues.length > 0 ? trophyValues.reduce((sum, value) => sum + value, 0) : null;
 
   const latestSync = syncRuns.rows.find((run) => run.status === 'completed') ?? null;
   const intervalMinutes = Number(process.env.SYNC_INTERVAL_MINUTES ?? '15');
@@ -793,25 +827,16 @@ export async function getOverview(options: { clubIds?: readonly string[] } = {})
     latestSync === null ||
     Date.now() - new Date(latestSync.finished_at ?? 0).getTime() > staleAfterMs;
 
-  const error =
-    clubs.error ??
-    players.error ??
-    syncRuns.error ??
-    events.error ??
-    errorText(membershipResult.error) ??
-    null;
+  const error = statsError ?? clubs.error ?? players.error ?? syncRuns.error ?? events.error ?? null;
 
   return {
     hasData: clubs.count > 0 || players.count > 0,
-    clubs: clubs.count,
-    players: players.count,
-    memberships: membershipResult.count ?? 0,
+    clubs: stats.clubs,
+    players: stats.players,
+    memberships: stats.memberships,
     trophies: {
-      total: totalTrophies,
-      average:
-        totalTrophies === null || trophyValues.length === 0
-          ? null
-          : Math.round(totalTrophies / trophyValues.length),
+      total: statsError === null && stats.trophyCount > 0 ? stats.trophySum : null,
+      average: statsError === null ? stats.trophyAverage : null,
     },
     latestSync,
     recentEvents: events.rows,

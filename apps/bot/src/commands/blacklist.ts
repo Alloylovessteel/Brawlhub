@@ -16,8 +16,8 @@ import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getBotConfig } from '../config';
 import {
   buildPaginationRowWithState,
-  paginate,
   parsePaginationCustomIdWithState,
+  type Page,
 } from '../discord/pagination';
 import {
   buildBlacklistAddConfirmationEmbed,
@@ -168,15 +168,45 @@ async function buildListPage(
   pageNumber: number,
   actorDiscordUserId: string,
 ): Promise<PagePayload> {
-  const view = await listActiveBlacklists(
-    { search: search || null },
+  const safeRequestedPage = Math.max(1, Math.floor(pageNumber));
+  const offset = (safeRequestedPage - 1) * PAGE_SIZE;
+  // The service returns one page from the database, including its exact total.
+  // Do not re-paginate that slice as if it were the whole matching set.
+  let view = await listActiveBlacklists(
+    { search: search || null, page: safeRequestedPage, limit: PAGE_SIZE, offset },
     { actorDiscordUserId },
   );
-  const page = paginate(view.entries, pageNumber, PAGE_SIZE);
+  let total = typeof view.total === 'number' ? view.total : view.entries.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const safePage = Math.min(safeRequestedPage, pageCount);
+  if (safePage !== safeRequestedPage) {
+    // The requested page was past the end. Fetch the clamped page so the
+    // entries and the pagination footer describe the same result set.
+    view = await listActiveBlacklists(
+      {
+        search: search || null,
+        page: safePage,
+        limit: PAGE_SIZE,
+        offset: (safePage - 1) * PAGE_SIZE,
+      },
+      { actorDiscordUserId },
+    );
+    total = typeof view.total === 'number' ? view.total : view.entries.length;
+  }
+  const start = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1;
+  const end = Math.min(safePage * PAGE_SIZE, total);
+  const page: Page<(typeof view.entries)[number]> = {
+    items: view.entries,
+    page: safePage,
+    pageCount,
+    total,
+    start,
+    end,
+  };
   const row = buildPaginationRowWithState(
     COMMAND_NAME,
-    page.page,
-    page.pageCount,
+    safePage,
+    pageCount,
     search,
   );
   return {
@@ -276,7 +306,7 @@ export async function handleBlacklistAutocomplete(interaction: AutocompleteInter
   }
   try {
     const view = await listActiveBlacklists(
-      { search: String(focused.value) },
+      { search: String(focused.value), page: 1, limit: 25, offset: 0 },
       { actorDiscordUserId: interaction.user.id },
     );
     const choices = view.entries.slice(0, 25).map((entry) => ({

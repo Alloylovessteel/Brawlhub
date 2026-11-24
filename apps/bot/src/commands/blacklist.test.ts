@@ -92,7 +92,11 @@ function blacklistEntries(count: number) {
 }
 
 function listView(count: number) {
-  return { entries: blacklistEntries(count), generatedAt: new Date('2026-11-18T01:00:00.000Z') };
+  return {
+    entries: blacklistEntries(count),
+    total: count,
+    generatedAt: new Date('2026-11-18T01:00:00.000Z'),
+  };
 }
 
 function chatInteraction(subcommand: string | null, options: Record<string, string | null> = {}) {
@@ -331,7 +335,7 @@ describe('/blacklist command handlers', () => {
     await handleBlacklist(list);
 
     expect(mocks.service.listActiveBlacklists).toHaveBeenCalledWith(
-      { search: 'abc' },
+      { search: 'abc', page: 1, limit: 5, offset: 0 },
       { actorDiscordUserId: DISCORD_ID },
     );
     expect(mocks.embed.buildBlacklistListEmbed).toHaveBeenCalledWith(
@@ -349,7 +353,7 @@ describe('/blacklist command handlers', () => {
 
     expect(mocks.service.listActiveBlacklists).toHaveBeenCalledTimes(2);
     expect(mocks.service.listActiveBlacklists).toHaveBeenLastCalledWith(
-      { search: 'abc' },
+      { search: 'abc', page: 2, limit: 5, offset: 5 },
       { actorDiscordUserId: DISCORD_ID },
     );
     expect(mocks.embed.buildBlacklistListEmbed).toHaveBeenLastCalledWith(
@@ -358,6 +362,32 @@ describe('/blacklist command handlers', () => {
       mocks.config,
     );
     expect(payload(button, 'editReply').embeds).toEqual([mocks.embeds.list]);
+  });
+
+  it('refetches the clamped page when the requested page is past the end', async () => {
+    const emptyPage = { ...listView(7), entries: [] };
+    mocks.service.listActiveBlacklists
+      .mockResolvedValueOnce(emptyPage)
+      .mockResolvedValueOnce(listView(7));
+    const button = buttonInteraction('blacklist:page:9:abc');
+
+    await handleBlacklistComponent(button);
+
+    expect(mocks.service.listActiveBlacklists).toHaveBeenNthCalledWith(
+      1,
+      { search: 'abc', page: 9, limit: 5, offset: 40 },
+      { actorDiscordUserId: DISCORD_ID },
+    );
+    expect(mocks.service.listActiveBlacklists).toHaveBeenNthCalledWith(
+      2,
+      { search: 'abc', page: 2, limit: 5, offset: 5 },
+      { actorDiscordUserId: DISCORD_ID },
+    );
+    expect(mocks.embed.buildBlacklistListEmbed).toHaveBeenCalledWith(
+      expect.objectContaining({ total: 7 }),
+      expect.objectContaining({ page: 2, pageCount: 2, total: 7 }),
+      mocks.config,
+    );
   });
 
   it('returns at most 25 autocomplete choices and fails closed for unauthorized users', async () => {
@@ -370,7 +400,7 @@ describe('/blacklist command handlers', () => {
     expect(choices).toHaveLength(25);
     expect(choices[0]).toEqual({ name: '#2C0Y — reason 0', value: 'entry-0' });
     expect(mocks.service.listActiveBlacklists).toHaveBeenCalledWith(
-      { search: '' },
+      { search: '', page: 1, limit: 25, offset: 0 },
       { actorDiscordUserId: DISCORD_ID },
     );
 
