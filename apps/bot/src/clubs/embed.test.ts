@@ -4,6 +4,7 @@ import {
   buildClubsPageEmbed,
   buildClubEmbed,
   buildClubMemberDetailsPageEmbed,
+  buildClubLogPageEmbed,
   buildClubMembersPageEmbed,
   buildClubPreviousMembersEmbed,
   buildClubStaffEmbed,
@@ -18,6 +19,7 @@ import type { BotConfig } from '../config';
 import type {
   ClubRecord,
   ClubSummary,
+  ClubLogView,
   ClubMemberDetailView,
   ClubPreviousMembersView,
   ClubView,
@@ -473,7 +475,7 @@ describe('club embeds', () => {
       leaderEntry('G2P9', 'Leader', 1000, 1, { today: 100, week: 200, season: null }),
       leaderEntry('Q8VR', 'Senior', 900, 2, { today: 50, week: null, season: null }),
     ];
-    const view: LeaderboardView = { ...synced(), entries };
+    const view: LeaderboardView = { ...synced(), members: entries, entries };
     const json = buildLeaderboardPageEmbed(view, paginate(entries, 1, 10), CONFIG).toJSON();
 
     expect(plain(json.description)).toContain('Snapshot');
@@ -485,6 +487,30 @@ describe('club embeds', () => {
     expect(plain(json.fields?.[0]?.value)).toContain('Historical Week: +200');
     expect(plain(json.fields?.[0]?.value)).not.toContain('Season');
     expect(plain(json.fields?.[1]?.value)).not.toContain('Week');
+  });
+
+  it('labels members shown as 0 when no baseline is stored', () => {
+    const rows: ClubLogView['rows'] = [
+      { rank: 1, member: detail('A', 'Alpha', 1_000), change: 0 },
+      { rank: 2, member: detail('B', 'Beta', 900), change: -5 },
+    ];
+    const json = buildClubLogPageEmbed(
+      {
+        club: CLUB_A,
+        period: 'week',
+        rows,
+        unavailable: 1,
+        latestSnapshotAt: '2026-11-18T06:00:00.000Z',
+        latestSyncAt: '2026-11-18T06:05:00.000Z',
+      },
+      paginate(rows, 1, 10),
+      CONFIG,
+    ).toJSON();
+
+    expect(plain(json.description)).toContain('1 member shown as 0 (no stored baseline)');
+    expect(plain(json.description)).not.toContain('without a stored baseline');
+    expect(plain(json.fields?.[0]?.value)).toContain('Alpha');
+    expect(plain(json.fields?.[0]?.value)).toContain('0');
   });
 
   it('clearly handles history with no stored snapshots', () => {

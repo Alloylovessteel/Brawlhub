@@ -5,7 +5,9 @@ import type {
   ClubLogRow,
   ClubLogView,
   LeaderboardEntry,
+  MemberDetail,
   ResolvedClubResult,
+  TrophyProgression,
 } from '../types';
 
 export const CLUB_LOG_PERIODS = ['today', 'week', 'season'] as const;
@@ -20,28 +22,50 @@ export function isClubLogPeriod(value: string): value is ClubLogPeriod {
   return (CLUB_LOG_PERIODS as readonly string[]).includes(value);
 }
 
-/** Rank members by the selected stored trophy delta, sharing ranks on ties. */
+type ClubLogMember = MemberDetail & {
+  readonly progression?: TrophyProgression | null;
+};
+
+function memberDetailOf(member: ClubLogMember): MemberDetail {
+  return {
+    tag: member.tag,
+    name: member.name,
+    trophies: member.trophies,
+    role: member.role,
+    playerId: member.playerId,
+    highestTrophies: member.highestTrophies,
+  };
+}
+
+/**
+ * Rank every roster member by the selected stored trophy delta, sharing ranks
+ * on ties. A missing baseline is shown as 0 so daily, weekly and season logs
+ * always contain the whole roster rather than only calculable changes.
+ */
 export function rankClubLogChanges(
-  entries: readonly LeaderboardEntry[],
+  members: readonly ClubLogMember[],
   period: ClubLogPeriod,
 ): ClubLogRow[] {
-  const eligible = entries
-    .map((entry) => {
-      const change = entry.progression?.[period] ?? null;
-      return change === null ? null : { member: entry, change };
-    })
-    .filter((row): row is { member: LeaderboardEntry; change: number } => row !== null)
-    .sort((a, b) => b.change - a.change || a.member.name.localeCompare(b.member.name));
+  const rows = members.map((member) => ({
+    member: memberDetailOf(member),
+    change: member.progression?.[period] ?? 0,
+  }));
+
+  rows.sort(
+    (a, b) =>
+      b.change - a.change ||
+      a.member.name.localeCompare(b.member.name) ||
+      a.member.tag.localeCompare(b.member.tag),
+  );
 
   let currentRank = 0;
   let previousChange: number | null = null;
-  return eligible.map((entry, index) => {
-    if (previousChange === null || entry.change !== previousChange) {
+  return rows.map((row, index) => {
+    if (previousChange === null || row.change !== previousChange) {
       currentRank = index + 1;
-      previousChange = entry.change;
+      previousChange = row.change;
     }
-    const { progression: _progression, rank: _rank, ...member } = entry.member;
-    return { rank: currentRank, member, change: entry.change };
+    return { rank: currentRank, ...row };
   });
 }
 
@@ -51,11 +75,30 @@ export function toClubLogView(
   period: ClubLogPeriod,
 ): ClubLogView {
   const value = leaderboard.value;
+  const progressions = new Map<string, TrophyProgression | null>();
+  for (const entry of value.entries) {
+    if (entry.playerId !== null) progressions.set(`player:${entry.playerId}`, entry.progression);
+    progressions.set(`tag:${entry.tag}`, entry.progression);
+  }
+
+  const members: ClubLogMember[] = value.members.map((member) => ({
+    ...member,
+    progression:
+      (member.playerId === null
+        ? undefined
+        : progressions.get(`player:${member.playerId}`)) ??
+      progressions.get(`tag:${member.tag}`) ??
+      null,
+  }));
+
   return {
     club: value.club,
     period,
-    rows: rankClubLogChanges(value.entries, period),
-    unavailable: value.entries.filter((entry) => entry.progression?.[period] === null).length,
+    rows: rankClubLogChanges(members, period),
+    unavailable: members.filter((member) => {
+      const change = member.progression?.[period];
+      return change === null || change === undefined;
+    }).length,
     latestSnapshotAt: value.latestSnapshot?.capturedAt ?? null,
     latestSyncAt: value.latestSyncAt,
   };

@@ -1042,7 +1042,7 @@ export function buildClubLogPageEmbed(
   if (syncAt !== null) meta.push(`${mdBold('Synced')} ${syncAt}`);
   if (view.unavailable > 0) {
     meta.push(
-      `${view.unavailable} member${view.unavailable === 1 ? '' : 's'} without a stored baseline for this period`,
+      `${view.unavailable} member${view.unavailable === 1 ? '' : 's'} shown as 0 (no stored baseline)`,
     );
   }
   embed.setDescription(truncate(meta.join(' • '), 2048));

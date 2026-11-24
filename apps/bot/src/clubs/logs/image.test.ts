@@ -139,6 +139,27 @@ describe('buildClubLogDigestImage', () => {
     const metadata = await sharp(image).metadata();
     expect(metadata.format).toBe('png');
   });
+
+  it('renders a full 30-member digest with zero changes', async () => {
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      rank: index + 1,
+      member: {
+        tag: `PLAYER${index + 1}`,
+        name: `Player ${index + 1}`,
+        trophies: 50_000 - index,
+        role: 'member',
+        playerId: `player-${index + 1}`,
+        highestTrophies: null,
+      },
+      change: 0,
+    }));
+
+    const image = await buildClubLogDigestImage(view({ rows, unavailable: 30 }), 'Daily');
+    const metadata = await sharp(image).metadata();
+
+    expect(metadata.format).toBe('png');
+    expect(metadata.height).toBeGreaterThan(1_400);
+  });
 });
 
 describe('buildClubLogEventImage', () => {

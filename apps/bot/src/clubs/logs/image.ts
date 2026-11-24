@@ -200,7 +200,7 @@ export async function buildClubLogPageImage(
   ${stat(894, 'Synced', formatDate(view.latestSyncAt), '#7de2a0')}
   <rect x="42" y="250" width="1116" height="${height - 300}" rx="30" fill="url(#panel)" stroke="#ffffff" stroke-opacity="0.12"/>
   <text x="60" y="${rowsTop - 18}" font-size="15" font-weight="700" letter-spacing="1.7" fill="#aaa5d6">TROPHY PROGRESSION • ${escapeXml(periodLabel.toUpperCase())}</text>
-  <text x="1116" y="${rowsTop - 18}" text-anchor="end" font-size="13" fill="#8e88bd">${view.unavailable} WITHOUT BASELINE</text>
+  <text x="1116" y="${rowsTop - 18}" text-anchor="end" font-size="13" fill="#8e88bd">${view.unavailable} SHOWN AS 0</text>
   ${rowsMarkup}
   <text x="60" y="${changesTitleY}" font-size="15" font-weight="700" letter-spacing="1.7" fill="#aaa5d6">RECENT STORED CHANGES</text>
   <text x="1116" y="${changesTitleY}" text-anchor="end" font-size="13" fill="#8e88bd">${changes.length} SHOWN</text>
@@ -244,9 +244,9 @@ export async function buildClubLogDigestImage(
   ${stat(894, 'Synced', formatDate(view.latestSyncAt), '#7de2a0')}
   <rect x="42" y="250" width="1116" height="${height - 300}" rx="30" fill="url(#panel)" stroke="#ffffff" stroke-opacity="0.12"/>
   <text x="60" y="${rowsTop - 18}" font-size="15" font-weight="700" letter-spacing="1.7" fill="#aaa5d6">TROPHY PROGRESSION • ${escapeXml(periodLabel.toUpperCase())}</text>
-  <text x="1116" y="${rowsTop - 18}" text-anchor="end" font-size="13" fill="#8e88bd">${view.unavailable} WITHOUT BASELINE</text>
+  <text x="1116" y="${rowsTop - 18}" text-anchor="end" font-size="13" fill="#8e88bd">${view.unavailable} SHOWN AS 0</text>
   ${rowsMarkup}
-  <text x="42" y="${footerY}" font-size="13" fill="#8e88bd">Completed window • official Brawl Stars sync history • stored, not live • missing baselines are never shown as +0</text>
+  <text x="42" y="${footerY}" font-size="13" fill="#8e88bd">Completed window • official Brawl Stars sync history • stored, not live • missing baselines are shown as 0</text>
   <text x="1158" y="${footerY}" text-anchor="end" font-size="13" fill="#8e88bd">Made for ${clubName}</text>
 </svg>`;
 

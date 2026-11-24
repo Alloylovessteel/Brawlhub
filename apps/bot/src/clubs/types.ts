@@ -196,7 +196,7 @@ export interface MemberView extends SyncedClubView {
   readonly members: readonly MemberDetail[];
 }
 
-export interface LeaderboardView extends SyncedClubView {
+export interface LeaderboardView extends MemberView {
   readonly entries: readonly LeaderboardEntry[];
 }
 
@@ -212,6 +212,7 @@ export interface ClubLogView {
   readonly club: ClubRecord;
   readonly period: ClubLogPeriod;
   readonly rows: readonly ClubLogRow[];
+  /** Members shown as 0 because no baseline was stored for the selected period. */
   readonly unavailable: number;
   readonly latestSnapshotAt: string | null;
   readonly latestSyncAt: string | null;
