@@ -48,6 +48,12 @@ vi.mock('@brawlhub/database', () => {
       return this;
     }
 
+    update(payload: unknown): this {
+      this.operation = 'update';
+      this.payload = payload;
+      return this;
+    }
+
     delete(): this {
       this.operation = 'delete';
       return this;
@@ -156,6 +162,7 @@ vi.mock('../../admin/service', () => {
 
 import {
   addClubLog,
+  advanceClubLogDigestClaim,
   claimClubLogDigestWindows,
   loadClubLogs,
   loadUndeliveredClubLogEvents,
@@ -169,7 +176,7 @@ import {
 
 interface Call {
   readonly table: string;
-  readonly operation: 'select' | 'insert' | 'upsert' | 'delete';
+  readonly operation: 'select' | 'insert' | 'upsert' | 'update' | 'delete';
   readonly payload: unknown;
   readonly options: unknown;
   readonly filters: Record<string, unknown>;
@@ -830,6 +837,7 @@ describe('digest post ledger', () => {
     const rows = insert?.payload as Array<Record<string, unknown>>;
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => String(row['message_id']).startsWith('claim:'))).toBe(true);
+    expect(rows.every((row) => String(row['message_id']).includes(':reserved:'))).toBe(true);
     expect(rows.every((row) => row['guild_id'] === GUILD_ID)).toBe(true);
   });
 
@@ -887,7 +895,7 @@ describe('digest post ledger', () => {
           log_id: LOG_ID,
           period: 'today',
           period_key: '2026-11-21',
-          message_id: `claim:claim-1:${LOG_ID}:today:2026-11-21`,
+          message_id: `claim:claim-1:sending:${LOG_ID}:today:2026-11-21`,
         },
       ],
     }));
@@ -920,42 +928,86 @@ describe('digest post ledger', () => {
     ]);
   });
 
-  it('deletes only stale plain claims and leaves delivered sentinels intact', async () => {
+  it('reclaims only stale pre-send claims and leaves sending and legacy claims intact', async () => {
     setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
     setHandler('clubs:select', () => ({ data: [clubRow()] }));
     setHandler('guild_club_log_periods:select', () => ({ data: [] }));
-    setHandler('guild_club_log_digest_posts:delete', () => ({ data: [] }));
+    const blockedKeys = new Set([
+      `${LOG_ID}:week:2026-11-16`,
+      `${LOG_ID}:season:2026-11-30`,
+    ]);
     setHandler('guild_club_log_digest_posts:upsert', (call) => ({
-      data: (call.payload as Array<Record<string, unknown>>).map((row) => ({ ...row })),
+      data: (call.payload as Array<Record<string, unknown>>)
+        .filter((row) => !blockedKeys.has(`${String(row['log_id'])}:${String(row['period'])}:${String(row['period_key'])}`))
+        .map((row) => ({ ...row })),
+    }));
+    setHandler('guild_club_log_digest_posts:update', (call) => ({
+      data: [call.payload as Record<string, unknown>],
     }));
     setHandler('guild_club_log_digest_posts:select', (call) => ({
       data:
         call.likeValue?.value === 'claim:%'
           ? [
               {
-                message_id: `claim:old:${LOG_ID}:today:2026-11-21`,
+                log_id: LOG_ID,
+                period: 'today',
+                period_key: '2026-11-21',
+                message_id: `claim:old:reserved:${LOG_ID}:today:2026-11-21`,
                 created_at: '2026-11-21T23:00:00.000Z',
               },
               {
-                message_id: 'claim-delivered:old:2026-11-21:discord-789',
+                log_id: LOG_ID,
+                period: 'week',
+                period_key: '2026-11-16',
+                message_id: `claim:live:sending:${LOG_ID}:week:2026-11-16`,
+                created_at: '2026-11-21T23:00:00.000Z',
+              },
+              {
+                log_id: LOG_ID,
+                period: 'season',
+                period_key: '2026-11-30',
+                message_id: `claim:legacy:${LOG_ID}:season:2026-11-30`,
                 created_at: '2026-11-21T23:00:00.000Z',
               },
             ]
           : [],
     }));
 
-    await claimClubLogDigestWindows(
+    const result = await claimClubLogDigestWindows(
       GUILD_ID,
-      [{ logId: LOG_ID, period: 'today', periodKey: '2026-11-21', channelId: CHANNEL_ID }],
+      [
+        { logId: LOG_ID, period: 'today', periodKey: '2026-11-21', channelId: CHANNEL_ID },
+        { logId: LOG_ID, period: 'week', periodKey: '2026-11-16', channelId: CHANNEL_ID },
+        { logId: LOG_ID, period: 'season', periodKey: '2026-11-30', channelId: CHANNEL_ID },
+      ],
       { now: new Date('2026-11-22T00:10:00.000Z') },
     );
 
-    const deleted = callsFor('guild_club_log_digest_posts', 'delete')[0];
-    expect(deleted?.filters['guild_id']).toBe(GUILD_ID);
-    expect(deleted?.inValues).toEqual({
-      column: 'message_id',
-      values: [`claim:old:${LOG_ID}:today:2026-11-21`],
-    });
+    expect([...result.keys]).toEqual([`${LOG_ID}:today:2026-11-21`]);
+    const updates = callsFor('guild_club_log_digest_posts', 'update');
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.filters['message_id']).toBe(`claim:old:reserved:${LOG_ID}:today:2026-11-21`);
+    expect(callsFor('guild_club_log_digest_posts', 'delete')).toHaveLength(0);
+  });
+
+  it('advances only the exact pre-send stage of an owned claim', async () => {
+    setHandler('guild_club_log_digest_posts:update', (call) => ({
+      data: [call.payload as Record<string, unknown>],
+    }));
+    const key = `${LOG_ID}:today:2026-11-21`;
+
+    await expect(
+      advanceClubLogDigestClaim(GUILD_ID, 'claim-1', key, 'reserved', 'loading'),
+    ).resolves.toBe(true);
+    await expect(
+      advanceClubLogDigestClaim(GUILD_ID, 'claim-1', key, 'loading', 'sending'),
+    ).resolves.toBe(true);
+
+    const updates = callsFor('guild_club_log_digest_posts', 'update');
+    expect(updates.map((call) => call.filters['message_id'])).toEqual([
+      `claim:claim-1:reserved:${key}`,
+      `claim:claim-1:loading:${key}`,
+    ]);
   });
 
   it('returns only keys this caller actually inserted', async () => {
@@ -977,7 +1029,7 @@ describe('digest post ledger', () => {
     expect([...result.keys]).toEqual([`${LOG_ID}:today:2026-11-21`]);
   });
 
-  it('releases only the exact sentinels owned by this claim', async () => {
+  it('releases only pre-send sentinels and never a sending claim', async () => {
     setHandler('guild_club_log_digest_posts:delete', () => ({ data: [] }));
     const firstKey = `${LOG_ID}:today:2026-11-21`;
     const secondKey = `${LOG_ID}:week:2026-11-16`;
@@ -988,7 +1040,12 @@ describe('digest post ledger', () => {
     expect(released?.filters['guild_id']).toBe(GUILD_ID);
     expect(released?.inValues).toEqual({
       column: 'message_id',
-      values: [`claim:claim-1:${firstKey}`, `claim:claim-1:${secondKey}`],
+      values: [
+        `claim:claim-1:reserved:${firstKey}`,
+        `claim:claim-1:loading:${firstKey}`,
+        `claim:claim-1:reserved:${secondKey}`,
+        `claim:claim-1:loading:${secondKey}`,
+      ],
     });
   });
 });

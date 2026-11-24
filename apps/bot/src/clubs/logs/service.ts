@@ -33,13 +33,13 @@ const CLUB_CAPACITY = 30;
 const EVENT_KINDS: readonly ClubLogEventKind[] = ['membership', 'role', 'capacity'];
 /**
  * Pending digests are claimed with an invisible sentinel in the same ledger row.
- * Claims older than this are reclaimed so a crashed process cannot block a
- * window forever; a live render/post normally finishes in seconds.
+ * Only pre-send stages can be reclaimed after this timeout. A `sending` claim
+ * may already have reached Discord, so it must never be released automatically.
  */
 const DIGEST_CLAIM_PREFIX = 'claim:';
 /** A posted-but-unrecorded digest carries its Discord message ID so retry can edit it. */
 const DIGEST_DELIVERED_PREFIX = 'claim-delivered:';
-const DIGEST_CLAIM_TTL_MS = 10 * 60_000;
+const DIGEST_CLAIM_STALE_MS = 10 * 60_000;
 const INTEGER_FORMATTER = new Intl.NumberFormat('en-US');
 
 export interface ClubLogServiceOptions {
@@ -821,6 +821,9 @@ export interface ClubLogDigestClaimInput {
   readonly channelId: string;
 }
 
+export type ClubLogDigestClaimStage = 'reserved' | 'loading' | 'sending';
+type ClubLogDigestPreSendStage = Exclude<ClubLogDigestClaimStage, 'sending'>;
+
 export interface ClubLogDigestClaimResult {
   /** Identifies this process's sentinels so failed posts can release only their own claims. */
   readonly claimId: string;
@@ -829,16 +832,43 @@ export interface ClubLogDigestClaimResult {
 }
 
 export interface ClubLogDigestClaimOptions extends ClubLogServiceOptions {
-  /** Clock used to reclaim abandoned claims in tests and scheduling code. */
+  /** Clock used to reclaim abandoned pre-send claims in tests and scheduling code. */
   readonly now?: Date;
+}
+
+interface ParsedClubLogDigestClaim {
+  readonly claimId: string;
+  readonly stage: ClubLogDigestClaimStage | 'legacy';
 }
 
 function digestKey(logId: string, period: ClubLogPeriod, periodKey: string): string {
   return `${logId}:${period}:${periodKey}`;
 }
 
-function digestClaimMessageId(claimId: string, key: string): string {
-  return `${DIGEST_CLAIM_PREFIX}${claimId}:${key}`;
+function digestClaimMessageId(
+  claimId: string,
+  key: string,
+  stage: ClubLogDigestClaimStage = 'reserved',
+): string {
+  return `${DIGEST_CLAIM_PREFIX}${claimId}:${stage}:${key}`;
+}
+
+function parseDigestClaim(messageId: string | null, key?: string): ParsedClubLogDigestClaim | null {
+  if (messageId === null || !messageId.startsWith(DIGEST_CLAIM_PREFIX)) return null;
+  const parts = messageId.slice(DIGEST_CLAIM_PREFIX.length).split(':');
+  const claimId = parts[0];
+  if (claimId === undefined || claimId === '') return null;
+  const stage = parts[1];
+  if (stage === 'reserved' || stage === 'loading' || stage === 'sending') {
+    const parsedKey = parts.slice(2).join(':');
+    if (key !== undefined && parsedKey !== key) return null;
+    return { claimId, stage };
+  }
+  // Older claims carried no stage. They may have reached Discord, so they are
+  // uncertain and cannot be reclaimed.
+  const legacyKey = parts.slice(1).join(':');
+  if (key !== undefined && legacyKey !== key) return null;
+  return { claimId, stage: 'legacy' };
 }
 
 function digestDeliveredMessageId(
@@ -847,10 +877,6 @@ function digestDeliveredMessageId(
   messageId: string,
 ): string {
   return `${DIGEST_DELIVERED_PREFIX}${claimId}:${periodKey}:${messageId}`;
-}
-
-function isDigestClaimMessageId(messageId: string | null): boolean {
-  return messageId !== null && messageId.startsWith(DIGEST_CLAIM_PREFIX);
 }
 
 function isDigestSentinel(messageId: string | null): boolean {
@@ -929,34 +955,59 @@ async function reconcileDeliveredDigestClaims(
   requireOk(saved.error, 'Recover club log digest post');
 }
 
-/** Delete only stale plain claims; never remove a delivered sentinel. */
-async function releaseStaleDigestClaims(
+/**
+ * Take over only abandoned pre-send claims. `sending` and unstaged legacy
+ * claims may already have reached Discord, so they stay untouched forever.
+ */
+async function recoverStaleDigestClaims(
   guildId: string,
+  wantedKeys: ReadonlySet<string>,
+  claimId: string,
   db: DatabaseClient,
-  staleBefore: string,
-): Promise<void> {
+  staleBeforeMs: number,
+): Promise<Set<string>> {
+  if (wantedKeys.size === 0) return new Set();
   const result = await db
     .from('guild_club_log_digest_posts')
-    .select('message_id, created_at')
+    .select('log_id, period, period_key, message_id, created_at')
     .eq('guild_id', guildId)
     .like('message_id', `${DIGEST_CLAIM_PREFIX}%`);
   requireOk(result.error, 'Read stale club log digest claims');
-  const staleBeforeMs = Date.parse(staleBefore);
-  const staleIds = (result.data ?? []).flatMap((item) => {
+
+  const recovered = new Set<string>();
+  for (const item of result.data ?? []) {
     const row = record(item);
+    const logId = eventId(row?.['log_id']);
+    const period = asString(row?.['period']);
+    const periodKey = asString(row?.['period_key']);
     const messageId = asString(row?.['message_id']);
     const createdAt = asString(row?.['created_at']);
-    if (messageId === null || !isDigestClaimMessageId(messageId) || createdAt === null) return [];
+    if (
+      logId === null || period === null || !isClubLogPeriod(period) || periodKey === null ||
+      messageId === null || createdAt === null
+    ) {
+      continue;
+    }
+    const key = digestKey(logId, period, periodKey);
+    if (!wantedKeys.has(key)) continue;
+    const claim = parseDigestClaim(messageId, key);
+    if (claim === null || (claim.stage !== 'reserved' && claim.stage !== 'loading')) continue;
     const createdMs = Date.parse(createdAt);
-    return !Number.isNaN(createdMs) && createdMs < staleBeforeMs ? [messageId] : [];
-  });
-  if (staleIds.length === 0) return;
-  const deleted = await db
-    .from('guild_club_log_digest_posts')
-    .delete()
-    .eq('guild_id', guildId)
-    .in('message_id', staleIds);
-  requireOk(deleted.error, 'Reclaim stale club log digest claims');
+    if (Number.isNaN(createdMs) || createdMs >= staleBeforeMs) continue;
+
+    const takeoverId = digestClaimMessageId(claimId, key, 'reserved');
+    const updated = await db
+      .from('guild_club_log_digest_posts')
+      .update({ message_id: takeoverId })
+      .eq('guild_id', guildId)
+      .eq('message_id', messageId)
+      .select('message_id');
+    requireOk(updated.error, 'Recover club log digest claim');
+    if ((updated.data ?? []).some((candidate) => asString(record(candidate)?.['message_id']) === takeoverId)) {
+      recovered.add(key);
+    }
+  }
+  return recovered;
 }
 
 /**
@@ -975,11 +1026,11 @@ export async function claimClubLogDigestWindows(
 
   const now = options.now;
   const nowMs = now instanceof Date && Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
-  const staleBefore = new Date(nowMs - DIGEST_CLAIM_TTL_MS).toISOString();
+  const staleBeforeMs = nowMs - DIGEST_CLAIM_STALE_MS;
+  const claimId = randomUUID();
   // Reconciliation must precede claiming: a recovered row then blocks a fresh
   // claim by duplicate key, so a live message is never posted twice.
   await reconcileDeliveredDigestClaims(parsedGuildId, db);
-  await releaseStaleDigestClaims(parsedGuildId, db, staleBefore);
 
   const allowedLogIds = new Set((await loadClubLogRows(parsedGuildId, { db })).map((log) => log.id));
   const unique = new Map<string, ClubLogDigestClaimInput>();
@@ -989,15 +1040,25 @@ export async function claimClubLogDigestWindows(
   }
   if (unique.size === 0) return { claimId: '', keys: new Set() };
 
-  const claimId = randomUUID();
-  const rows = [...unique].map(([key, window]) => ({
-    guild_id: parsedGuildId,
-    log_id: window.logId,
-    period: window.period,
-    period_key: window.periodKey,
-    channel_id: window.channelId,
-    message_id: digestClaimMessageId(claimId, key),
-  }));
+  const recovered = await recoverStaleDigestClaims(
+    parsedGuildId,
+    new Set(unique.keys()),
+    claimId,
+    db,
+    staleBeforeMs,
+  );
+  const rows = [...unique]
+    .filter(([key]) => !recovered.has(key))
+    .map(([key, window]) => ({
+      guild_id: parsedGuildId,
+      log_id: window.logId,
+      period: window.period,
+      period_key: window.periodKey,
+      channel_id: window.channelId,
+      message_id: digestClaimMessageId(claimId, key, 'reserved'),
+    }));
+  if (rows.length === 0) return { claimId, keys: recovered };
+
   const inserted = await db
     .from('guild_club_log_digest_posts')
     .upsert(rows, {
@@ -1007,7 +1068,6 @@ export async function claimClubLogDigestWindows(
     .select('log_id, period, period_key, message_id');
   requireOk(inserted.error, 'Claim club log digest windows');
 
-  const keys = new Set<string>();
   for (const item of inserted.data ?? []) {
     const row = record(item);
     const logId = eventId(row?.['log_id']);
@@ -1017,13 +1077,40 @@ export async function claimClubLogDigestWindows(
       continue;
     }
     const key = digestKey(logId, period, periodKey);
-    if (asString(row?.['message_id']) !== digestClaimMessageId(claimId, key)) continue;
-    keys.add(key);
+    if (asString(row?.['message_id']) !== digestClaimMessageId(claimId, key, 'reserved')) continue;
+    recovered.add(key);
   }
-  return { claimId, keys };
+  return { claimId, keys: recovered };
 }
 
-/** Release only this caller's sentinels after a failed post, leaving real posts untouched. */
+/** Advance one owned claim before rendering or before calling Discord. */
+export async function advanceClubLogDigestClaim(
+  guildId: string,
+  claimId: string,
+  key: string,
+  from: ClubLogDigestPreSendStage,
+  to: Exclude<ClubLogDigestClaimStage, 'reserved'>,
+  options: ClubLogServiceOptions = {},
+): Promise<boolean> {
+  const parsedGuildId = requireGuildId(guildId);
+  if (claimId === '') return false;
+  const db = dbFor(options);
+  const currentId = digestClaimMessageId(claimId, key, from);
+  const nextId = digestClaimMessageId(claimId, key, to);
+  const updated = await db
+    .from('guild_club_log_digest_posts')
+    .update({ message_id: nextId })
+    .eq('guild_id', parsedGuildId)
+    .eq('message_id', currentId)
+    .select('message_id');
+  requireOk(updated.error, 'Advance club log digest claim');
+  return (updated.data ?? []).some((item) => asString(record(item)?.['message_id']) === nextId);
+}
+
+/**
+ * Release only pre-send claims. A `sending` claim may already be live on
+ * Discord, so it is never removed automatically.
+ */
 export async function releaseClubLogDigestClaims(
   guildId: string,
   claimId: string,
@@ -1033,7 +1120,10 @@ export async function releaseClubLogDigestClaims(
   const parsedGuildId = requireGuildId(guildId);
   if (claimId === '' || keys.length === 0) return;
   const db = dbFor(options);
-  const messageIds = [...new Set(keys)].map((key) => digestClaimMessageId(claimId, key));
+  const messageIds = [...new Set(keys)].flatMap((key) => [
+    digestClaimMessageId(claimId, key, 'reserved'),
+    digestClaimMessageId(claimId, key, 'loading'),
+  ]);
   const released = await db
     .from('guild_club_log_digest_posts')
     .delete()
@@ -1135,8 +1225,9 @@ export async function markClubLogDigestClaimDelivered(
 
   const rows = posts.flatMap((post) => {
     const key = digestKey(post.logId, post.period, post.periodKey);
-    // Never overwrite a row that another writer already completed.
-    if (byKey.get(key) !== digestClaimMessageId(claimId, key)) return [];
+    // Never overwrite a row that another writer already completed. Only a
+    // `sending` claim can safely be converted into a delivered sentinel.
+    if (byKey.get(key) !== digestClaimMessageId(claimId, key, 'sending')) return [];
     return [{
       guild_id: parsedGuildId,
       log_id: post.logId,

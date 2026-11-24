@@ -7,6 +7,7 @@ import { dueClubLogDigests, type ClubLogDigestBoundary } from './digest';
 import { buildClubLogDigestImage, buildClubLogEventImage } from './image';
 import { loadClubLogView } from './page-view';
 import {
+  advanceClubLogDigestClaim,
   claimClubLogDigestWindows,
   loadClubLogs,
   loadUndeliveredClubLogEvents,
@@ -197,7 +198,22 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
       const failedKeys: string[] = [];
       for (const [key, { log, boundary }] of pending) {
         if (!claim.keys.has(key)) continue;
+        const details = {
+          guildId,
+          logId: log.id,
+          period: boundary.period,
+          periodKey: boundary.periodKey,
+          channelId: log.channelId,
+        };
+        let reachedSending = false;
         try {
+          // Stage every step before the Discord call: only a pre-send failure
+          // may release its claim for another poll to retry.
+          if (!(await advanceClubLogDigestClaim(guildId, claim.claimId, key, 'reserved', 'loading'))) {
+            failedKeys.push(key);
+            logger.warn('Club trophy digest claim is no longer reserved; window stays retryable', details);
+            continue;
+          }
           const page = await loadClubLogView({
             guildId,
             tag: log.clubTag,
@@ -212,6 +228,12 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
           });
           if (page.kind !== 'ok') throw new Error('Club lookup failed');
           const image = await buildClubLogDigestImage(page.value, DIGEST_LABELS[boundary.period]);
+          if (!(await advanceClubLogDigestClaim(guildId, claim.claimId, key, 'loading', 'sending'))) {
+            failedKeys.push(key);
+            logger.warn('Club trophy digest claim could not reach sending; window stays retryable', details);
+            continue;
+          }
+          reachedSending = true;
           const name = filename(log.clubTag, `${boundary.period}-${boundary.periodKey}`);
           const response = (await rest.post(Routes.channelMessages(log.channelId), {
             body: {
@@ -233,13 +255,18 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
             messageId,
           });
         } catch (error) {
+          if (reachedSending) {
+            // Discord may have accepted the message, so the claim is kept for
+            // manual reconciliation instead of being released for a repost.
+            logger.warn('Club trophy digest outcome is uncertain; manual reconciliation may be needed', {
+              ...details,
+              error: safeError(error, token),
+            });
+            continue;
+          }
           failedKeys.push(key);
           logger.warn('Club trophy digest post failed; claim is released for retry', {
-            guildId,
-            logId: log.id,
-            period: boundary.period,
-            periodKey: boundary.periodKey,
-            channelId: log.channelId,
+            ...details,
             error: safeError(error, token),
           });
         }

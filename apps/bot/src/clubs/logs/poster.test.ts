@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     loadClubLogs: vi.fn(),
     readPostedClubLogDigests: vi.fn(),
     claimClubLogDigestWindows: vi.fn(),
+    advanceClubLogDigestClaim: vi.fn(),
     releaseClubLogDigestClaims: vi.fn(),
     markClubLogDigestClaimDelivered: vi.fn(),
     markClubLogDigestPosted: vi.fn(),
@@ -151,6 +152,8 @@ beforeEach(() => {
     claimId: 'claim-1',
     keys: new Set([`${LOG_ID}:today:2026-11-21`]),
   });
+  mocks.service.advanceClubLogDigestClaim.mockReset();
+  mocks.service.advanceClubLogDigestClaim.mockResolvedValue(true);
   mocks.service.releaseClubLogDigestClaims.mockReset();
   mocks.service.releaseClubLogDigestClaims.mockResolvedValue(undefined);
   mocks.service.markClubLogDigestClaimDelivered.mockReset();
@@ -303,6 +306,10 @@ describe('runClubLogDigests', () => {
       asOf: new Date('2026-11-21T23:59:59.999Z'),
     });
     expect(mocks.image.buildClubLogDigestImage).toHaveBeenCalledWith(view(), 'Daily');
+    expect(mocks.service.advanceClubLogDigestClaim.mock.calls).toEqual([
+      [GUILD_ID, 'claim-1', `${LOG_ID}:today:2026-11-21`, 'reserved', 'loading'],
+      [GUILD_ID, 'claim-1', `${LOG_ID}:today:2026-11-21`, 'loading', 'sending'],
+    ]);
     expect(mocks.post).toHaveBeenCalledOnce();
     const [route, request] = mocks.post.mock.calls[0] as [string, Record<string, unknown>];
     expect(route).toBe(`channels/${CHANNEL_ID}/messages`);
@@ -370,15 +377,42 @@ describe('runClubLogDigests', () => {
     ]);
   });
 
-  it('releases the claim when a post fails so the window stays retryable', async () => {
-    mocks.post.mockRejectedValue(new Error('rate limited'));
+  it('keeps a sending claim when a post fails instead of risking a duplicate message', async () => {
+    mocks.post.mockRejectedValue(new Error(`rate limited with ${TOKEN}`));
 
     await runClubLogDigests(NOV_22);
 
+    expect(mocks.service.releaseClubLogDigestClaims).not.toHaveBeenCalled();
+    expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).toHaveBeenCalledOnce();
+    const warning = mocks.logger.warn.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(JSON.stringify(warning)).not.toContain(TOKEN);
+    expect(warning['periodKey']).toBe('2026-11-21');
+  });
+
+  it('releases the claim when rendering fails before Discord is called', async () => {
+    mocks.pageView.loadClubLogView.mockResolvedValue({ kind: 'unregistered', tag: 'ALPHA' });
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.post).not.toHaveBeenCalled();
     expect(mocks.service.releaseClubLogDigestClaims).toHaveBeenCalledWith(GUILD_ID, 'claim-1', [
       `${LOG_ID}:today:2026-11-21`,
     ]);
     expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
+  });
+
+  it('does not post when the claim cannot advance to sending', async () => {
+    mocks.service.advanceClubLogDigestClaim
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(mocks.service.releaseClubLogDigestClaims).toHaveBeenCalledWith(GUILD_ID, 'claim-1', [
+      `${LOG_ID}:today:2026-11-21`,
+    ]);
     expect(mocks.logger.warn).toHaveBeenCalledOnce();
   });
 
