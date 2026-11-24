@@ -17,6 +17,7 @@ type Tables = Record<string, Row[]>;
 type RpcResponse = { readonly data: unknown; readonly error: { message: string } | null };
 
 const NOW = new Date('2026-11-18T12:00:00.000Z');
+const AFTER_START = new Date('2026-11-20T00:00:00.000Z');
 const COMPETITION_ID = '11111111-1111-4111-8111-111111111111';
 const PLAYER_ID = '22222222-2222-4222-8222-222222222222';
 const STAFF_PROFILE = '33333333-3333-4333-8333-333333333333';
@@ -195,6 +196,31 @@ function rpcCode(code: string): RpcResponse {
   return { data: { ok: false, code }, error: null };
 }
 
+function comesAfter(candidate: Row, existing: Row): boolean {
+  const candidateAt = String(candidate['submitted_at'] ?? '');
+  const existingAt = String(existing['submitted_at'] ?? '');
+  if (candidateAt !== existingAt) return candidateAt > existingAt;
+  return String(candidate['id'] ?? '') > String(existing['id'] ?? '');
+}
+
+/** Mirrors push_competition_standings: accepted rows, then rn = 1 by entry. */
+function simulatedStandings(rows: readonly Row[]): RpcResponse {
+  const latestByEntry = new Map<string, Row>();
+  for (const row of rows) {
+    if (row['accepted'] !== true) continue;
+    const entryId = row['entry_id'];
+    if (typeof entryId !== 'string') continue;
+    const existing = latestByEntry.get(entryId);
+    if (existing === undefined || comesAfter(row, existing)) latestByEntry.set(entryId, row);
+  }
+  const data = [...latestByEntry.values()].sort((left, right) => {
+    if (comesAfter(left, right)) return -1;
+    if (comesAfter(right, left)) return 1;
+    return 0;
+  });
+  return { data, error: null };
+}
+
 function createRpcHandler() {
   return vi.fn((name: string, _args: Row): RpcResponse => {
     if (name === 'push_create_competition') return rpcOk({ id: COMPETITION_ID });
@@ -213,6 +239,10 @@ function createRpcHandler() {
         trophies: 5_000,
         verificationStatus: 'unverified',
       });
+    }
+    // Table-valued RPCs are overridden in the tests that exercise them.
+    if (name === 'push_competition_entry_counts' || name === 'push_competition_standings') {
+      return { data: [], error: null };
     }
     return rpcOk({ id: COMPETITION_ID, endedAt: '2026-11-21T00:00:00.000Z' });
   });
@@ -455,7 +485,7 @@ describe('competition service', () => {
       ),
       'not_verified',
     );
-    expect(rpcHandler).not.toHaveBeenCalled();
+    expect(rpcHandler.mock.calls.map(([name]) => name)).not.toContain('push_submit_result');
   });
 
   it('ends a competition once and reports repeated end attempts', async () => {
@@ -475,18 +505,28 @@ describe('competition service', () => {
     );
   });
 
-  it('lists competitions with uncapped entry counts', async () => {
+  it('lists competitions with server-side counts scoped to parsed competition ids', async () => {
     tables['competition_entries'] = [entryRow(), entryRow({ id: 'entry-2' })];
-    const competitions = await listCompetitions({ db });
+    const countsRpc = vi.fn((name: string, _args: Row): RpcResponse => {
+      if (name === 'push_competition_entry_counts') {
+        return { data: [{ competition_id: COMPETITION_ID, count: 2 }], error: null };
+      }
+      return rpcOk({});
+    });
+    const countedDb: any = createFakeDb(tables, countsRpc);
+
+    const competitions = await listCompetitions({ db: countedDb });
+
     expect(competitions).toHaveLength(1);
     expect(competitions[0]?.entryCount).toBe(2);
+    expect(countsRpc).toHaveBeenCalledWith('push_competition_entry_counts', {
+      p_competition_ids: [COMPETITION_ID],
+    });
     expect(
-      db.queries.filter(
+      countedDb.queries.filter(
         (query: { table: string; limit: number | null }) => query.table === 'competition_entries',
       ),
-    ).toEqual([
-      { table: 'competition_entries', limit: null },
-    ]);
+    ).toEqual([]);
   });
 
   it('keeps global competitions visible while hiding other guilds’ club competitions', async () => {
@@ -503,6 +543,9 @@ describe('competition service', () => {
 
     const competitions = await listCompetitions({ db, guildId: 'guild-1' });
     expect(competitions.map((competition) => competition.name)).toEqual(['Midseason Climb']);
+    expect(rpcHandler).toHaveBeenCalledWith('push_competition_entry_counts', {
+      p_competition_ids: [COMPETITION_ID],
+    });
     await expect(
       loadCompetitionRecord('77777777-7777-4777-8777-777777777777', { db, guildId: 'guild-1' }),
     ).resolves.toBeNull();
@@ -512,7 +555,7 @@ describe('competition service', () => {
     });
   });
 
-  it('uses the latest accepted submission, handles negative gains and missing baselines', async () => {
+  it('uses the latest accepted submission from paged standings and ignores rejected rows', async () => {
     tables['competition_entries'] = [
       entryRow(),
       entryRow({
@@ -526,11 +569,13 @@ describe('competition service', () => {
     ];
     tables['competition_submissions'] = [
       submissionRow({ id: 'old', trophies: 4_200, submitted_at: '2026-11-20T10:00:00.000Z' }),
+      submissionRow({ id: 'aaa-tie', trophies: 4_700, submitted_at: '2026-11-20T11:00:00.000Z' }),
       submissionRow({ id: 'new', trophies: 4_800, submitted_at: '2026-11-20T11:00:00.000Z' }),
       submissionRow({
         id: 'rejected',
         trophies: 9_999,
-        submitted_at: '2026-11-20T12:00:00.000Z',
+        // Newest row in the burst must never displace the accepted result.
+        submitted_at: '2026-11-20T23:00:00.000Z',
         accepted: false,
       }),
       submissionRow({
@@ -540,25 +585,78 @@ describe('competition service', () => {
         submitted_at: '2026-11-20T09:00:00.000Z',
       }),
     ];
+    rpcHandler.mockImplementation((name: string, args: Row): RpcResponse => {
+      if (name === 'push_competition_standings') {
+        expect(args['p_competition_id']).toBe(COMPETITION_ID);
+        expect(args['p_limit']).toBe(1000);
+        return simulatedStandings(tables['competition_submissions'] ?? []);
+      }
+      return rpcOk({});
+    });
 
     const view = await loadCompetitionLeaderboard(COMPETITION_ID, { db, now: NOW });
 
+    expect(rpcHandler).toHaveBeenCalledWith(
+      'push_competition_standings',
+      expect.objectContaining({ p_competition_id: COMPETITION_ID, p_limit: 1000 }),
+    );
     expect(view.rows).toHaveLength(2);
     expect(view.rows[0]?.entry.player.name).toBe('Alpha');
     expect(view.rows[0]?.trophies).toBe(4_800);
+    expect(view.rows[0]?.latestSubmissionAt).toBe('2026-11-20T11:00:00.000Z');
     expect(view.rows[0]?.gain).toBe(800);
     expect(view.rows[0]?.rank).toBe(1);
     expect(view.rows[1]?.entry.player.name).toBe('Bravo');
     expect(view.rows[1]?.gain).toBeNull();
     expect(view.rows[1]?.rank).toBeNull();
+    expect(db.queries.filter((query: { table: string }) => query.table === 'competition_submissions')).toEqual([]);
     expect(
-      db.queries
-        .filter(
-          (query: { table: string; limit: number | null }) =>
-            query.table === 'competition_entries' || query.table === 'competition_submissions',
-        )
-        .map((query: { table: string; limit: number | null }) => query.limit),
-    ).toEqual([null, null, null]);
+      db.queries.filter((query: { table: string }) => query.table === 'competition_entries'),
+    ).toHaveLength(1);
+  });
+
+  it('finalizes baselines on a standings read once the competition has started', async () => {
+    const view = await loadCompetitionLeaderboard(COMPETITION_ID, { db, now: AFTER_START });
+
+    expect(rpcHandler).toHaveBeenCalledWith('push_finalize_competition_baselines', {
+      p_competition_id: COMPETITION_ID,
+    });
+    expect(view.rows).toEqual([]);
+  });
+
+  it('finalizes baselines before recording the first submission at or after start', async () => {
+    await submitCompetitionResult(
+      {
+        discordUserId: '111111111111111111',
+        competitionId: COMPETITION_ID,
+        playerId: PLAYER_ID,
+        trophies: 5_000,
+      },
+      { db, now: AFTER_START },
+    );
+
+    const names = rpcHandler.mock.calls.map(([name]) => name);
+    expect(names.indexOf('push_finalize_competition_baselines')).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf('push_finalize_competition_baselines')).toBeLessThan(
+      names.indexOf('push_submit_result'),
+    );
+  });
+
+  it('does not finalize baselines before the competition starts', async () => {
+    await loadCompetitionLeaderboard(COMPETITION_ID, { db, now: NOW });
+    await submitCompetitionResult(
+      {
+        discordUserId: '111111111111111111',
+        competitionId: COMPETITION_ID,
+        playerId: PLAYER_ID,
+        trophies: 5_000,
+      },
+      { db, now: NOW },
+    );
+
+    expect(rpcHandler.mock.calls.map(([name]) => name)).not.toContain(
+      'push_finalize_competition_baselines',
+    );
   });
 
   it('handles an empty competition without inventing rows', async () => {

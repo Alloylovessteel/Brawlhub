@@ -47,11 +47,10 @@ const ENTRY_COLUMNS = [
     'id, tag, name, trophies, highest_trophies, exp_level, last_synced_at)',
 ].join(', ');
 
-const SUBMISSION_COLUMNS = [
-  'id', 'competition_id', 'entry_id', 'trophies', 'source', 'verification_status',
-  'accepted', 'submitted_by_profile_id', 'submitted_at', 'verified_snapshot_id',
-  'verified_by_profile_id',
-].join(', ');
+const STANDINGS_PAGE_SIZE = 1000;
+// Keyset pages always move strictly backwards, so this only guards against a
+// misbehaving RPC returning an endless stream of rows.
+const MAX_STANDINGS_PAGES = 20;
 
 const ROLES: readonly Role[] = ['owner', 'admin', 'staff', 'member'];
 
@@ -276,6 +275,25 @@ async function runRpc(
   return record(data) ?? {};
 }
 
+/** Read a table-valued RPC (PostgREST returns an array of rows). */
+async function readRpcRows(
+  db: DatabaseClient,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown[]> {
+  const { data, error } = await db.rpc(name, args);
+  requireOk(error, name);
+  return Array.isArray(data) ? data : [];
+}
+
+function asCount(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+  return 0;
+}
+
 function expectOk(result: RpcResult): void {
   if (result['ok'] !== true) {
     const code = asString(result['code']) ?? 'unknown';
@@ -401,12 +419,32 @@ export async function hasVerifiedPlayerLink(
 }
 
 async function readEntryCount(db: DatabaseClient, competitionId: string): Promise<number> {
-  const { data, error } = await db
-    .from('competition_entries')
-    .select('id')
-    .eq('competition_id', competitionId);
-  requireOk(error, 'Read competition entries');
-  return (data ?? []).length;
+  // A table read would be capped by PostgREST; the SQL aggregate is exact.
+  const rows = await readRpcRows(db, 'push_competition_entry_counts', {
+    p_competition_ids: [competitionId],
+  });
+  for (const value of rows) {
+    const row = record(value);
+    if (asString(row?.['competition_id']) === competitionId) return asCount(row?.['count']);
+  }
+  return 0;
+}
+
+/**
+ * Ask the database to recompute join-time baselines once the competition has
+ * started. The RPC is idempotent and refuses to run after the first accepted
+ * submission, so ignoring its result is safe on later reads.
+ */
+async function finalizeBaselinesIfStarted(
+  competition: CompetitionRecord,
+  db: DatabaseClient,
+  now: Date,
+): Promise<void> {
+  const startsAt = Date.parse(competition.startsAt);
+  if (Number.isNaN(startsAt) || now.getTime() < startsAt) return;
+  await runRpc(db, 'push_finalize_competition_baselines', {
+    p_competition_id: competition.id,
+  });
 }
 
 /** Load one competition with its club restriction and entry count. */
@@ -468,10 +506,7 @@ export async function listCompetitions(
         .is('club_id', null))(),
   );
 
-  const [competitionResults, entriesResult] = await Promise.all([
-    Promise.all(competitionQueries),
-    db.from('competition_entries').select('competition_id'),
-  ]);
+  const competitionResults = await Promise.all(competitionQueries);
   const competitionRows: unknown[] = [];
   for (const result of competitionResults) {
     requireOk(result.error, 'Read competitions');
@@ -479,19 +514,28 @@ export async function listCompetitions(
       competitionRows.push(value);
     }
   }
-  requireOk(entriesResult.error, 'Read competition entries');
 
+  const parsed = competitionRows
+    .map((value: unknown) => parseCompetitionRow(value, 0))
+    .filter((competition): competition is CompetitionRecord => competition !== null);
+  const competitionIds = [...new Set(parsed.map((competition) => competition.id))];
+
+  // Counts are aggregated in SQL for exactly the guild-scoped ids returned
+  // above; a single unscoped REST response would be truncated at 1000 rows.
   const counts = new Map<string, number>();
-  for (const value of entriesResult.data ?? []) {
-    const row = record(value);
-    const competitionId = asString(row?.['competition_id']);
-    if (competitionId === null) continue;
-    counts.set(competitionId, (counts.get(competitionId) ?? 0) + 1);
+  if (competitionIds.length > 0) {
+    const countRows = await readRpcRows(db, 'push_competition_entry_counts', {
+      p_competition_ids: competitionIds,
+    });
+    for (const value of countRows) {
+      const row = record(value);
+      const competitionId = asString(row?.['competition_id']);
+      if (competitionId === null) continue;
+      counts.set(competitionId, asCount(row?.['count']));
+    }
   }
 
-  return competitionRows
-    .map((value: unknown) => parseCompetitionRow(value, 0))
-    .filter((competition): competition is CompetitionRecord => competition !== null)
+  return parsed
     .map((competition) => ({
       ...competition,
       entryCount: counts.get(competition.id) ?? 0,
@@ -598,14 +642,15 @@ export async function submitCompetitionResult(
   if (!trophies.ok) failValidation(trophies);
 
   const db = options.db ?? createTrustedClient();
-  if (options.guildId !== undefined && options.guildId !== null && options.guildId.trim() !== '') {
-    const competition = await loadCompetitionRecord(input.competitionId, { ...options, db });
-    if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
-  }
+  // Always load the competition: loadCompetitionRecord also enforces the guild
+  // restriction, and its start time decides whether baselines need finalizing.
+  const competition = await loadCompetitionRecord(input.competitionId, { ...options, db });
+  if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
   const actor = await resolveCompetitionActor(input.discordUserId, { ...options, db });
   if (!(await hasVerifiedPlayerLink(actor.profileId, input.playerId, { ...options, db }))) {
     throw new CompetitionServiceError('not_verified', errorMessage('not_verified'));
   }
+  await finalizeBaselinesIfStarted(competition, db, options.now ?? new Date());
 
   const result = await runRpc(
     db,
@@ -669,28 +714,46 @@ export async function loadCompetitionLeaderboard(
   const db = options.db ?? createTrustedClient();
   const competition = await loadCompetitionRecord(competitionId, options);
   if (competition === null) throw new CompetitionServiceError('not_found', errorMessage('not_found'));
+  await finalizeBaselinesIfStarted(competition, db, options.now ?? new Date());
 
-  const [entriesResult, submissionsResult] = await Promise.all([
-    db
-      .from('competition_entries')
-      .select(ENTRY_COLUMNS)
-      .eq('competition_id', competitionId)
-      .order('joined_at', { ascending: true }),
-    db
-      .from('competition_submissions')
-      .select(SUBMISSION_COLUMNS)
-      .eq('competition_id', competitionId)
-      .order('submitted_at', { ascending: false }),
-  ]);
+  const entriesResult = await db
+    .from('competition_entries')
+    .select(ENTRY_COLUMNS)
+    .eq('competition_id', competitionId)
+    .order('joined_at', { ascending: true });
   requireOk(entriesResult.error, 'Read competition entries');
-  requireOk(submissionsResult.error, 'Read competition submissions');
+
+  // The RPC ranks accepted submissions per entry in SQL before keyset paging,
+  // so a burst of newer rows cannot crowd out another entrant's only result.
+  const submissions: CompetitionSubmission[] = [];
+  let cursor: { submittedAt: string; id: string } | null = null;
+  const seenCursors = new Set<string>();
+  for (let page = 0; page < MAX_STANDINGS_PAGES; page += 1) {
+    const rows = await readRpcRows(db, 'push_competition_standings', {
+      p_competition_id: competitionId,
+      p_limit: STANDINGS_PAGE_SIZE,
+      ...(cursor === null
+        ? {}
+        : { p_after_submitted_at: cursor.submittedAt, p_after_id: cursor.id }),
+    });
+    for (const value of rows) {
+      const submission = parseSubmissionRow(value);
+      if (submission !== null) submissions.push(submission);
+    }
+    if (rows.length < STANDINGS_PAGE_SIZE) break;
+    const lastRow = record(rows[rows.length - 1]);
+    const submittedAt = asString(lastRow?.['submitted_at']);
+    const lastId = asString(lastRow?.['id']);
+    if (submittedAt === null || lastId === null) break;
+    const cursorKey = `${submittedAt}\u0000${lastId}`;
+    if (seenCursors.has(cursorKey)) break;
+    seenCursors.add(cursorKey);
+    cursor = { submittedAt, id: lastId };
+  }
 
   const entries = (entriesResult.data ?? [])
     .map((value: unknown) => parseEntryRow(value))
     .filter((entry): entry is CompetitionEntry => entry !== null);
-  const submissions = (submissionsResult.data ?? [])
-    .map((value: unknown) => parseSubmissionRow(value))
-    .filter((submission): submission is CompetitionSubmission => submission !== null);
   const latest = latestAcceptedSubmissions(submissions);
 
   const unranked: Omit<CompetitionLeaderboardRow, 'rank'>[] = entries.map((entry) => {
