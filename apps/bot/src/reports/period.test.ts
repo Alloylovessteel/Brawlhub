@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { currentReportPeriod, latestCompletedReportPeriod, reportChannelFor } from './period';
+import {
+  currentReportPeriod,
+  latestCompletedReportPeriod,
+  previousCompletedReportPeriod,
+  reportChannelFor,
+} from './period';
 
 describe('currentReportPeriod', () => {
   it('describes the previous UTC day for daily reports', () => {
@@ -106,6 +111,29 @@ describe('latestCompletedReportPeriod', () => {
     expect(latestCompletedReportPeriod(new Date('2026-01-03T12:00:00Z'), 'monthly').periodKey).toBe(
       '2025-12',
     );
+  });
+});
+
+describe('previousCompletedReportPeriod', () => {
+  it('steps back one completed day', () => {
+    const period = latestCompletedReportPeriod(new Date('2026-11-20T17:00:00Z'), 'daily');
+    expect(previousCompletedReportPeriod(period).periodKey).toBe('2026-11-18');
+  });
+
+  it('steps back one completed ISO week across a year boundary', () => {
+    const period = latestCompletedReportPeriod(new Date('2026-01-01T12:00:00Z'), 'weekly');
+    expect(period.periodKey).toBe('2025-W52');
+    expect(previousCompletedReportPeriod(period)).toEqual({
+      type: 'weekly',
+      periodKey: '2025-W51',
+      start: new Date('2025-12-15T00:00:00.000Z'),
+      end: new Date('2025-12-22T00:00:00.000Z'),
+    });
+  });
+
+  it('steps back one completed month', () => {
+    const period = latestCompletedReportPeriod(new Date('2026-11-20T17:00:00Z'), 'monthly');
+    expect(previousCompletedReportPeriod(period).periodKey).toBe('2026-09');
   });
 });
 

@@ -1,38 +1,56 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Routes, type REST } from 'discord.js';
 
+type Operation = 'select' | 'insert' | 'upsert' | 'delete' | 'update' | 'rpc';
+
+interface LedgerRow {
+  guild_id: string;
+  report_type: string;
+  period_key: string;
+  channel_id: string;
+  message_id: string;
+}
+
 interface Call {
   table: string;
-  operation: 'select' | 'insert' | 'upsert' | 'delete';
+  operation: Operation;
   payload: any;
   options: any;
   filters: Record<string, unknown>;
-  inValues: { column: string; values: unknown[] } | null;
-  range: { gte: string | null; lt: string | null };
   orValue: string | null;
-  orderBy: { column: string; options: unknown } | null;
-  limit: number | null;
   mode: 'array' | 'maybeSingle';
 }
 
-type Handler = (call: Call) => { data?: unknown; error?: unknown } | Promise<{ data?: unknown; error?: unknown }>;
+type RpcHandler = (args: Record<string, unknown>) => {
+  data?: unknown;
+  error?: unknown;
+};
+type SelectHandler = (call: Call) => { data?: unknown; error?: unknown };
 
 const fake = vi.hoisted(() => ({
-  handlers: {} as Record<string, Handler | undefined>,
   calls: [] as Call[],
+  ledger: [] as LedgerRow[],
+  rpcHandlers: {} as Record<string, RpcHandler | undefined>,
+  selectHandlers: {} as Record<string, SelectHandler | undefined>,
+  upsertFailures: 0,
+  upsertErrorMessage: 'ledger down',
 }));
+
+function matches(row: LedgerRow, filters: Record<string, unknown>): boolean {
+  return Object.entries(filters).every(([column, value]) => row[column as keyof LedgerRow] === value);
+}
+
+function ledgerKey(row: Pick<LedgerRow, 'guild_id' | 'report_type' | 'period_key'>): string {
+  return `${row.guild_id}:${row.report_type}:${row.period_key}`;
+}
 
 vi.mock('@brawlhub/database', () => {
   class FakeQuery {
-    private operation: Call['operation'] = 'select';
+    private operation: Operation = 'select';
     private payload: unknown = undefined;
     private options: unknown = undefined;
     private filters: Record<string, unknown> = {};
-    private inValues: Call['inValues'] = null;
-    private range: Call['range'] = { gte: null, lt: null };
     private orValue: string | null = null;
-    private orderBy: Call['orderBy'] = null;
-    private limitValue: number | null = null;
     private mode: Call['mode'] = 'array';
 
     constructor(private readonly table: string) {}
@@ -55,6 +73,12 @@ vi.mock('@brawlhub/database', () => {
       return this;
     }
 
+    update(payload: unknown): this {
+      this.operation = 'update';
+      this.payload = payload;
+      return this;
+    }
+
     delete(): this {
       this.operation = 'delete';
       return this;
@@ -70,35 +94,8 @@ vi.mock('@brawlhub/database', () => {
       return this;
     }
 
-    in(column: string, values: unknown[]): this {
-      this.inValues = { column, values };
-      return this;
-    }
-
-    gte(column: string, value: string): this {
-      expect(column).toBe('detected_at');
-      this.range.gte = value;
-      return this;
-    }
-
-    lt(column: string, value: string): this {
-      expect(column).toBe('detected_at');
-      this.range.lt = value;
-      return this;
-    }
-
     or(value: string): this {
       this.orValue = value;
-      return this;
-    }
-
-    order(column: string, options?: unknown): this {
-      this.orderBy = { column, options };
-      return this;
-    }
-
-    limit(value: number): this {
-      this.limitValue = value;
       return this;
     }
 
@@ -118,128 +115,186 @@ vi.mock('@brawlhub/database', () => {
         payload: this.payload,
         options: this.options,
         filters: { ...this.filters },
-        inValues: this.inValues,
-        range: { ...this.range },
         orValue: this.orValue,
-        orderBy: this.orderBy,
-        limit: this.limitValue,
         mode: this.mode,
       };
       fake.calls.push(call);
-      const handler = fake.handlers[`${this.table}:${this.operation}`] ?? fake.handlers[this.table];
-      const result = handler === undefined ? {} : await handler(call);
-      return {
-        data: result.data === undefined ? (this.mode === 'maybeSingle' ? null : []) : result.data,
-        error: result.error === undefined ? null : result.error,
-      };
+
+      if (this.table === 'guild_report_posts') {
+        return this.executeLedger(call);
+      }
+      if (this.operation === 'select') {
+        const result = fake.selectHandlers[this.table]?.(call) ?? {};
+        return {
+          data: result.data === undefined ? (this.mode === 'maybeSingle' ? null : []) : result.data,
+          error: result.error === undefined ? null : result.error,
+        };
+      }
+      return { data: [], error: null };
+    }
+
+    async executeLedger(call: Call): Promise<{ data: unknown; error: unknown }> {
+      if (call.operation === 'select') {
+        const rows = fake.ledger.filter((row) => matches(row, call.filters));
+        return { data: call.mode === 'maybeSingle' ? (rows[0] ?? null) : rows, error: null };
+      }
+
+      if (call.operation === 'upsert') {
+        const payload = call.payload as LedgerRow;
+        const options = (call.options ?? {}) as Record<string, unknown>;
+        const index = fake.ledger.findIndex((row) => ledgerKey(row) === ledgerKey(payload));
+        if (options['ignoreDuplicates'] === true) {
+          if (index !== -1) return { data: [], error: null };
+          fake.ledger.push({ ...payload });
+          return { data: [{ ...payload }], error: null };
+        }
+        if (fake.upsertFailures > 0) {
+          fake.upsertFailures -= 1;
+          return { data: null, error: { message: fake.upsertErrorMessage } };
+        }
+        if (index === -1) fake.ledger.push({ ...payload });
+        else fake.ledger[index] = { ...payload };
+        return { data: [{ ...payload }], error: null };
+      }
+
+      if (call.operation === 'update') {
+        const updates = call.payload as Partial<LedgerRow>;
+        const updated: LedgerRow[] = [];
+        fake.ledger = fake.ledger.map((row) => {
+          if (!matches(row, call.filters)) return row;
+          const next = { ...row, ...updates };
+          updated.push(next);
+          return next;
+        });
+        return { data: updated, error: null };
+      }
+
+      if (call.operation === 'delete') {
+        fake.ledger = fake.ledger.filter((row) => !matches(row, call.filters));
+        return { data: [], error: null };
+      }
+      return { data: [], error: null };
     }
   }
 
-  return { createTrustedClient: () => ({ from: (table: string) => new FakeQuery(table) }) };
+  return {
+    createTrustedClient: () => ({
+      from: (table: string) => new FakeQuery(table),
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        const call: Call = {
+          table: name,
+          operation: 'rpc',
+          payload: args,
+          options: undefined,
+          filters: {},
+          orValue: null,
+          mode: 'array',
+        };
+        fake.calls.push(call);
+        const result = fake.rpcHandlers[name]?.(args) ?? {};
+        return {
+          data: result.data === undefined ? [] : result.data,
+          error: result.error === undefined ? null : result.error,
+        };
+      },
+    }),
+  };
 });
 
-import { loadReportData, postScheduledReport, readMissingReportDeliveries } from './service';
-import { currentReportPeriod } from './period';
+import {
+  loadReportData,
+  postScheduledReport,
+  readMissingReportDeliveries,
+} from './service';
+import {
+  currentReportPeriod,
+  latestCompletedReportPeriod,
+  previousCompletedReportPeriod,
+  type ReportType,
+} from './period';
 
 const GUILD_ID = '111111111111111111';
 const OTHER_GUILD_ID = '999999999999999999';
 const CLUB_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CLUB_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CLUB_OTHER_GUILD = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-const CLUB_ARCHIVED = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const CHANNEL_ID = '222222222222222222';
 const TOKEN = 'test-token-abcdef';
 
 const PERIOD = currentReportPeriod(new Date('2026-11-20T00:00:05Z'), 'daily');
 
-const CLUB_ROWS: Record<string, unknown>[] = [
-  { id: CLUB_A, tag: 'AAAA', name: 'Alpha', guild_id: GUILD_ID, archived_at: null },
-  { id: CLUB_B, tag: 'BBBB', name: 'Beta', guild_id: GUILD_ID, archived_at: null },
-  { id: CLUB_OTHER_GUILD, tag: 'CCCC', name: 'Other Guild', guild_id: OTHER_GUILD_ID, archived_at: null },
-  { id: CLUB_ARCHIVED, tag: 'DDDD', name: 'Archived', guild_id: GUILD_ID, archived_at: '2026-10-01T00:00:00Z' },
+const ACTIVITY_ROWS = [
+  {
+    club_id: CLUB_A,
+    joins: 1,
+    leaves: 0,
+    transfers: 1,
+    role_changes: 2,
+    capacity_opens: 1,
+    capacity_closes: 0,
+  },
+  {
+    club_id: CLUB_B,
+    joins: 0,
+    leaves: 1,
+    transfers: 1,
+    role_changes: 1,
+    capacity_opens: 0,
+    capacity_closes: 1,
+  },
+  // Guild totals are counted once even for transfers between two local clubs.
+  {
+    club_id: null,
+    joins: 1,
+    leaves: 1,
+    transfers: 1,
+    role_changes: 3,
+    capacity_opens: 1,
+    capacity_closes: 1,
+  },
 ];
 
-const MEMBERSHIP_ROWS: Record<string, unknown>[] = [
-  { id: 'e1', event_type: 'join', from_club_id: null, to_club_id: CLUB_A, detected_at: '2026-11-19T12:00:00Z' },
-  { id: 'e2', event_type: 'leave', from_club_id: CLUB_B, to_club_id: null, detected_at: '2026-11-19T13:00:00Z' },
-  { id: 'e3', event_type: 'transfer', from_club_id: CLUB_B, to_club_id: CLUB_A, detected_at: '2026-11-19T14:00:00Z' },
-  { id: 'e4', event_type: 'join', from_club_id: null, to_club_id: CLUB_OTHER_GUILD, detected_at: '2026-11-19T15:00:00Z' },
-  { id: 'e5', event_type: 'join', from_club_id: null, to_club_id: CLUB_A, detected_at: '2026-11-18T23:59:59Z' },
-];
-
-const ROLE_ROWS: Record<string, unknown>[] = [
-  { club_id: CLUB_A, detected_at: '2026-11-19T08:00:00Z' },
-  { club_id: CLUB_A, detected_at: '2026-11-19T09:00:00Z' },
-  { club_id: CLUB_B, detected_at: '2026-11-19T10:00:00Z' },
-  { club_id: CLUB_OTHER_GUILD, detected_at: '2026-11-19T11:00:00Z' },
-  { club_id: CLUB_A, detected_at: '2026-11-18T23:00:00Z' },
-];
-
-const CAPACITY_ROWS: Record<string, unknown>[] = [
-  { club_id: CLUB_A, is_full: false, detected_at: '2026-11-19T08:30:00Z' },
-  { club_id: CLUB_B, is_full: true, detected_at: '2026-11-19T09:30:00Z' },
-  { club_id: CLUB_OTHER_GUILD, is_full: false, detected_at: '2026-11-19T10:30:00Z' },
-  { club_id: CLUB_A, is_full: false, detected_at: '2026-11-18T23:30:00Z' },
-];
-
-function setHandler(key: string, handler: Handler): void {
-  fake.handlers[key] = handler;
+function ledgerRow(overrides: Partial<LedgerRow> = {}): LedgerRow {
+  return {
+    guild_id: GUILD_ID,
+    report_type: PERIOD.type,
+    period_key: PERIOD.periodKey,
+    channel_id: CHANNEL_ID,
+    message_id: '123456789',
+    ...overrides,
+  };
 }
 
-function inWindow(call: Call, value: unknown): boolean {
-  const timestamp = Date.parse(String(value));
-  const start = call.range.gte === null ? Number.NEGATIVE_INFINITY : Date.parse(call.range.gte);
-  const end = call.range.lt === null ? Number.POSITIVE_INFINITY : Date.parse(call.range.lt);
-  return timestamp >= start && timestamp < end;
+function setLedger(rows: readonly LedgerRow[]): void {
+  fake.ledger = rows.map((row) => ({ ...row }));
 }
 
-function installHistoryHandlers(): void {
-  setHandler('clubs:select', (call) => ({
-    data: CLUB_ROWS.filter(
-      (row) =>
-        row['guild_id'] === call.filters['guild_id'] &&
-        (call.filters['archived_at'] === null ? row['archived_at'] === null : true),
-    ),
+function setRpc(name: string, handler: RpcHandler): void {
+  fake.rpcHandlers[name] = handler;
+}
+
+function installAggregationHandlers(): void {
+  setRpc('push_report_clubs', (args) => ({
+    data: [
+      { id: CLUB_A, tag: 'AAAA', name: 'Alpha' },
+      { id: CLUB_B, tag: 'BBBB', name: 'Beta' },
+    ].filter((club) => args['p_guild_id'] === GUILD_ID || club.id === CLUB_OTHER_GUILD),
   }));
-
-  setHandler('membership_events:select', (call) => {
-    const column = call.inValues?.column;
-    const allowed = new Set((call.inValues?.values ?? []).map(String));
-    return {
-      data: MEMBERSHIP_ROWS.filter((row) => {
-        const clubId = column === 'to_club_id' ? row['to_club_id'] : row['from_club_id'];
-        return typeof clubId === 'string' && allowed.has(clubId) && inWindow(call, row['detected_at']);
-      }),
-    };
-  });
-
-  setHandler('club_role_changes:select', (call) => {
-    const allowed = new Set((call.inValues?.values ?? []).map(String));
-    return {
-      data: ROLE_ROWS.filter(
-        (row) => allowed.has(String(row['club_id'])) && inWindow(call, row['detected_at']),
-      ),
-    };
-  });
-
-  setHandler('club_capacity_events:select', (call) => {
-    const allowed = new Set((call.inValues?.values ?? []).map(String));
-    return {
-      data: CAPACITY_ROWS.filter(
-        (row) => allowed.has(String(row['club_id'])) && inWindow(call, row['detected_at']),
-      ),
-    };
-  });
+  setRpc('push_report_activity', () => ({ data: ACTIVITY_ROWS }));
 }
 
 beforeEach(() => {
-  fake.handlers = {};
   fake.calls = [];
-  installHistoryHandlers();
+  fake.ledger = [];
+  fake.rpcHandlers = {};
+  fake.selectHandlers = {};
+  fake.upsertFailures = 0;
+  fake.upsertErrorMessage = 'ledger down';
+  installAggregationHandlers();
 });
 
 describe('loadReportData', () => {
-  it('counts stored events once for the guild even when both transfer clubs are local', async () => {
+  it('uses scoped SQL aggregates so cross-club transfers count once for the guild', async () => {
     const data = await loadReportData(GUILD_ID, PERIOD);
 
     expect(data.period).toBe(PERIOD);
@@ -277,27 +332,37 @@ describe('loadReportData', () => {
       capacityCloses: 1,
     });
 
-    const clubCall = fake.calls.find((call) => call.table === 'clubs');
-    expect(clubCall?.filters).toMatchObject({ guild_id: GUILD_ID, archived_at: null });
-    expect(clubCall?.orderBy?.column).toBe('name');
-    expect(clubCall?.limit).toBe(25);
+    const rpcCalls = fake.calls.filter((call) => call.operation === 'rpc');
+    expect(rpcCalls.map((call) => call.table)).toEqual([
+      'push_report_clubs',
+      'push_report_activity',
+    ]);
+    expect(rpcCalls[0]?.payload).toEqual({ p_guild_id: GUILD_ID });
+    expect(rpcCalls[1]?.payload).toEqual({
+      p_guild_id: GUILD_ID,
+      p_start: PERIOD.start.toISOString(),
+      p_end: PERIOD.end.toISOString(),
+    });
+    expect(fake.calls.some((call) => call.operation === 'select')).toBe(false);
+  });
 
-    for (const call of fake.calls.filter(
-      (entry) =>
-        entry.table === 'membership_events' ||
-        entry.table === 'club_role_changes' ||
-        entry.table === 'club_capacity_events',
-    )) {
-      expect(call.inValues?.values).toEqual([CLUB_A, CLUB_B]);
-      expect(call.range).toEqual({
-        gte: PERIOD.start.toISOString(),
-        lt: PERIOD.end.toISOString(),
-      });
-    }
+  it('does not impose a 25-club limit on report summaries', async () => {
+    const clubs = Array.from({ length: 30 }, (_, index) => ({
+      id: `club-${index}`,
+      tag: `C${index}`,
+      name: `Club ${index}`,
+    }));
+    setRpc('push_report_clubs', () => ({ data: clubs }));
+
+    const data = await loadReportData(GUILD_ID, PERIOD);
+
+    expect(data.clubSummaries).toHaveLength(30);
+    expect(data.totals.clubs).toBe(30);
   });
 
   it('returns zeroed totals for a guild with no active clubs', async () => {
-    setHandler('clubs:select', () => ({ data: [] }));
+    setRpc('push_report_clubs', () => ({ data: [] }));
+    setRpc('push_report_activity', () => ({ data: [] }));
 
     const data = await loadReportData(GUILD_ID, PERIOD);
     expect(data.clubSummaries).toEqual([]);
@@ -321,128 +386,75 @@ describe('postScheduledReport', () => {
     return { patch, post } as unknown as REST;
   }
 
-  /** Simulate an atomic reserve: null existing means this caller wins. */
-  function installReservation(
-    existingMessageId: string | null,
-    finalUpsert: Handler = () => ({ data: null }),
-  ): void {
-    let insertedClaim: string | null = null;
-    setHandler('guild_report_posts:upsert', (call) => {
-      const options = call.options as Record<string, unknown> | undefined;
-      if (options?.['ignoreDuplicates'] !== true) return finalUpsert(call);
-      const payload = call.payload as Record<string, unknown>;
-      insertedClaim = typeof payload['message_id'] === 'string' ? payload['message_id'] : null;
-      return {
-        data: existingMessageId === null ? [{ message_id: insertedClaim }] : [],
-      };
-    });
-    setHandler('guild_report_posts:select', () => ({
-      data:
-        existingMessageId === null
-          ? insertedClaim === null
-            ? null
-            : { message_id: insertedClaim, channel_id: CHANNEL_ID }
-          : { message_id: existingMessageId, channel_id: CHANNEL_ID },
-    }));
-  }
-
-  it('edits the existing message and records the same message ID', async () => {
-    const upsert = vi.fn(() => ({ data: null }));
-    installReservation('existing-message', upsert);
-    const patch = vi.fn(async () => ({ id: 'existing-message' }));
-    const post = vi.fn(async () => ({ id: 'unused' }));
-
-    const result = await postScheduledReport({
-      rest: fakeRest(patch, post),
+  function callPost(
+    rest: REST,
+    messageId: string | null = null,
+  ): Promise<Awaited<ReturnType<typeof postScheduledReport>>> {
+    void messageId;
+    return postScheduledReport({
+      rest,
       guildId: GUILD_ID,
       period: PERIOD,
       channelId: CHANNEL_ID,
       token: TOKEN,
       guildLabel: 'Test Guild',
     });
+  }
 
-    expect(result).toEqual({ posted: true, messageId: 'existing-message', claimed: false });
-    const reserve = fake.calls.find(
-      (call) =>
-        call.table === 'guild_report_posts' &&
-        call.operation === 'upsert' &&
-        (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] === true,
+  function stagedUpdates(): Call[] {
+    return fake.calls.filter(
+      (call) => call.operation === 'update' && call.table === 'guild_report_posts',
     );
-    expect(reserve?.options).toEqual({
-      onConflict: 'guild_id,report_type,period_key',
-      ignoreDuplicates: true,
-    });
-    expect(patch).toHaveBeenCalledWith(Routes.channelMessage(CHANNEL_ID, 'existing-message'), {
-      body: expect.objectContaining({ embeds: expect.any(Array) }),
-    });
-    expect(post).not.toHaveBeenCalled();
-    expect(upsert).toHaveBeenCalledOnce();
-    const upsertCall = fake.calls.find(
-      (call) =>
-        call.table === 'guild_report_posts' &&
-        call.operation === 'upsert' &&
-        (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
-    );
-    expect(upsertCall?.payload).toMatchObject({
-      guild_id: GUILD_ID,
-      report_type: 'daily',
-      period_key: PERIOD.periodKey,
-      channel_id: CHANNEL_ID,
-      message_id: 'existing-message',
-    });
-    expect(upsertCall?.options).toEqual({ onConflict: 'guild_id,report_type,period_key' });
-  });
+  }
 
-  it('posts a new message and upserts the ledger row when none exists', async () => {
-    const upsert = vi.fn(() => ({ data: null }));
-    installReservation(null, upsert);
+  it('stages a fresh claim through reserved, loading and sending before posting', async () => {
     const patch = vi.fn(async () => ({ id: 'unused' }));
     const post = vi.fn(async () => ({ id: 'new-message' }));
 
-    const result = await postScheduledReport({
-      rest: fakeRest(patch, post),
-      guildId: GUILD_ID,
-      period: PERIOD,
-      channelId: CHANNEL_ID,
-      token: TOKEN,
-      guildLabel: null,
-    });
+    const result = await callPost(fakeRest(patch, post));
 
     expect(result).toEqual({ posted: true, messageId: 'new-message', claimed: true });
     expect(patch).not.toHaveBeenCalled();
     expect(post).toHaveBeenCalledWith(Routes.channelMessages(CHANNEL_ID), {
-      body: expect.objectContaining({ embeds: expect.any(Array) }),
+      body: expect.objectContaining({
+        allowed_mentions: { parse: [] },
+        embeds: expect.any(Array),
+      }),
     });
-    expect(upsert).toHaveBeenCalledOnce();
-    expect(
-      fake.calls.find(
-        (call) =>
-          call.operation === 'upsert' &&
-          (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
-      )?.payload,
-    ).toMatchObject({
-      message_id: 'new-message',
-      channel_id: CHANNEL_ID,
-      guild_id: GUILD_ID,
-      report_type: 'daily',
-      period_key: PERIOD.periodKey,
-    });
+    const stages = stagedUpdates().map((call) =>
+      String((call.payload as Record<string, unknown>)['message_id']).replace(/^claim:[^:]+:/, ''),
+    );
+    expect(stages).toEqual(['loading', 'sending']);
+    expect(fake.ledger).toHaveLength(1);
+    expect(fake.ledger[0]?.message_id).toBe('new-message');
   });
 
-  it('reports an unrecorded post and keeps the recovered ID in the sentinel', async () => {
-    const upsert = vi.fn(() => ({ data: null, error: { message: 'ledger down' } }));
-    installReservation(null, upsert);
+  it('edits an existing message and records the same message ID', async () => {
+    setLedger([ledgerRow({ message_id: 'existing-message' })]);
+    const patch = vi.fn(async () => ({ id: 'existing-message' }));
+    const post = vi.fn(async () => ({ id: 'unused' }));
+
+    const result = await callPost(fakeRest(patch, post));
+
+    expect(result).toEqual({ posted: true, messageId: 'existing-message', claimed: false });
+    expect(patch).toHaveBeenCalledWith(Routes.channelMessage(CHANNEL_ID, 'existing-message'), {
+      body: expect.objectContaining({ embeds: expect.any(Array) }),
+    });
+    expect(post).not.toHaveBeenCalled();
+    expect(fake.ledger[0]?.message_id).toBe('existing-message');
+    expect(
+      fake.calls.some(
+        (call) => call.operation === 'upsert' && call.options?.['ignoreDuplicates'] !== true,
+      ),
+    ).toBe(true);
+  });
+
+  it('leaves a sending claim when the ledger write fails after a new post', async () => {
+    fake.upsertFailures = 2;
     const patch = vi.fn(async () => ({ id: 'unused' }));
     const post = vi.fn(async () => ({ id: 'new-message' }));
 
-    const result = await postScheduledReport({
-      rest: fakeRest(patch, post),
-      guildId: GUILD_ID,
-      period: PERIOD,
-      channelId: CHANNEL_ID,
-      token: TOKEN,
-      guildLabel: null,
-    });
+    const result = await callPost(fakeRest(patch, post));
 
     expect(result).toMatchObject({
       posted: true,
@@ -451,86 +463,47 @@ describe('postScheduledReport', () => {
       claimed: true,
       error: expect.stringContaining('ledger down'),
     });
-    expect(upsert).toHaveBeenCalledTimes(3);
-    const sentinelWrite = fake.calls.filter(
-      (call) => call.table === 'guild_report_posts' && call.operation === 'upsert',
-    ).at(-1);
-    expect((sentinelWrite?.payload as Record<string, unknown>)['message_id']).toMatch(
-      /^claim-delivered:.*:new-message$/,
-    );
+    expect(fake.ledger[0]?.message_id).toMatch(/^claim:[^:]+:sending$/);
+    // No prior Discord ID was persisted, so the outcome cannot be auto-reposted.
+    expect(
+      fake.calls.filter((call) => call.operation === 'upsert').at(-1)?.payload,
+    ).toMatchObject({ message_id: 'new-message' });
   });
 
-  it('keeps the edited message ID when recording an existing report fails', async () => {
-    const upsert = vi.fn(() => ({ data: null, error: { message: 'ledger down' } }));
-    installReservation('existing-message', upsert);
+  it('keeps the edited message ID in a delivered sentinel when recording fails', async () => {
+    setLedger([ledgerRow({ message_id: 'claim-delivered:old-claim:existing-message' })]);
+    fake.upsertFailures = 2;
     const patch = vi.fn(async () => ({ id: 'edited-message' }));
     const post = vi.fn(async () => ({ id: 'unused' }));
 
-    const result = await postScheduledReport({
-      rest: fakeRest(patch, post),
-      guildId: GUILD_ID,
-      period: PERIOD,
-      channelId: CHANNEL_ID,
-      token: TOKEN,
-      guildLabel: null,
-    });
+    const result = await callPost(fakeRest(patch, post));
 
     expect(result).toMatchObject({ posted: true, messageId: 'edited-message', recorded: false });
     expect(post).not.toHaveBeenCalled();
-    const sentinelWrite = fake.calls.filter(
-      (call) => call.table === 'guild_report_posts' && call.operation === 'upsert',
-    ).at(-1);
-    expect((sentinelWrite?.payload as Record<string, unknown>)['message_id']).toMatch(
-      /^claim-delivered:.*:edited-message$/,
-    );
+    expect(fake.ledger[0]?.message_id).toMatch(/^claim-delivered:.*:edited-message$/);
   });
 
   it('posts a replacement when the stored message is unknown', async () => {
-    const upsert = vi.fn(() => ({ data: null }));
-    installReservation('deleted-message', upsert);
+    setLedger([ledgerRow({ message_id: 'deleted-message' })]);
     const patch = vi.fn(async () => {
       throw { code: 10008, message: 'Unknown Message' };
     });
     const post = vi.fn(async () => ({ id: 'replacement-message' }));
 
-    const result = await postScheduledReport({
-      rest: fakeRest(patch, post),
-      guildId: GUILD_ID,
-      period: PERIOD,
-      channelId: CHANNEL_ID,
-      token: TOKEN,
-      guildLabel: null,
-    });
+    const result = await callPost(fakeRest(patch, post));
 
     expect(result).toEqual({ posted: true, messageId: 'replacement-message', claimed: false });
-    expect(upsert).toHaveBeenCalledOnce();
-    expect(
-      fake.calls.find(
-        (call) =>
-          call.operation === 'upsert' &&
-          (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
-      )?.payload,
-    ).toMatchObject({
-      message_id: 'replacement-message',
-      channel_id: CHANNEL_ID,
-    });
+    expect(fake.ledger[0]?.message_id).toBe('replacement-message');
   });
 
   it('redacts the Discord token from errors', async () => {
-    installReservation('existing-message');
+    setLedger([ledgerRow({ message_id: 'existing-message' })]);
     const patch = vi.fn(async () => {
       throw new Error(`request failed for ${TOKEN}`);
     });
     const post = vi.fn(async () => ({ id: 'unused' }));
 
-    const result = await postScheduledReport({
-      rest: fakeRest(patch, post),
-      guildId: GUILD_ID,
-      period: PERIOD,
-      channelId: CHANNEL_ID,
-      token: TOKEN,
-      guildLabel: null,
-    });
+    const result = await callPost(fakeRest(patch, post));
 
     expect(result.posted).toBe(false);
     expect(result.error).not.toContain(TOKEN);
@@ -557,60 +530,59 @@ describe('postScheduledReport', () => {
     expect(fake.calls).toHaveLength(0);
   });
 
-  it('skips a period already claimed by another worker', async () => {
-    installReservation('claim:other-worker');
+  it('recovers a known pre-send claim instead of skipping the period', async () => {
+    setLedger([ledgerRow({ message_id: 'claim:old-claim:reserved' })]);
+    const patch = vi.fn(async () => ({ id: 'unused' }));
+    const post = vi.fn(async () => ({ id: 'recovered-message' }));
+
+    const result = await callPost(fakeRest(patch, post));
+
+    expect(result).toEqual({ posted: true, messageId: 'recovered-message', claimed: true });
+    const recoverCalls = stagedUpdates();
+    expect(String((recoverCalls[0]?.payload as Record<string, unknown>)['message_id'])).toMatch(
+      /^claim:[^:]+:reserved$/,
+    );
+    expect(post).toHaveBeenCalledOnce();
+    expect(fake.ledger[0]?.message_id).toBe('recovered-message');
+  });
+
+  it('does not repost an uncertain sending claim', async () => {
+    setLedger([ledgerRow({ message_id: 'claim:old-claim:sending' })]);
     const patch = vi.fn(async () => ({ id: 'unused' }));
     const post = vi.fn(async () => ({ id: 'unused' }));
 
-    const result = await postScheduledReport({
-      rest: fakeRest(patch, post),
-      guildId: GUILD_ID,
-      period: PERIOD,
-      channelId: CHANNEL_ID,
-      token: TOKEN,
-      guildLabel: null,
-    });
+    const result = await callPost(fakeRest(patch, post));
 
-    expect(result).toEqual({ posted: false, messageId: null, skipped: true });
+    expect(result).toEqual({ posted: false, messageId: null, skipped: true, uncertain: true });
     expect(patch).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
-    expect(
-      fake.calls.some(
-        (call) =>
-          call.operation === 'upsert' &&
-          (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
-      ),
-    ).toBe(false);
+    expect(fake.ledger[0]?.message_id).toBe('claim:old-claim:sending');
+  });
+
+  it('does not auto-repost a legacy unstaged claim', async () => {
+    setLedger([ledgerRow({ message_id: 'claim:old-worker' })]);
+    const patch = vi.fn(async () => ({ id: 'unused' }));
+    const post = vi.fn(async () => ({ id: 'unused' }));
+
+    const result = await callPost(fakeRest(patch, post));
+
+    expect(result).toEqual({ posted: false, messageId: null, skipped: true, uncertain: true });
+    expect(post).not.toHaveBeenCalled();
   });
 
   it('edits a message recovered from a delivered sentinel', async () => {
-    const upsert = vi.fn(() => ({ data: null }));
-    installReservation('claim-delivered:old-claim:recovered-message', upsert);
+    setLedger([ledgerRow({ message_id: 'claim-delivered:old-claim:recovered-message' })]);
     const patch = vi.fn(async () => ({ id: 'recovered-message' }));
     const post = vi.fn(async () => ({ id: 'unused' }));
 
-    const result = await postScheduledReport({
-      rest: fakeRest(patch, post),
-      guildId: GUILD_ID,
-      period: PERIOD,
-      channelId: CHANNEL_ID,
-      token: TOKEN,
-      guildLabel: null,
-    });
+    const result = await callPost(fakeRest(patch, post));
 
     expect(result).toEqual({ posted: true, messageId: 'recovered-message', claimed: false });
     expect(patch).toHaveBeenCalledWith(Routes.channelMessage(CHANNEL_ID, 'recovered-message'), {
       body: expect.objectContaining({ embeds: expect.any(Array) }),
     });
     expect(post).not.toHaveBeenCalled();
-    const finalUpsert = fake.calls.find(
-      (call) =>
-        call.operation === 'upsert' &&
-        (call.options as Record<string, unknown> | undefined)?.['ignoreDuplicates'] !== true,
-    );
-    expect((finalUpsert?.payload as Record<string, unknown>)['message_id']).toBe(
-      'recovered-message',
-    );
+    expect(fake.ledger[0]?.message_id).toBe('recovered-message');
   });
 });
 
@@ -636,74 +608,121 @@ describe('readMissingReportDeliveries', () => {
       report_inactivity_channel_id: null,
     },
   ];
+  const RETENTION: Readonly<Record<ReportType, number>> = { daily: 31, weekly: 8, monthly: 12 };
+
+  function catchupKeys(type: ReportType): string[] {
+    const keys: string[] = [];
+    let period = latestCompletedReportPeriod(NOW, type);
+    for (let index = 0; index < RETENTION[type]; index += 1) {
+      keys.unshift(period.periodKey);
+      period = previousCompletedReportPeriod(period);
+    }
+    return keys;
+  }
+
+  function catchupRows(guildId: string, messageId = '123'): LedgerRow[] {
+    const rows: LedgerRow[] = [];
+    for (const type of ['daily', 'weekly', 'monthly'] as const) {
+      for (const periodKey of catchupKeys(type)) {
+        rows.push(
+          ledgerRow({
+            guild_id: guildId,
+            report_type: type,
+            period_key: periodKey,
+            message_id: messageId,
+          }),
+        );
+      }
+    }
+    return rows;
+  }
 
   beforeEach(() => {
-    setHandler('guild_settings:select', () => ({ data: SETTINGS }));
-    setHandler('guild_report_posts:select', () => ({ data: [] }));
-    setHandler('guild_inactivity_report_posts:select', () => ({ data: [] }));
+    fake.selectHandlers['guild_settings'] = () => ({ data: SETTINGS });
+    fake.selectHandlers['guild_inactivity_report_posts'] = () => ({ data: [] });
   });
 
-  it('returns the latest completed periods when no durable messages exist', async () => {
+  it('enumerates the full explicit retention window from durable delivery state', async () => {
     const missing = await readMissingReportDeliveries(NOW);
 
     expect(missing.periods.map((period) => period.periodKey)).toEqual([
-      '2026-11-19',
-      '2026-W46',
-      '2026-10',
+      ...catchupKeys('daily'),
+      ...catchupKeys('weekly'),
+      ...catchupKeys('monthly'),
     ]);
+    expect(missing.targets).toHaveLength(2 * (31 + 8 + 12));
+    expect(missing.targets[0]).toEqual({
+      guildId: GUILD_ID,
+      period: expect.objectContaining({ type: 'daily', periodKey: catchupKeys('daily')[0] }),
+    });
+    expect(missing.targets.at(-1)).toEqual({
+      guildId: OTHER_GUILD_ID,
+      period: expect.objectContaining({ type: 'monthly', periodKey: catchupKeys('monthly').at(-1) }),
+    });
     expect(missing.inactivityPeriodKey).toBe('2026-11-20');
   });
 
-  it('treats real and delivered-sentinel messages as durable but ignores plain claims', async () => {
-    setHandler('guild_report_posts:select', () => ({
-      data: [
-        { guild_id: GUILD_ID, report_type: 'daily', period_key: '2026-11-19', message_id: '123' },
-        { guild_id: OTHER_GUILD_ID, report_type: 'daily', period_key: '2026-11-19', message_id: '456' },
-        { guild_id: GUILD_ID, report_type: 'weekly', period_key: '2026-W46', message_id: 'claim:claim-1' },
-        {
-          guild_id: OTHER_GUILD_ID,
-          report_type: 'weekly',
-          period_key: '2026-W46',
-          message_id: 'claim-delivered:c:recovered',
-        },
-        {
-          guild_id: GUILD_ID,
-          report_type: 'monthly',
-          period_key: '2026-10',
-          message_id: 'claim-delivered:c:recovered',
-        },
-        { guild_id: OTHER_GUILD_ID, report_type: 'monthly', period_key: '2026-10', message_id: '789' },
-      ],
-    }));
-    setHandler('guild_inactivity_report_posts:select', () => ({
+  it('treats delivered sentinels as durable but does not count staged or legacy claims', async () => {
+    const rows = [...catchupRows(GUILD_ID), ...catchupRows(OTHER_GUILD_ID)];
+    const replaceRow = (next: LedgerRow): void => {
+      const index = rows.findIndex((row) => ledgerKey(row) === ledgerKey(next));
+      if (index === -1) rows.push(next);
+      else rows[index] = next;
+    };
+    replaceRow(
+      ledgerRow({
+        guild_id: GUILD_ID,
+        report_type: 'weekly',
+        period_key: catchupKeys('weekly')[7]!,
+        message_id: 'claim:old-claim:reserved',
+      }),
+    );
+    replaceRow(
+      ledgerRow({
+        guild_id: OTHER_GUILD_ID,
+        report_type: 'monthly',
+        period_key: catchupKeys('monthly')[7]!,
+        message_id: 'claim-delivered:old:recovered',
+      }),
+    );
+    setLedger(rows);
+    fake.selectHandlers['guild_inactivity_report_posts'] = () => ({
       data: [
         { guild_id: GUILD_ID, period_key: '2026-11-20', message_id: '111' },
         { guild_id: OTHER_GUILD_ID, period_key: '2026-11-20', message_id: '222' },
       ],
-    }));
+    });
 
     const missing = await readMissingReportDeliveries(NOW);
 
     expect(missing.periods.map((period) => period.type)).toEqual(['weekly']);
+    expect(missing.targets).toEqual([
+      {
+        guildId: GUILD_ID,
+        period: expect.objectContaining({ type: 'weekly', periodKey: catchupKeys('weekly')[7] }),
+      },
+    ]);
     expect(missing.inactivityPeriodKey).toBeNull();
   });
 
-  it('keeps a period missing when only one configured guild has a ledger row', async () => {
-    setHandler('guild_report_posts:select', () => ({
-      data: [
-        { guild_id: GUILD_ID, report_type: 'daily', period_key: '2026-11-19', message_id: '123' },
-      ],
-    }));
+  it('keeps an old period missing when only one configured guild has a ledger row', async () => {
+    setLedger([...catchupRows(GUILD_ID), ...catchupRows(OTHER_GUILD_ID).slice(1)]);
 
     const missing = await readMissingReportDeliveries(NOW);
 
-    expect(missing.periods.map((period) => period.type)).toEqual(['daily', 'weekly', 'monthly']);
+    expect(missing.targets).toEqual([
+      {
+        guildId: OTHER_GUILD_ID,
+        period: expect.objectContaining({ type: 'daily', periodKey: catchupKeys('daily')[0] }),
+      },
+    ]);
+    expect(missing.periods.map((period) => period.periodKey)).toEqual([catchupKeys('daily')[0]]);
   });
 
   it('keeps the inactivity day missing when only one configured guild has a ledger row', async () => {
-    setHandler('guild_inactivity_report_posts:select', () => ({
+    fake.selectHandlers['guild_inactivity_report_posts'] = () => ({
       data: [{ guild_id: GUILD_ID, period_key: '2026-11-20', message_id: '111' }],
-    }));
+    });
 
     const missing = await readMissingReportDeliveries(NOW);
 

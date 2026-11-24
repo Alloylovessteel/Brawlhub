@@ -96,7 +96,9 @@ export function latestCompletedReportPeriod(now: Date, type: ReportType): Report
     const mondayOffset = (midnight.getUTCDay() + 6) % 7;
     const weekStart = new Date(midnight.getTime() - mondayOffset * DAY_MS);
     const start = new Date(weekStart.getTime() - 7 * DAY_MS);
-    const { year, week } = isoWeek(new Date(weekStart.getTime() - DAY_MS));
+    // The completed week's own Monday resolves its ISO week-year correctly at
+    // the January boundary; the Sunday before it can already belong to W01.
+    const { year, week } = isoWeek(start);
     return {
       type,
       periodKey: `${year}-W${String(week).padStart(2, '0')}`,
@@ -113,6 +115,11 @@ export function latestCompletedReportPeriod(now: Date, type: ReportType): Report
     start,
     end,
   };
+}
+
+/** Step one completed period backwards from a known period. */
+export function previousCompletedReportPeriod(period: ReportPeriod): ReportPeriod {
+  return latestCompletedReportPeriod(period.start, period.type);
 }
 
 function usableChannel(value: string | null | undefined): string | null {
