@@ -44,6 +44,11 @@ const MAX_ERROR_LENGTH = 1000;
 /** Recover announcements for events committed by a run that failed before delivery. */
 const NOTIFICATION_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const MAX_NOTIFICATIONS_PER_SYNC = 20;
+/** Live claims are owned for this long before another run may take them over. */
+const NOTIFICATION_LEASE_SECONDS = 120;
+/** Page size for the unsent-event RPC; pagination stops at 20 collected events. */
+const UNSENT_EVENT_PAGE_SIZE = 25;
+const MAX_UNSENT_EVENT_PAGES = 100;
 
 type EventType = 'join' | 'leave' | 'transfer';
 
@@ -343,6 +348,20 @@ interface PendingEventRow {
   to_club?: { name?: unknown } | null;
 }
 
+/** Flat row returned by `list_unsent_membership_events`. */
+interface UnsentEventRow {
+  id: string;
+  player_id: string;
+  event_type: string;
+  from_club_id: string | null;
+  to_club_id: string | null;
+  detected_at: string;
+  player_tag?: string | null;
+  player_name?: string | null;
+  from_club_name?: string | null;
+  to_club_name?: string | null;
+}
+
 interface FetchedClub {
   row: ClubRow;
   rawClub: unknown;
@@ -389,6 +408,9 @@ interface MembershipTransitionInput extends EventInput {
   role: string | undefined;
   validFrom: string;
   closeMembershipId: string | undefined;
+  guildId: string;
+  lockScope: string;
+  lockToken: string;
 }
 
 interface RoleChangeInput {
@@ -399,6 +421,9 @@ interface RoleChangeInput {
   toRole: string | null;
   detectedAt: string;
   runId: string;
+  guildId: string;
+  lockScope: string;
+  lockToken: string;
 }
 
 interface CapacityEventInput {
@@ -893,27 +918,55 @@ export async function renewSyncLock(
   return result.data === token;
 }
 
+/** Heartbeat handle. `signal` aborts as soon as ownership is lost. */
+export interface SyncLockRenewal {
+  readonly signal: AbortSignal;
+  /** True once a renewal proved the lock was lost or could not be verified. */
+  readonly lost: boolean;
+  /** Record an externally observed ownership failure and abort the run. */
+  reportLoss(reason: string): void;
+  stop(): Promise<void>;
+}
+
 /**
- * Heartbeat that keeps a long-running sync's lock alive. Renewal failures are
- * logged but never abort the sync; the final release still happens in `finally`.
+ * Heartbeat that keeps a long-running sync's lock alive. Losing the lock aborts
+ * the returned signal and calls `onLost`; callers must stop before their next
+ * write phase. The final release still happens in `finally`.
  */
-function startSyncLockRenewal(
+export function startSyncLockRenewal(
   db: SupabaseClient,
   scope: string,
   token: string,
   intervalMs: number,
-): () => Promise<void> {
+  onLost?: (reason: string) => void,
+): SyncLockRenewal {
   let stopped = false;
+  let lost = false;
   let inFlight: Promise<void> | null = null;
+  const controller = new AbortController();
+
+  const markLost = (reason: string): void => {
+    if (lost) return;
+    lost = true;
+    log.warn('Sync lock lost; stopping run', { scope, reason });
+    controller.abort(reason);
+    try {
+      onLost?.(reason);
+    } catch (error) {
+      log.warn('Sync lock loss callback failed', { scope, reason: sanitizeError(error) });
+    }
+  };
 
   const renew = async (): Promise<void> => {
     if (stopped || inFlight !== null) return;
     inFlight = (async () => {
       try {
         const held = await renewSyncLock(db, scope, token);
-        if (!held) log.warn('Sync lock renewal lost ownership', { scope });
+        if (!held) {
+          markLost('Sync lock renewal lost ownership');
+        }
       } catch (error) {
-        log.warn('Sync lock renewal failed', { scope, reason: sanitizeError(error) });
+        markLost(`Sync lock renewal failed: ${sanitizeError(error)}`);
       }
     })();
     try {
@@ -929,10 +982,19 @@ function startSyncLockRenewal(
   const nodeTimer = timer as unknown as { unref?: () => void };
   nodeTimer.unref?.();
 
-  return async () => {
-    stopped = true;
-    clearInterval(timer);
-    if (inFlight !== null) await inFlight;
+  return {
+    get signal(): AbortSignal {
+      return controller.signal;
+    },
+    get lost(): boolean {
+      return lost;
+    },
+    reportLoss: markLost,
+    async stop(): Promise<void> {
+      stopped = true;
+      clearInterval(timer);
+      if (inFlight !== null) await inFlight;
+    },
   };
 }
 
@@ -943,91 +1005,43 @@ export interface SyncRecoveryResult {
 
 /**
  * Clear run rows and lock claims left behind when a process exits mid-sync.
- * Called once on bot startup so a restart never blocks syncing until the
- * 30-minute lock TTL expires. Scopes with a still-active lock are left alone,
- * so a healthy process is never marked failed by a concurrent startup.
+ * The whole decision and all writes happen in one database RPC: a concurrent
+ * startup cannot slip a new lock between our select and our update. Scopes with
+ * a still-active owner are left untouched, so a healthy process is never
+ * marked failed by a concurrent startup.
  */
 export async function recoverInterruptedSyncs(
   db: SupabaseClient = createTrustedClient(),
   nowIso: string = new Date().toISOString(),
 ): Promise<SyncRecoveryResult> {
-  const running = await db
-    .from('sync_runs')
-    .select('id, scope')
-    .eq('status', 'running')
-    .is('finished_at', null);
-  requireOk(running.error, 'Read interrupted sync runs');
+  const result = await db.rpc('recover_interrupted_syncs', { p_now: nowIso });
+  requireOk(result.error, 'Recover interrupted syncs');
 
-  const rows = (running.data ?? []) as Array<{ id: string; scope: string | null }>;
-  if (rows.length === 0) {
-    return { recoveredRuns: 0, clearedScopes: [] };
+  const payload = (result.data ?? {}) as {
+    recoveredRuns?: unknown;
+    clearedScopes?: unknown;
+  };
+  const recoveredRuns =
+    typeof payload.recoveredRuns === 'number' && Number.isFinite(payload.recoveredRuns)
+      ? Math.max(0, Math.trunc(payload.recoveredRuns))
+      : 0;
+  const clearedScopes = Array.isArray(payload.clearedScopes)
+    ? [
+        ...new Set(
+          payload.clearedScopes.filter(
+            (scope): scope is string => typeof scope === 'string' && scope.length > 0,
+          ),
+        ),
+      ].sort()
+    : [];
+
+  if (recoveredRuns > 0 || clearedScopes.length > 0) {
+    log.warn('Recovered interrupted sync state', {
+      runs: recoveredRuns,
+      scopes: clearedScopes.join(', '),
+    });
   }
-
-  const allScopes = [
-    ...new Set(
-      rows
-        .map((row) => row.scope)
-        .filter((scope): scope is string => typeof scope === 'string' && scope.trim() !== ''),
-    ),
-  ];
-  // A live process may still hold the lock for a scope with an old run row.
-  // Only scopes whose lock is absent, released or expired are recoverable.
-  const activeScopes = new Set<string>();
-  const nowMs = Date.parse(nowIso);
-  if (allScopes.length > 0) {
-    const locks = await db
-      .from('sync_locks')
-      .select('scope, locked_by, locked_until')
-      .in('scope', allScopes);
-    requireOk(locks.error, 'Read sync locks for recovery');
-    for (const item of locks.data ?? []) {
-      const row = item as { scope?: unknown; locked_by?: unknown; locked_until?: unknown };
-      const scope = typeof row.scope === 'string' ? row.scope : null;
-      if (scope === null || typeof row.locked_by !== 'string' || row.locked_by.length === 0) {
-        continue;
-      }
-      const until = typeof row.locked_until === 'string' ? Date.parse(row.locked_until) : Number.NaN;
-      if (Number.isNaN(until) || until >= nowMs) activeScopes.add(scope);
-    }
-  }
-
-  const recoverable = rows.filter(
-    (row) => typeof row.scope !== 'string' || !activeScopes.has(row.scope),
-  );
-  if (recoverable.length === 0) {
-    return { recoveredRuns: 0, clearedScopes: [] };
-  }
-
-  const reason = 'Sync interrupted by process restart';
-  const finished = await db
-    .from('sync_runs')
-    .update({ status: 'failed', error: reason, last_error: reason, finished_at: nowIso })
-    .in(
-      'id',
-      recoverable.map((row) => row.id),
-    );
-  requireOk(finished.error, 'Mark interrupted sync runs failed');
-
-  const clearedScopes = [
-    ...new Set(
-      recoverable
-        .map((row) => row.scope)
-        .filter((scope): scope is string => typeof scope === 'string' && scope.trim() !== ''),
-    ),
-  ];
-  if (clearedScopes.length > 0) {
-    const cleared = await db
-      .from('sync_locks')
-      .update({ locked_by: null, locked_at: null, locked_until: null })
-      .in('scope', clearedScopes);
-    requireOk(cleared.error, 'Clear interrupted sync locks');
-  }
-
-  log.warn('Recovered interrupted sync state', {
-    runs: recoverable.length,
-    scopes: clearedScopes.join(', '),
-  });
-  return { recoveredRuns: recoverable.length, clearedScopes };
+  return { recoveredRuns, clearedScopes };
 }
 
 /** Writes event + membership changes in one Postgres transaction. */
@@ -1045,6 +1059,9 @@ async function applyMembershipTransition(
     p_role: input.role ?? null,
     p_valid_from: input.validFrom,
     p_close_membership_id: input.closeMembershipId ?? null,
+    p_guild_id: input.guildId,
+    p_lock_scope: input.lockScope,
+    p_lock_token: input.lockToken,
   });
   requireOk(result.error, `Apply ${input.eventType} transition`);
   return typeof result.data === 'string' ? result.data : undefined;
@@ -1067,6 +1084,9 @@ async function applyClubRoleChange(db: SupabaseClient, input: RoleChangeInput): 
     p_detected_at: input.detectedAt,
     p_run_id: input.runId,
     p_valid_from: input.detectedAt,
+    p_guild_id: input.guildId,
+    p_lock_scope: input.lockScope,
+    p_lock_token: input.lockToken,
   });
   requireOk(result.error, 'Apply club role change');
 }
@@ -1190,11 +1210,37 @@ async function readOpenMembershipsForClubs(
   return (result.data ?? []) as OpenMembershipRow[];
 }
 
+function toPendingEvent(row: UnsentEventRow): PendingEventRow | null {
+  if (
+    typeof row.id !== 'string' ||
+    typeof row.event_type !== 'string' ||
+    typeof row.detected_at !== 'string' ||
+    typeof row.player_id !== 'string'
+  ) {
+    return null;
+  }
+  const event: PendingEventRow = {
+    id: row.id,
+    player_id: row.player_id,
+    event_type: row.event_type,
+    from_club_id: row.from_club_id ?? null,
+    to_club_id: row.to_club_id ?? null,
+    detected_at: row.detected_at,
+    player: { tag: row.player_tag ?? '', name: row.player_name ?? '' },
+  };
+  if (typeof row.from_club_name === 'string') {
+    event.from_club = { name: row.from_club_name };
+  }
+  if (typeof row.to_club_name === 'string') {
+    event.to_club = { name: row.to_club_name };
+  }
+  return event;
+}
+
 /**
- * Reads recent membership events involving this guild's clubs. Notifications are
- * derived from stored events, not just the current run: a run that committed an
- * event and then failed would otherwise orphan its announcement when the next
- * sync starts under a new run id.
+ * Reads recent unsent membership events involving this guild's clubs. The RPC
+ * filters delivered claims in SQL and is keyset-paginated, so a crowded recent
+ * page can never hide older unsent events behind a PostgREST row cap.
  */
 async function readPendingEvents(
   db: SupabaseClient,
@@ -1203,44 +1249,42 @@ async function readPendingEvents(
 ): Promise<PendingEventRow[]> {
   if (clubIds.length === 0) return [];
   const sinceIso = new Date(Date.parse(nowIso) - NOTIFICATION_LOOKBACK_MS).toISOString();
-  const columns = `
-    id, player_id, event_type, from_club_id, to_club_id, detected_at,
-    player:players!membership_events_player_id_fkey(tag, name),
-    from_club:clubs!membership_events_from_club_id_fkey(name),
-    to_club:clubs!membership_events_to_club_id_fkey(name)
-  `;
-  const [toEvents, fromEvents] = await Promise.all([
-    db
-      .from('membership_events')
-      .select(columns)
-      .in('to_club_id', [...clubIds])
-      .gte('detected_at', sinceIso)
-      .order('detected_at', { ascending: false }),
-    db
-      .from('membership_events')
-      .select(columns)
-      .in('from_club_id', [...clubIds])
-      .gte('detected_at', sinceIso)
-      .order('detected_at', { ascending: false }),
-  ]);
-  requireOk(toEvents.error, 'Read membership events by destination club');
-  requireOk(fromEvents.error, 'Read membership events by source club');
+  const collected: PendingEventRow[] = [];
+  const seen = new Set<string>();
+  let beforeDetectedAt: string | null = null;
+  let beforeId: string | null = null;
 
-  const rows = new Map<string, PendingEventRow>();
-  for (const item of [...(toEvents.data ?? []), ...(fromEvents.data ?? [])]) {
-    const row = item as PendingEventRow;
-    if (
-      typeof row.id !== 'string' ||
-      typeof row.event_type !== 'string' ||
-      typeof row.detected_at !== 'string'
-    ) {
-      continue;
+  for (let page = 0; page < MAX_UNSENT_EVENT_PAGES && collected.length < MAX_NOTIFICATIONS_PER_SYNC; page += 1) {
+    const result = await db.rpc('list_unsent_membership_events', {
+      p_club_ids: [...clubIds],
+      p_since: sinceIso,
+      p_limit: UNSENT_EVENT_PAGE_SIZE,
+      p_before_detected_at: beforeDetectedAt,
+      p_before_id: beforeId,
+    });
+    requireOk(result.error, 'List unsent membership events');
+
+    const rows = (Array.isArray(result.data) ? result.data : []) as UnsentEventRow[];
+    if (rows.length === 0) break;
+    let lastCursor: { detectedAt: string; id: string } | null = null;
+    for (const item of rows) {
+      const normalized = toPendingEvent(item);
+      if (normalized !== null && !seen.has(normalized.id)) {
+        seen.add(normalized.id);
+        collected.push(normalized);
+      }
+      if (typeof item.detected_at === 'string' && typeof item.id === 'string') {
+        lastCursor = { detectedAt: item.detected_at, id: item.id };
+      }
+      if (collected.length >= MAX_NOTIFICATIONS_PER_SYNC) break;
     }
-    rows.set(row.id, row);
+    if (lastCursor === null) break;
+    if (lastCursor.detectedAt === beforeDetectedAt && lastCursor.id === beforeId) break;
+    beforeDetectedAt = lastCursor.detectedAt;
+    beforeId = lastCursor.id;
   }
-  return [...rows.values()].sort(
-    (a, b) => b.detected_at.localeCompare(a.detected_at) || a.id.localeCompare(b.id),
-  );
+
+  return collected;
 }
 
 type NotificationDeliveryStatus = 'pending' | 'sent' | 'failed';
@@ -1249,66 +1293,67 @@ function deliveryStatus(value: unknown): NotificationDeliveryStatus | null {
   return value === 'pending' || value === 'sent' || value === 'failed' ? value : null;
 }
 
-/** Only a delivered claim suppresses an announcement; interrupted ones retry. */
+/**
+ * Delivered claims and live leases owned by this run suppress announcements.
+ * A live lease owned by another run is NOT delivered: the claim RPC will refuse
+ * to take it over until it expires, but treating it as sent would lose the event.
+ */
 async function readClaimedEventIds(
   db: SupabaseClient,
   events: readonly PendingEventRow[],
+  ownerId: string,
+  nowIso: string,
 ): Promise<Set<string>> {
   if (events.length === 0) return new Set();
-  const result = await db
-    .from('notifications')
-    .select('event_id, delivery_status')
-    .in('event_id', [...new Set(events.map((event) => event.id))])
-    .eq('delivery_status', 'sent');
-  requireOk(result.error, 'Read notification claims');
+  const eventIds = [...new Set(events.map((event) => event.id))];
+  const [delivered, sameRun] = await Promise.all([
+    db
+      .from('notifications')
+      .select('event_id, delivery_status')
+      .in('event_id', eventIds)
+      .eq('delivery_status', 'sent'),
+    db
+      .from('notifications')
+      .select('event_id, delivery_status, delivery_owner, lease_until')
+      .in('event_id', eventIds)
+      .eq('delivery_status', 'pending')
+      .eq('delivery_owner', ownerId)
+      .gte('lease_until', nowIso),
+  ]);
+  requireOk(delivered.error, 'Read delivered notification claims');
+  requireOk(sameRun.error, 'Read this run notification claims');
+
   const claimed = new Set<string>();
-  for (const item of result.data ?? []) {
+  for (const item of delivered.data ?? []) {
     const row = item as { event_id?: unknown; delivery_status?: unknown } | null;
     const id = row?.event_id;
     // Legacy rows predate the status column and were only created for delivery.
     const status = deliveryStatus(row?.delivery_status);
     if (typeof id === 'string' && (status === null || status === 'sent')) claimed.add(id);
   }
+  for (const item of sameRun.data ?? []) {
+    const id = (item as { event_id?: unknown } | null)?.event_id;
+    if (typeof id === 'string') claimed.add(id);
+  }
   return claimed;
 }
 
-/** Reuse a pending/failed claim after a unique conflict; sent claims stay skipped. */
+/** Atomically insert or take over a notification claim for one sync run. */
 async function claimNotification(
   db: SupabaseClient,
   input: SyncNotificationInput,
   channelId: string,
+  ownerId: string,
 ): Promise<string | null> {
-  const insert = await db
-    .from('notifications')
-    .insert({
-      event_type: input.eventType,
-      event_id: input.eventId,
-      channel_id: channelId,
-      kind: input.eventType,
-      delivery_status: 'pending',
-    })
-    .select('id')
-    .maybeSingle();
-  if (insert.error !== null && insert.error !== undefined) {
-    if (!isUniqueViolation(insert.error)) {
-      throw new Error(`Claim notification: ${sanitizeError(insert.error)}`);
-    }
-    const existing = await db
-      .from('notifications')
-      .select('id, delivery_status')
-      .eq('event_id', input.eventId)
-      .eq('channel_id', channelId)
-      .eq('kind', input.eventType)
-      .maybeSingle();
-    requireOk(existing.error, 'Read existing notification claim');
-    const row = existing.data as { id?: unknown; delivery_status?: unknown } | null;
-    const status = deliveryStatus(row?.delivery_status);
-    if (status === 'sent') return null;
-    const id = row?.id;
-    return typeof id === 'string' && id.length > 0 ? id : null;
-  }
-  const id = (insert.data as { id?: unknown } | null)?.id;
-  return typeof id === 'string' && id.length > 0 ? id : null;
+  const result = await db.rpc('claim_notification', {
+    p_event_id: input.eventId,
+    p_channel_id: channelId,
+    p_kind: input.eventType,
+    p_owner: ownerId,
+    p_lease_seconds: NOTIFICATION_LEASE_SECONDS,
+  });
+  requireOk(result.error, 'Claim notification');
+  return typeof result.data === 'string' && result.data.length > 0 ? result.data : null;
 }
 
 async function writeSnapshot(db: SupabaseClient, write: SnapshotWrite): Promise<boolean> {
@@ -1393,6 +1438,7 @@ async function sendNotifications(
   notifier: SyncNotifier,
   pending: readonly SyncNotificationInput[],
   timeoutMs: number,
+  ownerId: string,
 ): Promise<number> {
   let sent = 0;
   const notifierWithChannel = notifier as SyncNotifierWithChannel;
@@ -1414,9 +1460,9 @@ async function sendNotifications(
       continue;
     }
 
-    const claimId = await claimNotification(db, input, channelId);
+    const claimId = await claimNotification(db, input, channelId, ownerId);
     if (claimId === null) {
-      continue; // Already delivered on a previous attempt.
+      continue; // Already delivered or leased by another live run.
     }
 
     try {
@@ -1428,7 +1474,9 @@ async function sendNotifications(
           discord_message_id: messageId ?? null,
           delivered_at: new Date().toISOString(),
         })
-        .eq('id', claimId);
+        .eq('id', claimId)
+        .eq('delivery_owner', ownerId)
+        .eq('delivery_status', 'pending');
       requireOk(update.error, 'Update notification claim');
       sent += 1;
     } catch (error) {
@@ -1437,7 +1485,9 @@ async function sendNotifications(
       const failed = await db
         .from('notifications')
         .update({ delivery_status: 'failed' })
-        .eq('id', claimId);
+        .eq('id', claimId)
+        .eq('delivery_owner', ownerId)
+        .eq('delivery_status', 'pending');
       if (failed.error !== null && failed.error !== undefined) {
         log.warn('Could not mark notification claim failed', {
           eventId: input.eventId,
@@ -1465,6 +1515,10 @@ export interface RunSyncOptions {
   guildId?: string;
   /** Testable override for the lock heartbeat interval. */
   lockRenewalIntervalMs?: number;
+  /** Stable per-run notification owner; generated when absent. */
+  notificationOwnerId?: string;
+  /** Called as soon as the sync lock is proven lost. */
+  onLockLost?: (reason: string) => void;
 }
 
 async function listGuildIdsWithRegisteredClubs(db: SupabaseClient): Promise<string[]> {
@@ -1534,7 +1588,52 @@ export async function runSyncForAllGuilds(
   return results;
 }
 
+/**
+ * Legacy unscoped entry point. Never build one roster across guilds: discover
+ * guilds, sync each one in its own scope, then present a combined result.
+ */
+async function runSyncWithoutGuild(options: RunSyncOptions): Promise<SyncResult> {
+  const results = await runSyncForAllGuilds(options);
+  const first = results[0];
+  if (first === undefined) return skippedResult('', 'No clubs registered');
+  if (results.length === 1) return first;
+
+  const sum = (select: (result: SyncResult) => number): number =>
+    results.reduce((total, result) => total + select(result), 0);
+  const failed = results.filter((result) => result.status === 'failed');
+  const errors = failed
+    .map((result) => result.error)
+    .filter((error): error is string => typeof error === 'string' && error.length > 0)
+    .join('; ');
+
+  return {
+    syncRunId: results.find((result) => result.syncRunId.length > 0)?.syncRunId ?? '',
+    status:
+      failed.length > 0
+        ? 'failed'
+        : results.every((result) => result.status === 'skipped')
+          ? 'skipped'
+          : 'completed',
+    clubsProcessed: sum((result) => result.clubsProcessed),
+    playersUpserted: sum((result) => result.playersUpserted),
+    snapshotsWritten: sum((result) => result.snapshotsWritten),
+    membershipEvents: sum((result) => result.membershipEvents),
+    notificationsSent: sum((result) => result.notificationsSent),
+    battlesCollected: sum((result) => result.battlesCollected),
+    error: errors.length > 0 ? errors : undefined,
+    affectedClubIds: [...new Set(results.flatMap((result) => result.affectedClubIds))],
+    membersExpected: sum((result) => result.membersExpected ?? 0),
+    membersSucceeded: sum((result) => result.membersSucceeded ?? 0),
+    memberFailures: results.flatMap((result) => result.memberFailures ?? []),
+  };
+}
+
 export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult> {
+  const topLevelGuildId = options.guildId?.trim();
+  if (topLevelGuildId === undefined || topLevelGuildId.length === 0) {
+    return runSyncWithoutGuild(options);
+  }
+
   let now: Date;
   let nowIso: string;
   let db: SupabaseClient;
@@ -1621,8 +1720,9 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     memberFailures: readonly SyncMemberFailure[];
   } = { membersExpected: 0, membersSucceeded: 0, memberFailures: [] };
   const lockToken = randomUUID();
+  const notificationOwnerId = options.notificationOwnerId ?? randomUUID();
   let lockHeld = false;
-  let stopLockRenewal: (() => Promise<void>) | undefined;
+  let lockRenewal: SyncLockRenewal | undefined;
 
   try {
     try {
@@ -1642,12 +1742,28 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     if (!lockHeld) {
       return skippedResult('', 'Another sync process holds the database lock', requestedGuildId);
     }
-    stopLockRenewal = startSyncLockRenewal(
+    lockRenewal = startSyncLockRenewal(
       db,
       scope,
       lockToken,
       options?.lockRenewalIntervalMs ?? SYNC_LOCK_RENEW_INTERVAL_MS,
+      options.onLockLost,
     );
+    const assertOwnership = async (phase: string): Promise<void> => {
+      if (lockRenewal === undefined || lockRenewal.lost || lockRenewal.signal.aborted) {
+        throw new Error(`Sync lock lost before ${phase}; aborting run`);
+      }
+      const check = await db.rpc('assert_sync_lock_ownership', {
+        p_scope: scope,
+        p_token: lockToken,
+      });
+      requireOk(check.error, `Assert sync lock ownership (${phase})`);
+      if (check.data !== true) {
+        const reason = `Sync lock ownership lost before ${phase}`;
+        lockRenewal.reportLoss(reason);
+        throw new Error(reason);
+      }
+    };
 
     const acquired = await acquireRun(db, scope, periodStartIso, nowIso, nowMs, clubIds, clubTags);
     if (acquired.kind === 'skip') {
@@ -1661,8 +1777,10 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     const fetched: FetchedClub[] = [];
     for (const row of clubRows) {
       fetched.push(await fetchClubData(apiClient, row, apiTimeoutMs));
+      await assertOwnership('next club fetch');
     }
     counters.clubsProcessed = fetched.length;
+    await assertOwnership('player writes');
     const memberCountsById = new Map(fetched.map((club) => [club.row.id, club.memberCount]));
 
     const roster = buildGlobalRoster(fetched);
@@ -1678,10 +1796,12 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
             memberFailures.push({ tag: entry.tag, name: entry.name, reason });
           })
         : undefined;
+      await assertOwnership('player upsert');
       const playerId = await upsertPlayer(db, apiClient, entry, nowIso, apiTimeoutMs, fullProfile);
       states.push({ ...entry, playerId });
       counters.playersUpserted += 1;
     }
+    await assertOwnership('membership writes');
     memberCounts = {
       membersExpected: roster.size,
       membersSucceeded: Math.max(0, roster.size - memberFailures.length),
@@ -1721,6 +1841,9 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
             toRole,
             detectedAt: nowIso,
             runId,
+            guildId: requestedGuildId ?? '',
+            lockScope: scope,
+            lockToken,
           });
           counters.roleChanges += 1;
         }
@@ -1737,6 +1860,9 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         role: state.role,
         validFrom: nowIso,
         closeMembershipId: open?.id,
+        guildId: requestedGuildId ?? '',
+        lockScope: scope,
+        lockToken,
       });
       counters.membershipEvents += 1;
     }
@@ -1757,6 +1883,9 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         role: open.role ?? undefined,
         validFrom: nowIso,
         closeMembershipId: open.id,
+        guildId: requestedGuildId ?? '',
+        lockScope: scope,
+        lockToken,
       });
       counters.membershipEvents += 1;
     }
@@ -1765,8 +1894,9 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     // membership state or the current run id. An event committed by a run that
     // later failed is still announced by a later sync unless it was already
     // claimed in the notifications ledger.
+    await assertOwnership('notification discovery');
     const recentEvents = await readPendingEvents(db, clubIds, nowIso);
-    const claimedEventIds = await readClaimedEventIds(db, recentEvents);
+    const claimedEventIds = await readClaimedEventIds(db, recentEvents, notificationOwnerId, nowIso);
     const pendingNotifications: SyncNotificationInput[] = recentEvents
       .filter((event) => !claimedEventIds.has(event.id))
       .map((event) => {
@@ -1805,6 +1935,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     // 5. Capacity transitions and snapshots (snapshots are skipped when the
     //    payload digest is unchanged). Read the previous count before writing
     //    the new snapshot so the comparison uses stored history.
+    await assertOwnership('snapshot writes');
     for (const club of fetched) {
       const previousCount = await readPreviousMemberCount(db, club.row.id);
       if (previousCount !== undefined) {
@@ -1853,6 +1984,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     }
 
     if (collectBattleLogsEnabled && states.length > 0 && runId !== undefined) {
+      await assertOwnership('battle log collection');
       counters.battlesCollected = await collectBattleLogs(
         db,
         apiClient,
@@ -1860,15 +1992,18 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         runId,
         apiTimeoutMs,
       );
+      await assertOwnership('notification delivery');
     }
 
     // 6. Notifications (only when a notifier and a channel are available).
     if (options?.notifier !== undefined) {
+      await assertOwnership('notification delivery');
       counters.notificationsSent = await sendNotifications(
         db,
         options.notifier,
         pendingNotifications,
         notifierTimeoutMs,
+        notificationOwnerId,
       );
     }
 
@@ -1878,6 +2013,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       capacityEvents: counters.capacityEvents,
     });
 
+    await assertOwnership('run completion');
     await markCompleted(
       db,
       runId,
@@ -1920,8 +2056,8 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       ...memberCounts,
     };
   } finally {
-    if (stopLockRenewal !== undefined) {
-      await stopLockRenewal();
+    if (lockRenewal !== undefined) {
+      await lockRenewal.stop();
     }
     if (lockHeld) {
       await releaseSyncLock(db, scope, lockToken);

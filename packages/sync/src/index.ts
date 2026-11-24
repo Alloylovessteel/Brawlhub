@@ -11,6 +11,7 @@ export {
   runSync,
   runSyncForAllGuilds,
   sanitizeError,
+  startSyncLockRenewal,
   SYNC_INTERVAL_MINUTES,
   SYNC_SCOPE,
   withTimeout,
@@ -25,4 +26,5 @@ export type {
   SyncNotifierWithChannel,
   SyncResult,
   SyncMemberFailure,
+  SyncLockRenewal,
 } from './sync';

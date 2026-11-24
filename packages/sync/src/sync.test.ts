@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BattleLogItem, BrawlStarsClient, Club, ClubMember } from '@brawlhub/brawl-stars';
-import { recoverInterruptedSyncs, registerClubs, runSync } from './index';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { recoverInterruptedSyncs, registerClubs, runSync, startSyncLockRenewal } from './index';
 
 type Call = {
   table: string;
@@ -198,13 +199,74 @@ function withInfrastructureHandlers(handlers: Record<string, Handler>): Record<s
       data: (call.payload as { p_token: string }).p_token,
     }),
     'rpc:release_sync_lock': () => ({ data: null }),
+    'rpc:renew_sync_lock': (call) => ({
+      data: (call.payload as { p_token: string }).p_token,
+    }),
+    'rpc:assert_sync_lock_ownership': () => ({ data: true }),
     'rpc:apply_membership_transition': () => ({ data: 'event-rpc-1' }),
+    'rpc:apply_club_role_change': () => ({ data: 'role-change-1' }),
+    'rpc:list_unsent_membership_events': () => ({ data: [] }),
+    'rpc:claim_notification': () => ({ data: null }),
     ...handlers,
   };
 }
 
 function callsFor(table: string, op: Call['op']): Call[] {
   return fake.state.calls.filter((call) => call.table === table && call.op === op);
+}
+
+interface UnsentEventFixture {
+  id: string;
+  player_id: string;
+  event_type: string;
+  from_club_id: string | null;
+  to_club_id: string | null;
+  detected_at: string;
+  player_tag: string;
+  player_name: string;
+  from_club_name: string | null;
+  to_club_name: string | null;
+}
+
+function unsentEvent(
+  id: string,
+  options: { offsetMs?: number; fromClubId?: string | null; toClubId?: string | null } = {},
+): UnsentEventFixture {
+  return {
+    id,
+    player_id: 'player-1',
+    event_type: 'join',
+    from_club_id: options.fromClubId ?? null,
+    to_club_id: options.toClubId ?? 'club-1',
+    detected_at: new Date(T0.getTime() - (options.offsetMs ?? 0)).toISOString(),
+    player_tag: 'G2P9',
+    player_name: 'Player One',
+    from_club_name: options.fromClubId === undefined || options.fromClubId === null ? null : 'Old Club',
+    to_club_name: options.toClubId === null ? null : 'Alpha',
+  };
+}
+
+/** Mimics the SQL keyset cursor so pagination regressions are observable. */
+function respondUnsent(rows: readonly UnsentEventFixture[]): Handler {
+  return (call) => {
+    const { p_before_detected_at: beforeAt, p_before_id: beforeId, p_limit: limit } = call.payload as {
+      p_before_detected_at: string | null;
+      p_before_id: string | null;
+      p_limit: number;
+    };
+    const sorted = [...rows].sort(
+      (a, b) => b.detected_at.localeCompare(a.detected_at) || b.id.localeCompare(a.id),
+    );
+    const page = sorted
+      .filter(
+        (row) =>
+          beforeAt === null ||
+          row.detected_at < beforeAt ||
+          (row.detected_at === beforeAt && beforeId !== null && row.id < beforeId),
+      )
+      .slice(0, limit);
+    return { data: page };
+  };
 }
 
 const defaultMember: ClubMember = {
@@ -563,30 +625,35 @@ describe('runSync', () => {
     expect(
       new Set(transitions.map((call) => (call.payload as { p_run_id: string }).p_run_id)),
     ).toEqual(new Set(['run-1']));
+    expect(transitions[0]?.payload).toMatchObject({
+      p_guild_id: 'guild-test',
+      p_lock_scope: 'guild:guild-test',
+      p_lock_token: expect.any(String),
+    });
     // Membership transition committed before snapshot failure; retry must not duplicate events.
     expect(callsFor('rpc:release_sync_lock', 'select')).toHaveLength(2);
   });
 
   it('does not resend a Discord notification when a retried event is already claimed', async () => {
     setupSuccessfulSync({ earlierRunFailed: true, forceOldMembership: true });
-    fake.state.handlers['membership_events:select'] = () => ({
-      data: [
-        {
-          id: 'event-1',
-          player_id: 'player-1',
-          event_type: 'transfer',
-          from_club_id: 'club-old',
-          to_club_id: 'club-1',
-          detected_at: T0.toISOString(),
-          player: { tag: 'G2P9', name: 'Player One' },
-          from_club: { name: 'Old Club' },
-          to_club: { name: 'Alpha' },
-        },
-      ],
-    });
-    fake.state.handlers['notifications:select'] = () => ({ data: [] });
+    const event = unsentEvent('event-1', { fromClubId: 'club-old', toClubId: 'club-1' });
+    event.event_type = 'transfer';
+    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([event]);
 
     let claimAttempts = 0;
+    let claimedOwner: string | undefined;
+    fake.state.handlers['notifications:select'] = () => ({
+      data:
+        claimedOwner === undefined
+          ? []
+          : [{ event_id: 'event-1', delivery_status: 'sent', delivery_owner: claimedOwner }],
+    });
+    fake.state.handlers['rpc:claim_notification'] = (call) => {
+      claimAttempts += 1;
+      if (claimAttempts > 1) return { data: null };
+      claimedOwner = (call.payload as { p_owner: string }).p_owner;
+      return { data: 'notification-1' };
+    };
     let sends = 0;
     const delivered: Array<{
       clubName: string;
@@ -594,13 +661,6 @@ describe('runSync', () => {
       occurredAt: string | undefined;
       remainingMembers: number | undefined;
     }> = [];
-    fake.state.handlers['notifications:insert'] = () => {
-      claimAttempts += 1;
-      if (claimAttempts > 1) {
-        return { error: { code: '23505', message: 'duplicate key value' } };
-      }
-      return { data: [{ id: 'notification-1' }] };
-    };
     fake.state.handlers['notifications:update'] = () => ({ data: [] });
 
     const notifier = {
@@ -625,20 +685,30 @@ describe('runSync', () => {
     const first = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(first.status).toBe('completed');
     expect(first.notificationsSent).toBe(1);
-    expect(callsFor('notifications', 'insert')[0]?.payload).toMatchObject({
-      event_id: 'event-1',
-      delivery_status: 'pending',
+    const claims = callsFor('rpc:claim_notification', 'select');
+    expect(claims).toHaveLength(1);
+    expect(claims[0]?.payload).toMatchObject({
+      p_event_id: 'event-1',
+      p_channel_id: 'channel-1',
+      p_kind: 'transfer',
+      p_owner: claimedOwner,
+      p_lease_seconds: 120,
     });
     expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
       delivery_status: 'sent',
       discord_message_id: 'message-1',
+    });
+    expect(callsFor('notifications', 'update')[0]?.filters).toMatchObject({
+      id: 'notification-1',
+      delivery_owner: claimedOwner,
+      delivery_status: 'pending',
     });
 
     const second = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(second.status).toBe('completed');
     expect(second.notificationsSent).toBe(0);
     expect(sends).toBe(1);
-    expect(claimAttempts).toBe(2);
+    expect(claimAttempts).toBe(1);
     expect(delivered[0]?.clubName).toBe('Alpha');
     expect(delivered[0]?.toClubName).toBe('Alpha');
     expect(delivered[0]?.occurredAt).toBe(T0.toISOString());
@@ -650,20 +720,14 @@ describe('runSync', () => {
     const failed = await runSync({ now: T0, guildId: 'guild-test' });
     expect(failed.status).toBe('failed');
 
-    const orphanedEvent = {
-      id: 'orphan-event',
-      player_id: 'player-1',
-      event_type: 'transfer',
-      from_club_id: 'club-old',
-      to_club_id: 'club-1',
-      detected_at: T0.toISOString(),
-      player: { tag: 'G2P9', name: 'Player One' },
-      from_club: { name: 'Old Club' },
-      to_club: { name: 'Alpha' },
-    };
-    fake.state.handlers['membership_events:select'] = () => ({ data: [orphanedEvent] });
+    const orphanedEvent = unsentEvent('orphan-event', {
+      fromClubId: 'club-old',
+      toClubId: 'club-1',
+    });
+    orphanedEvent.event_type = 'transfer';
+    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([orphanedEvent]);
     fake.state.handlers['notifications:select'] = () => ({ data: [] });
-    fake.state.handlers['notifications:insert'] = () => ({ data: [{ id: 'notification-orphan' }] });
+    fake.state.handlers['rpc:claim_notification'] = () => ({ data: 'notification-orphan' });
     fake.state.handlers['notifications:update'] = () => ({ data: [] });
 
     const delivered: Array<{ clubName: string; fromClubName: string | undefined; toClubName: string | undefined }> = [];
@@ -694,27 +758,18 @@ describe('runSync', () => {
 
   it('retries an interrupted claim instead of treating it as delivered', async () => {
     setupSuccessfulSync();
-    fake.state.handlers['membership_events:select'] = () => ({
-      data: [
-        {
-          id: 'event-interrupted',
-          player_id: 'player-1',
-          event_type: 'join',
-          from_club_id: null,
-          to_club_id: 'club-1',
-          detected_at: T0.toISOString(),
-          player: { tag: 'G2P9', name: 'Player One' },
-          to_club: { name: 'Alpha' },
-        },
-      ],
-    });
+    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([
+      unsentEvent('event-interrupted'),
+    ]);
+    // An expired pending claim from a crashed run is not delivered.
     fake.state.handlers['notifications:select'] = (call) => ({
-      data: Array.isArray(call.filters['event_id'])
-        ? []
-        : [{ id: 'claim-pending', delivery_status: 'pending' }],
+      data:
+        call.filters['delivery_owner'] === undefined
+          ? [{ event_id: 'event-interrupted', delivery_status: 'pending', lease_until: null }]
+          : [],
     });
-    fake.state.handlers['notifications:insert'] = () => ({
-      error: { code: '23505', message: 'duplicate key value' },
+    fake.state.handlers['rpc:claim_notification'] = (call) => ({
+      data: `claim-${String((call.payload as { p_owner: string }).p_owner).slice(0, 8)}`,
     });
     fake.state.handlers['notifications:update'] = () => ({ data: [] });
 
@@ -732,36 +787,39 @@ describe('runSync', () => {
     expect(result.status).toBe('completed');
     expect(result.notificationsSent).toBe(1);
     expect(sends).toBe(1);
-    expect(callsFor('notifications', 'insert')[0]?.payload).toMatchObject({
-      delivery_status: 'pending',
-    });
+    expect(callsFor('rpc:claim_notification', 'select')).toHaveLength(1);
     expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
       delivery_status: 'sent',
       discord_message_id: 'message-1',
     });
   });
 
-  it('filters claimed events before applying the announcement limit', async () => {
+  it('pages unsent events with a keyset cursor until the announcement limit is met', async () => {
     setupSuccessfulSync();
-    const event = (id: string, offsetMs: number) => ({
-      id,
-      player_id: 'player-1',
-      event_type: 'join',
-      from_club_id: null,
-      to_club_id: 'club-1',
-      detected_at: new Date(T0.getTime() - offsetMs).toISOString(),
-      player: { tag: 'G2P9', name: 'Player One' },
-      to_club: { name: 'Alpha' },
-    });
-    const claimed = Array.from({ length: 20 }, (_, index) => event(`claimed-${index}`, index));
-    const pending = event('pending-old', 60 * 60 * 1000);
-    fake.state.handlers['membership_events:select'] = () => ({ data: [...claimed, pending] });
+    const ownerId = 'owner-test';
+    const rows = [
+      ...Array.from({ length: 12 }, (_, index) => {
+        const row = unsentEvent(`live-${index}`, { offsetMs: index });
+        row.player_id = 'player-live';
+        return row;
+      }),
+      unsentEvent('pending-old', { offsetMs: 60 * 60 * 1000 }),
+    ];
+    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent(rows);
     fake.state.handlers['notifications:select'] = (call) => ({
-      data: Array.isArray(call.filters['event_id'])
-        ? claimed.map((item) => ({ event_id: item.id, delivery_status: 'sent' }))
-        : [],
+      data:
+        call.filters['delivery_owner'] === ownerId
+          ? rows
+              .filter((row) => row.id.startsWith('live-'))
+              .map((row) => ({
+                event_id: row.id,
+                delivery_status: 'pending',
+                delivery_owner: ownerId,
+                lease_until: new Date(T0.getTime() + 120_000).toISOString(),
+              }))
+          : [],
     });
-    fake.state.handlers['notifications:insert'] = () => ({ data: [{ id: 'claim-pending-old' }] });
+    fake.state.handlers['rpc:claim_notification'] = () => ({ data: 'claim-pending-old' });
     fake.state.handlers['notifications:update'] = () => ({ data: [] });
 
     const delivered: string[] = [];
@@ -773,15 +831,48 @@ describe('runSync', () => {
       },
     };
 
-    const result = await runSync({ now: T0, guildId: 'guild-test', notifier });
+    const result = await runSync({
+      now: T0,
+      guildId: 'guild-test',
+      notifier,
+      notificationOwnerId: ownerId,
+    });
 
     expect(result.status).toBe('completed');
     expect(result.notificationsSent).toBe(1);
     expect(delivered).toEqual(['pending-old']);
-    expect(callsFor('membership_events', 'select')).toHaveLength(2);
-    expect(callsFor('membership_events', 'select').every((call) => call.limit === undefined)).toBe(
-      true,
-    );
+    const pages = callsFor('rpc:list_unsent_membership_events', 'select');
+    expect(pages.length).toBeGreaterThanOrEqual(2);
+    expect(pages[0]?.payload).toMatchObject({ p_limit: 25, p_before_detected_at: null });
+    const second = pages[1]?.payload as { p_before_detected_at: string; p_before_id: string };
+    expect(second.p_before_detected_at).toBeDefined();
+    expect(second.p_before_id).toBeDefined();
+    expect(callsFor('membership_events', 'select')).toHaveLength(0);
+  });
+
+  it('does not treat another run live lease as delivered but refuses to steal it', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([
+      unsentEvent('leased-event'),
+    ]);
+    // The real query filters on this run's owner, so another run's live lease is
+    // not returned as "claimed"; the claim RPC is what refuses the takeover.
+    fake.state.handlers['notifications:select'] = () => ({ data: [] });
+    fake.state.handlers['rpc:claim_notification'] = () => ({ data: null });
+
+    let sends = 0;
+    const notifier = {
+      channelId: 'channel-1',
+      send: async () => {
+        sends += 1;
+        return 'message';
+      },
+    };
+    const result = await runSync({ now: T0, guildId: 'guild-test', notifier });
+
+    expect(result.status).toBe('completed');
+    expect(sends).toBe(0);
+    expect(callsFor('rpc:claim_notification', 'select')).toHaveLength(1);
   });
 
   it('renews the sync lock while a long run is in progress', async () => {
@@ -804,6 +895,100 @@ describe('runSync', () => {
 
     expect(result.status).toBe('completed');
     expect(callsFor('rpc:renew_sync_lock', 'select').length).toBeGreaterThan(0);
+  });
+
+  it('exposes lock loss through an abort signal and callback', async () => {
+    const db = { rpc: async () => ({ data: null }) } as unknown as SupabaseClient;
+    const reasons: string[] = [];
+    const renewal = startSyncLockRenewal(
+      db,
+      'guild:guild-test',
+      'token',
+      1,
+      (reason) => { reasons.push(reason); },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(renewal.lost).toBe(true);
+    expect(renewal.signal.aborted).toBe(true);
+    expect(reasons).toHaveLength(1);
+    await renewal.stop();
+  });
+
+  it('stops before any roster write when the lock is lost during API fetch', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['rpc:renew_sync_lock'] = () => ({ data: null });
+    const reasons: string[] = [];
+    fake.api.current = apiClient({
+      getClub: async (tag) => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { tag: `#${tag}`, name: 'Alpha', trophies: 12_000 };
+      },
+    });
+
+    const result = await runSync({
+      now: T0,
+      guildId: 'guild-test',
+      lockRenewalIntervalMs: 1,
+      onLockLost: (reason) => { reasons.push(reason); },
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/lock/i);
+    expect(reasons.length).toBeGreaterThan(0);
+    expect(callsFor('players', 'upsert')).toHaveLength(0);
+    expect(callsFor('rpc:apply_membership_transition', 'select')).toHaveLength(0);
+    expect(callsFor('club_snapshots', 'upsert')).toHaveLength(0);
+    expect(callsFor('rpc:release_sync_lock', 'select')).toHaveLength(1);
+  });
+
+  it('stops before writes when the database no longer confirms lock ownership', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['rpc:assert_sync_lock_ownership'] = () => ({ data: false });
+
+    const result = await runSync({ now: T0, guildId: 'guild-test' });
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/lock/i);
+    expect(callsFor('players', 'upsert')).toHaveLength(0);
+    expect(callsFor('rpc:apply_membership_transition', 'select')).toHaveLength(0);
+  });
+
+  it('syncs each guild separately when no guild id is supplied', async () => {
+    const clubA = { id: 'club-a', tag: '2C0Y', name: 'Alpha A', guild_id: 'guild-a' };
+    const clubB = { id: 'club-b', tag: '8GPU', name: 'Alpha B', guild_id: 'guild-b' };
+    setHandlers(
+      withInfrastructureHandlers({
+        'clubs:select': (call) => {
+          const guild = call.filters['guild_id'];
+          if (guild === 'guild-a') return { data: [clubA] };
+          if (guild === 'guild-b') return { data: [clubB] };
+          return { data: [clubA, clubB] };
+        },
+        'sync_runs:select': () => ({ data: null }),
+        'sync_runs:upsert': () => ({ data: [{ id: 'run-1' }] }),
+        'sync_runs:update': () => ({ data: [] }),
+        'players:select': () => ({ data: { id: 'player-1', tag: 'G2P9', name: 'Player One' } }),
+        'players:upsert': () => ({ data: [{ id: 'player-1' }] }),
+        'club_memberships:select': () => ({ data: [] }),
+        'club_snapshots:select': () => ({ data: null }),
+        'club_snapshots:upsert': () => ({ data: [] }),
+        'player_snapshots:select': () => ({ data: null }),
+        'player_snapshots:upsert': () => ({ data: [] }),
+      }),
+    );
+    fake.api.current = apiClient();
+
+    const result = await runSync({ now: T0 });
+
+    expect(result.status).toBe('completed');
+    expect([...result.affectedClubIds].sort()).toEqual(['club-a', 'club-b']);
+    const scopes = callsFor('rpc:try_acquire_sync_lock', 'select').map(
+      (call) => (call.payload as { p_scope: string }).p_scope,
+    );
+    expect(scopes).toEqual(['guild:guild-a', 'guild:guild-b']);
+    expect(scopes).not.toContain('all-clubs');
   });
 
   it('skips when another process already holds the database lock', async () => {
@@ -954,25 +1139,14 @@ describe('runSync', () => {
 });
 
 describe('recoverInterruptedSyncs', () => {
-  it('fails abandoned runs and clears their lock scopes', async () => {
+  it('delegates the whole read-check-write sequence to one atomic RPC', async () => {
     setHandlers({
-      'sync_runs:select': () => ({
-        data: [
-          { id: 'run-1', scope: 'guild:guild-1' },
-          { id: 'run-2', scope: 'guild:guild-1' },
-        ],
-      }),
-      'sync_locks:select': () => ({
-        data: [
-          {
-            scope: 'guild:guild-1',
-            locked_by: 'old-token',
-            locked_until: '2026-11-20T03:00:00.000Z',
-          },
-        ],
-      }),
-      'sync_runs:update': () => ({ data: [] }),
-      'sync_locks:update': () => ({ data: [] }),
+      'rpc:recover_interrupted_syncs': (call) => {
+        expect(call.payload).toEqual({ p_now: '2026-11-20T03:40:00.000Z' });
+        return {
+          data: { recoveredRuns: 2, clearedScopes: ['guild:guild-1', 'guild:guild-2'] },
+        };
+      },
     });
 
     const outcome = await recoverInterruptedSyncs(
@@ -982,47 +1156,20 @@ describe('recoverInterruptedSyncs', () => {
 
     expect(outcome).toEqual({
       recoveredRuns: 2,
-      clearedScopes: ['guild:guild-1'],
+      clearedScopes: ['guild:guild-1', 'guild:guild-2'],
     });
-    const runUpdates = callsFor('sync_runs', 'update');
-    expect(runUpdates).toHaveLength(1);
-    expect(runUpdates[0]?.payload).toMatchObject({
-      status: 'failed',
-      finished_at: '2026-11-20T03:40:00.000Z',
-    });
-    const lockUpdates = callsFor('sync_locks', 'update');
-    expect(lockUpdates).toHaveLength(1);
-    expect(lockUpdates[0]?.payload).toEqual({
-      locked_by: null,
-      locked_at: null,
-      locked_until: null,
-    });
+    expect(callsFor('rpc:recover_interrupted_syncs', 'select')).toHaveLength(1);
+    expect(callsFor('sync_runs', 'select')).toHaveLength(0);
+    expect(callsFor('sync_runs', 'update')).toHaveLength(0);
+    expect(callsFor('sync_locks', 'select')).toHaveLength(0);
+    expect(callsFor('sync_locks', 'update')).toHaveLength(0);
   });
 
-  it('leaves runs alone when another process still holds their lock', async () => {
+  it('returns only the scopes the RPC actually cleared', async () => {
     setHandlers({
-      'sync_runs:select': () => ({
-        data: [
-          { id: 'run-active', scope: 'guild:guild-active' },
-          { id: 'run-stale', scope: 'guild:guild-stale' },
-        ],
+      'rpc:recover_interrupted_syncs': () => ({
+        data: { recoveredRuns: 1, clearedScopes: ['guild:guild-stale'] },
       }),
-      'sync_locks:select': () => ({
-        data: [
-          {
-            scope: 'guild:guild-active',
-            locked_by: 'live-token',
-            locked_until: '2026-11-20T04:00:00.000Z',
-          },
-          {
-            scope: 'guild:guild-stale',
-            locked_by: null,
-            locked_until: null,
-          },
-        ],
-      }),
-      'sync_runs:update': () => ({ data: [] }),
-      'sync_locks:update': () => ({ data: [] }),
     });
 
     const outcome = await recoverInterruptedSyncs(
@@ -1031,17 +1178,20 @@ describe('recoverInterruptedSyncs', () => {
     );
 
     expect(outcome).toEqual({ recoveredRuns: 1, clearedScopes: ['guild:guild-stale'] });
-    const runUpdate = callsFor('sync_runs', 'update')[0];
-    expect(runUpdate?.filters['id']).toEqual(['run-stale']);
-    expect(callsFor('sync_locks', 'update')[0]?.filters['scope']).toEqual(['guild:guild-stale']);
   });
 
-  it('does nothing when no runs are interrupted', async () => {
-    setHandlers({ 'sync_runs:select': () => ({ data: [] }) });
+  it('does nothing when the RPC reports no interrupted runs', async () => {
+    setHandlers({ 'rpc:recover_interrupted_syncs': () => ({ data: { recoveredRuns: 0, clearedScopes: [] } }) });
 
     const outcome = await recoverInterruptedSyncs(undefined as never);
 
     expect(outcome).toEqual({ recoveredRuns: 0, clearedScopes: [] });
-    expect(callsFor('sync_locks', 'update')).toHaveLength(0);
+    expect(callsFor('rpc:recover_interrupted_syncs', 'select')).toHaveLength(1);
+  });
+
+  it('surfaces RPC failures instead of silently reporting success', async () => {
+    setHandlers({ 'rpc:recover_interrupted_syncs': () => ({ error: { message: 'database offline' } }) });
+
+    await expect(recoverInterruptedSyncs(undefined as never)).rejects.toThrow(/database offline/i);
   });
 });

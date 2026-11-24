@@ -246,6 +246,12 @@ function setup(options: SetupOptions = {}): void {
       data: (call.payload as { p_token: string }).p_token,
     }),
     'rpc:release_sync_lock': () => ({ data: null }),
+    'rpc:renew_sync_lock': (call) => ({
+      data: (call.payload as { p_token: string }).p_token,
+    }),
+    'rpc:assert_sync_lock_ownership': () => ({ data: true }),
+    'rpc:list_unsent_membership_events': () => ({ data: [] }),
+    'rpc:claim_notification': () => ({ data: null }),
     'rpc:apply_membership_transition': () => ({ data: 'event-rpc-1' }),
     'rpc:apply_club_role_change': () => ({ data: 'role-change-1' }),
     'clubs:select': () => ({ data: options.clubs ?? [CLUB_ROW] }),
@@ -317,6 +323,9 @@ describe('runSync role changes', () => {
       p_detected_at: T0.toISOString(),
       p_run_id: 'run-1',
       p_valid_from: T0.toISOString(),
+      p_guild_id: 'guild-test',
+      p_lock_scope: 'guild:guild-test',
+      p_lock_token: expect.any(String),
     });
     expect(callsFor('rpc:apply_membership_transition', 'select')).toHaveLength(0);
   });
