@@ -1,9 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it, vi } from 'vitest';
+import type { Guild } from 'discord.js';
 import type { AdminActor } from '../admin/types.js';
 import {
+  applyRankedRolePlans,
   buildRankedRolePlans,
   loadGuildRankedRoleState,
+  postVerificationMessage,
   rankedTierFromRankName,
   resolveRankedRoleId,
   saveGuildRankedRoleMapping,
@@ -204,5 +207,109 @@ describe('guild settings persistence', () => {
       guild_id: GUILD_ID,
       action: 'guild.ranked_roles.updated',
     });
+  });
+});
+
+describe('applyRankedRolePlans', () => {
+  it('continues with other members when one role mutation is rejected', async () => {
+    const heldByUser = new Map([
+      ['user-1', new Set<string>()],
+      ['user-2', new Set<string>()],
+    ]);
+    const members = new Map(
+      ['user-1', 'user-2'].map((id) => [
+        id,
+        {
+          id,
+          roles: {
+            cache: {
+              has: (roleId: string) => heldByUser.get(id)!.has(roleId),
+              keys: () => heldByUser.get(id)!.keys(),
+            },
+            add: vi.fn(async (roleId: string) => {
+              if (id === 'user-1') throw new Error('Missing Permissions');
+              heldByUser.get(id)!.add(roleId);
+            }),
+            remove: vi.fn(async (roleId: string) => {
+              heldByUser.get(id)!.delete(roleId);
+            }),
+          },
+        },
+      ]),
+    );
+    const guild = {
+      id: GUILD_ID,
+      members: {
+        fetch: vi.fn(async (id: string) => {
+          const member = members.get(id);
+          if (member === undefined) throw new Error('Unknown Member');
+          return member;
+        }),
+      },
+    } as unknown as Guild;
+
+    const result = await applyRankedRolePlans(guild, [
+      {
+        discordUserId: 'user-1',
+        tier: 'GOLD',
+        addRoleIds: ['111111111111111111'],
+        removeRoleIds: [],
+        verifiedRoleId: null,
+      },
+      {
+        discordUserId: 'user-2',
+        tier: 'GOLD',
+        addRoleIds: ['111111111111111111'],
+        removeRoleIds: [],
+        verifiedRoleId: null,
+      },
+    ]);
+
+    expect(result).toEqual({ processed: 2, membersNotFound: 0 });
+    expect(heldByUser.get('user-2')?.has('111111111111111111')).toBe(true);
+  });
+});
+
+describe('postVerificationMessage', () => {
+  function fakeGuild(
+    fetchMessage: () => Promise<unknown>,
+    send: () => Promise<{ id: string }>,
+  ): Guild {
+    const channel = {
+      guild: { id: GUILD_ID },
+      isTextBased: () => true,
+      messages: { fetch: vi.fn(fetchMessage) },
+      send: vi.fn(send),
+    };
+    return {
+      id: GUILD_ID,
+      channels: { fetch: vi.fn(async () => channel) },
+    } as unknown as Guild;
+  }
+
+  it('reposts only when the stored message is genuinely unknown', async () => {
+    const send = vi.fn(async () => ({ id: 'new-message' }));
+    const guild = fakeGuild(
+      () => Promise.reject(Object.assign(new Error('Unknown Message'), { code: 10008 })),
+      send,
+    );
+
+    await expect(
+      postVerificationMessage(guild, '999999999999999999', '888888888888888888'),
+    ).resolves.toBe('new-message');
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces read failures instead of posting a duplicate', async () => {
+    const send = vi.fn(async () => ({ id: 'new-message' }));
+    const guild = fakeGuild(
+      () => Promise.reject(Object.assign(new Error('Missing Access'), { code: 50013 })),
+      send,
+    );
+
+    await expect(
+      postVerificationMessage(guild, '999999999999999999', '888888888888888888'),
+    ).rejects.toMatchObject({ code: 50013 });
+    expect(send).not.toHaveBeenCalled();
   });
 });

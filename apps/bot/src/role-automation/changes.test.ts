@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { planLedgerRoleChanges, selectLedgerRoleIds } from './changes.js';
+import {
+  planLedgerRoleChanges,
+  selectLedgerRoleIds,
+  selectStaleAssignmentRoleIds,
+} from './changes.js';
 
 const LEDGER = ['role-verify', 'role-trophy-10k', 'role-trophy-20k'];
 
@@ -62,5 +66,37 @@ describe('ledger-only role changes', () => {
       removeRoleIds: [],
       unchangedRoleIds: ['role-verify', 'role-trophy-20k'],
     });
+  });
+});
+
+describe('selectStaleAssignmentRoleIds', () => {
+  it('closes assignment rows for roles that are no longer desired or held', () => {
+    expect(
+      selectStaleAssignmentRoleIds({
+        activeRoleIds: ['role-verify', 'role-trophy-10k', 'role-trophy-20k'],
+        desiredRoleIds: ['role-verify'],
+        heldRoleIds: ['role-verify'],
+      }),
+    ).toEqual(['role-trophy-10k', 'role-trophy-20k']);
+  });
+
+  it('keeps desired roles open even when a Discord add has not succeeded yet', () => {
+    expect(
+      selectStaleAssignmentRoleIds({
+        activeRoleIds: ['role-verify', 'role-trophy-20k'],
+        desiredRoleIds: ['role-verify', 'role-trophy-20k'],
+        heldRoleIds: ['role-verify'],
+      }),
+    ).toEqual([]);
+  });
+
+  it('keeps a still-held non-desired role open until Discord removal succeeds', () => {
+    expect(
+      selectStaleAssignmentRoleIds({
+        activeRoleIds: ['role-trophy-10k'],
+        desiredRoleIds: [],
+        heldRoleIds: ['role-trophy-10k'],
+      }),
+    ).toEqual([]);
   });
 });

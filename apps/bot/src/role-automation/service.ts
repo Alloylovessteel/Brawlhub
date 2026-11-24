@@ -16,7 +16,11 @@ import { asNumber, asString, record, requireOk } from '../clubs/service.js';
 import { readGuildMembershipRoles } from '../club-roles/service.js';
 import { selectGuildMainLinks } from '../ranked-roles/service.js';
 import { listGuildVerifiedLinks } from '../verification/service.js';
-import { planLedgerRoleChanges, type LedgerRoleChanges } from './changes.js';
+import {
+  planLedgerRoleChanges,
+  selectStaleAssignmentRoleIds,
+  type LedgerRoleChanges,
+} from './changes.js';
 import {
   candidateRoleNames,
   computeDesiredTierKeys,
@@ -518,9 +522,18 @@ async function writeAssignmentChanges(
     readonly active: ReadonlyMap<string, ActiveAssignment> | undefined;
     readonly added: readonly string[];
     readonly removed: readonly string[];
+    readonly heldRoleIds: readonly string[];
   },
 ): Promise<void> {
-  await revokeAssignments(input.db, input.guildId, input.discordUserId, input.removed);
+  const staleRoleIds = selectStaleAssignmentRoleIds({
+    activeRoleIds: [...(input.active?.keys() ?? [])],
+    desiredRoleIds: input.desired === undefined ? [] : [...input.desired.roles.keys()],
+    heldRoleIds: input.heldRoleIds,
+  });
+  await revokeAssignments(input.db, input.guildId, input.discordUserId, [
+    ...input.removed,
+    ...staleRoleIds,
+  ]);
 
   const assignedAt = new Date().toISOString();
   for (const roleId of unique(input.added)) {
@@ -563,6 +576,7 @@ async function applyForMember(input: {
     active: input.context.assignments.get(input.member.id),
     added: applied.added,
     removed: applied.removed,
+    heldRoleIds: [...input.member.roles.cache.keys()],
   });
 }
 

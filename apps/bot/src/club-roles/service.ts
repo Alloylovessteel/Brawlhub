@@ -318,6 +318,26 @@ export function buildClubRolePlans(
   });
 }
 
+async function tryClubRoleMutation(
+  guildId: string,
+  discordUserId: string,
+  action: 'add' | 'remove',
+  roleId: string,
+  mutate: () => Promise<void>,
+): Promise<void> {
+  try {
+    await mutate();
+  } catch (error) {
+    logger.warn('Could not change a club role', {
+      guildId,
+      discordUserId,
+      action,
+      roleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /** Apply role plans in the invoking guild. Missing members are skipped. */
 export async function applyClubRolePlans(
   guild: Guild,
@@ -336,14 +356,16 @@ export async function applyClubRolePlans(
     }
 
     for (const roleId of plan.removeRoleIds) {
-      if (member.roles.cache.has(roleId)) {
+      if (!member.roles.cache.has(roleId)) continue;
+      await tryClubRoleMutation(guild.id, plan.discordUserId, 'remove', roleId, async () => {
         await member.roles.remove(roleId, 'BrawlHub club role refresh');
-      }
+      });
     }
     for (const roleId of plan.addRoleIds) {
-      if (!member.roles.cache.has(roleId)) {
+      if (member.roles.cache.has(roleId)) continue;
+      await tryClubRoleMutation(guild.id, plan.discordUserId, 'add', roleId, async () => {
         await member.roles.add(roleId, 'BrawlHub club role refresh');
-      }
+      });
     }
     processed += 1;
   }
@@ -373,7 +395,9 @@ async function removeStaleManagedRoles(
     const staleRoleIds = selectStaleClubRoleIds([...member.roles.cache.keys()], managedIds);
     if (staleRoleIds.length === 0) continue;
     for (const roleId of staleRoleIds) {
-      await member.roles.remove(roleId, 'BrawlHub club role refresh');
+      await tryClubRoleMutation(guild.id, member.id, 'remove', roleId, async () => {
+        await member.roles.remove(roleId, 'BrawlHub club role refresh');
+      });
     }
     cleaned += 1;
   }

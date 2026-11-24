@@ -20,6 +20,8 @@ interface TableResponse {
 interface FakeDb {
   readonly client: SupabaseClient;
   readonly updates: Array<{ readonly table: string; readonly payload: Record<string, unknown> }>;
+  readonly rpcs: Array<{ readonly name: string; readonly args: Record<string, unknown> }>;
+  rpcResult: Response;
   readonly authDeletes: string[];
   setAuthDeleteResult(result: unknown): void;
   setAuthDeleteError(error: unknown): void;
@@ -27,9 +29,11 @@ interface FakeDb {
 
 function fakeDb(tables: Record<string, TableResponse>): FakeDb {
   const updates: FakeDb['updates'] = [];
+  const rpcs: FakeDb['rpcs'] = [];
   const authDeletes: string[] = [];
   let authDeleteResult: unknown = { data: { user: {} }, error: null };
   let authDeleteError: unknown = undefined;
+  const fakeDbState: { rpcResult: Response } = { rpcResult: { data: true, error: null } };
   const selectCursors: Record<string, number> = {};
 
   function nextSelect(table: string): Response {
@@ -111,6 +115,10 @@ function fakeDb(tables: Record<string, TableResponse>): FakeDb {
       from(table: string) {
         return new Query(table);
       },
+      async rpc(name: string, args: Record<string, unknown>) {
+        rpcs.push({ name, args });
+        return fakeDbState.rpcResult;
+      },
       auth: {
         admin: {
           async deleteUser(id: string) {
@@ -122,6 +130,13 @@ function fakeDb(tables: Record<string, TableResponse>): FakeDb {
       },
     } as unknown as SupabaseClient,
     updates,
+    rpcs,
+    get rpcResult() {
+      return fakeDbState.rpcResult;
+    },
+    set rpcResult(result: Response) {
+      fakeDbState.rpcResult = result;
+    },
     authDeletes,
     setAuthDeleteResult(result: unknown) {
       authDeleteResult = result;
@@ -233,7 +248,7 @@ describe('listLinkedAccounts', () => {
 });
 
 describe('setMainVerification', () => {
-  it('demotes the old main and promotes the chosen alt', async () => {
+  it('switches the main account through one atomic database RPC', async () => {
     const db = fakeDb({
       ...profile,
       player_verifications: {
@@ -253,10 +268,36 @@ describe('setMainVerification', () => {
     });
 
     expect(result).toEqual({ kind: 'ok', tag: '2UG9UGQJY' });
-    expect(db.updates).toEqual([
-      { table: 'player_verifications', payload: { is_main: false } },
-      { table: 'player_verifications', payload: { is_main: true } },
+    expect(db.updates).toEqual([]);
+    expect(db.rpcs).toEqual([
+      {
+        name: 'set_player_verification_main',
+        args: { p_profile_id: 'profile-1', p_player_id: 'player-v2' },
+      },
     ]);
+  });
+
+  it('reports a database error without leaving a partial main-account change', async () => {
+    const db = fakeDb({
+      ...profile,
+      player_verifications: {
+        select: {
+          data: [
+            link('v1', '#YQPQ0Q2CL', 'Main Player', true, '2026-11-01T00:00:00.000Z'),
+            link('v2', '#2UG9UGQJY', 'Alt Player', false, '2026-11-20T00:00:00.000Z'),
+          ],
+          error: null,
+        },
+      },
+    });
+    db.rpcResult = { data: null, error: { message: 'switch failed' } };
+
+    const result = await setMainVerification('983248496884875286', '#2UG9UGQJY', {
+      db: db.client,
+    });
+
+    expect(result).toEqual({ kind: 'db-error', message: 'Set main account: switch failed' });
+    expect(db.updates).toEqual([]);
   });
 
   it('rejects a tag that is not linked to the caller', async () => {

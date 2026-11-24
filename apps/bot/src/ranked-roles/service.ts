@@ -317,6 +317,13 @@ export function buildVerificationMessage(guildId: string): {
   };
 }
 
+function isMissingDiscordMessage(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as { code?: unknown; name?: unknown };
+  return candidate.code === 10008 || candidate.code === 'UnknownMessage'
+    || candidate.name === 'UnknownMessage';
+}
+
 async function resolveMessage(
   channel: GuildBasedChannel,
   messageId: string | null,
@@ -324,8 +331,12 @@ async function resolveMessage(
   if (messageId === null || !('messages' in channel)) return null;
   try {
     return await channel.messages.fetch(messageId);
-  } catch {
-    return null;
+  } catch (error) {
+    // Only a genuinely deleted/unknown message may be replaced. Permission,
+    // network and rate-limit failures must surface instead of posting a
+    // duplicate verification message.
+    if (isMissingDiscordMessage(error)) return null;
+    throw error;
   }
 }
 
@@ -411,6 +422,26 @@ export function buildRankedRolePlans(
   });
 }
 
+async function tryRankedRoleMutation(
+  guildId: string,
+  discordUserId: string,
+  action: 'add' | 'remove',
+  roleId: string,
+  mutate: () => Promise<void>,
+): Promise<void> {
+  try {
+    await mutate();
+  } catch (error) {
+    logger.warn('Could not change a ranked role', {
+      guildId,
+      discordUserId,
+      action,
+      roleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /** Apply role plans in the invoking guild. Missing members are skipped, not created. */
 export async function applyRankedRolePlans(
   guild: Guild,
@@ -430,13 +461,27 @@ export async function applyRankedRolePlans(
     }
 
     for (const roleId of plan.removeRoleIds) {
-      if (member.roles.cache.has(roleId)) await member.roles.remove(roleId, 'BrawlHub ranked role refresh');
+      if (!member.roles.cache.has(roleId)) continue;
+      await tryRankedRoleMutation(guild.id, plan.discordUserId, 'remove', roleId, async () => {
+        await member.roles.remove(roleId, 'BrawlHub ranked role refresh');
+      });
     }
     for (const roleId of plan.addRoleIds) {
-      if (!member.roles.cache.has(roleId)) await member.roles.add(roleId, 'BrawlHub ranked role refresh');
+      if (member.roles.cache.has(roleId)) continue;
+      await tryRankedRoleMutation(guild.id, plan.discordUserId, 'add', roleId, async () => {
+        await member.roles.add(roleId, 'BrawlHub ranked role refresh');
+      });
     }
     if (verifiedRoleId !== null && !member.roles.cache.has(verifiedRoleId)) {
-      await member.roles.add(verifiedRoleId, 'BrawlHub verification role refresh');
+      await tryRankedRoleMutation(
+        guild.id,
+        plan.discordUserId,
+        'add',
+        verifiedRoleId,
+        async () => {
+          await member.roles.add(verifiedRoleId, 'BrawlHub verification role refresh');
+        },
+      );
     }
     processed += 1;
   }
@@ -466,7 +511,9 @@ async function removeStaleManagedRoles(
     const staleRoleIds = selectStaleRoleIds([...member.roles.cache.keys()], managedRoleIds);
     if (staleRoleIds.length === 0) continue;
     for (const roleId of staleRoleIds) {
-      await member.roles.remove(roleId, 'BrawlHub ranked role refresh');
+      await tryRankedRoleMutation(guild.id, member.id, 'remove', roleId, async () => {
+        await member.roles.remove(roleId, 'BrawlHub ranked role refresh');
+      });
     }
     cleaned += 1;
   }

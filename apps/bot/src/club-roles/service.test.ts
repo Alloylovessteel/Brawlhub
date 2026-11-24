@@ -330,6 +330,56 @@ describe('applyClubRolePlans', () => {
     expect(add).toHaveBeenCalledWith('111111111111111111', 'BrawlHub club role refresh');
     expect([...held.keys()]).toEqual(['111111111111111111']);
   });
+
+  it('continues with other members when one role mutation is rejected', async () => {
+    const heldByUser = new Map([
+      ['user-1', new Set<string>()],
+      ['user-2', new Set<string>()],
+    ]);
+    const guild = {
+      id: GUILD_ID,
+      members: {
+        fetch: vi.fn(async (id: string) => {
+          const held = heldByUser.get(id);
+          if (held === undefined) throw new Error('Unknown Member');
+          return {
+            id,
+            roles: {
+              cache: {
+                has: (roleId: string) => held.has(roleId),
+                keys: () => held.keys(),
+              },
+              add: vi.fn(async (roleId: string) => {
+                if (id === 'user-1') throw new Error('Missing Permissions');
+                held.add(roleId);
+              }),
+              remove: vi.fn(async (roleId: string) => {
+                held.delete(roleId);
+              }),
+            },
+          };
+        }),
+      },
+    } as unknown as Guild;
+
+    const result = await applyClubRolePlans(guild, [
+      {
+        discordUserId: 'user-1',
+        rank: 'president',
+        addRoleIds: ['111111111111111111'],
+        removeRoleIds: [],
+      },
+      {
+        discordUserId: 'user-2',
+        rank: 'president',
+        addRoleIds: ['111111111111111111'],
+        removeRoleIds: [],
+      },
+    ]);
+
+    expect(result).toEqual({ processed: 2, membersNotFound: 0 });
+    expect(heldByUser.get('user-2')?.has('111111111111111111')).toBe(true);
+  });
 });
 
 describe('refreshGuildClubRoles', () => {

@@ -45,3 +45,20 @@ export function planLedgerRoleChanges(input: {
     unchangedRoleIds: desired.filter((roleId) => held.has(roleId)),
   };
 }
+
+/**
+ * Assignment rows whose role is neither desired nor actually held anymore.
+ * These must be revoked even when Discord reported nothing to remove; otherwise
+ * the assignment ledger can stay open for a role the member no longer has.
+ */
+export function selectStaleAssignmentRoleIds(input: {
+  readonly activeRoleIds: readonly string[];
+  readonly desiredRoleIds: readonly string[];
+  readonly heldRoleIds: readonly string[];
+}): string[] {
+  const desired = new Set(input.desiredRoleIds);
+  const held = new Set(input.heldRoleIds);
+  return unique(input.activeRoleIds).filter(
+    (roleId) => !desired.has(roleId) && !held.has(roleId),
+  );
+}

@@ -228,19 +228,15 @@ export async function setMainVerification(
   }
 
   try {
-    const demote = await db
-      .from('player_verifications')
-      .update({ is_main: false })
-      .eq('profile_id', profileId)
-      .eq('status', 'active')
-      .eq('is_main', true);
-    requireOk(demote.error, 'Clear previous main account');
-    const promote = await db
-      .from('player_verifications')
-      .update({ is_main: true })
-      .eq('id', target.verificationId)
-      .eq('status', 'active');
-    requireOk(promote.error, 'Set main account');
+    // The unique index allows only one active main per profile. Demoting and
+    // promoting must happen in one database transaction, otherwise a failed
+    // promotion would leave the profile without any main account.
+    const result = await db.rpc('set_player_verification_main', {
+      p_profile_id: profileId,
+      p_player_id: target.playerId,
+    });
+    requireOk(result.error, 'Set main account');
+    if (result.data !== true) return { kind: 'not-found' };
     return { kind: 'ok', tag };
   } catch (error) {
     return { kind: 'db-error', message: error instanceof Error ? error.message : String(error) };
