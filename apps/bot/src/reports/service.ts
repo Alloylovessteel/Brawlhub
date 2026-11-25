@@ -19,6 +19,8 @@ import type { MutableClubSummary, ReportClubSummary } from './types';
 const logger = createLogger('bot');
 const REDACTED = '[REDACTED]';
 const LEDGER_WRITE_ATTEMPTS = 2;
+/** Uncertain periods already warned about; the scheduler retries every tick. */
+const warnedUncertainReports = new Set<string>();
 const REPORT_CLAIM_PREFIX = 'claim:';
 const REPORT_DELIVERED_PREFIX = 'claim-delivered:';
 type ReportClaimStage = 'reserved' | 'loading' | 'sending';
@@ -364,7 +366,7 @@ export async function postScheduledReport(
               existingMessageId = recovered;
               expectedPriorValue = newest;
             } else {
-              logger.warn('Skipping uncertain report claim', {
+              logger.debug('Skipping uncertain report claim', {
                 guildId: input.guildId,
                 reportType: input.period.type,
                 periodKey: input.period.periodKey,
@@ -376,7 +378,7 @@ export async function postScheduledReport(
           existingMessageId = currentMessageId;
           expectedPriorValue = currentMessageId;
         } else {
-          logger.warn('Skipping uncertain report claim', {
+          logger.debug('Skipping uncertain report claim', {
             guildId: input.guildId,
             reportType: input.period.type,
             periodKey: input.period.periodKey,
@@ -720,11 +722,15 @@ export async function runScheduledReports(
       });
       if (result.uncertain === true) {
         skippedTypes.add(type);
-        logger.warn('Scheduled report outcome is uncertain; manual reconciliation may be needed', {
-          guildId: guild.guildId,
-          reportType: type,
-          periodKey: target.period.periodKey,
-        });
+        const uncertainKey = `${guild.guildId}:${type}:${target.period.periodKey}`;
+        if (!warnedUncertainReports.has(uncertainKey)) {
+          warnedUncertainReports.add(uncertainKey);
+          logger.warn('Scheduled report outcome is uncertain; manual reconciliation may be needed', {
+            guildId: guild.guildId,
+            reportType: type,
+            periodKey: target.period.periodKey,
+          });
+        }
         continue;
       }
       if (result.skipped === true) {
