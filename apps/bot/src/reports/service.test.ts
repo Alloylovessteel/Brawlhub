@@ -418,9 +418,13 @@ describe('postScheduledReport', () => {
     expect(post).toHaveBeenCalledWith(Routes.channelMessages(CHANNEL_ID), {
       body: expect.objectContaining({
         allowed_mentions: { parse: [] },
-        embeds: expect.any(Array),
+        embeds: [],
+        attachments: [expect.objectContaining({ id: '0', filename: expect.stringMatching(/\.png$/) })],
       }),
+      files: [expect.objectContaining({ key: 'files[0]', contentType: 'image/png' })],
     });
+    const [, payload] = post.mock.calls[0] as unknown as [string, { files: { data: Buffer }[] }];
+    expect(payload.files[0]?.data.subarray(0, 8)).toEqual(Buffer.from('89504e470d0a1a0a', 'hex'));
     const stages = stagedUpdates().map((call) =>
       String((call.payload as Record<string, unknown>)['message_id']).replace(/^claim:[^:]+:/, ''),
     );
@@ -438,7 +442,8 @@ describe('postScheduledReport', () => {
 
     expect(result).toEqual({ posted: true, messageId: 'existing-message', claimed: false });
     expect(patch).toHaveBeenCalledWith(Routes.channelMessage(CHANNEL_ID, 'existing-message'), {
-      body: expect.objectContaining({ embeds: expect.any(Array) }),
+      body: expect.objectContaining({ embeds: [], attachments: [expect.objectContaining({ id: '0' })] }),
+      files: [expect.objectContaining({ key: 'files[0]', contentType: 'image/png' })],
     });
     expect(post).not.toHaveBeenCalled();
     expect(fake.ledger[0]?.message_id).toBe('existing-message');
@@ -579,7 +584,8 @@ describe('postScheduledReport', () => {
 
     expect(result).toEqual({ posted: true, messageId: 'recovered-message', claimed: false });
     expect(patch).toHaveBeenCalledWith(Routes.channelMessage(CHANNEL_ID, 'recovered-message'), {
-      body: expect.objectContaining({ embeds: expect.any(Array) }),
+      body: expect.objectContaining({ embeds: [] }),
+      files: [expect.objectContaining({ contentType: 'image/png' })],
     });
     expect(post).not.toHaveBeenCalled();
     expect(fake.ledger[0]?.message_id).toBe('recovered-message');

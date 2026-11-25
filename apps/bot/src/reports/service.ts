@@ -3,7 +3,7 @@ import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import { REST, Routes } from 'discord.js';
 import { getBotConfig } from '../config';
-import { buildReportEmbed } from './embed';
+import { buildReportImage, describeReportImage, reportImageTitle } from './image';
 import { normalizeInactivityDays } from './inactivity';
 import {
   latestCompletedReportPeriod,
@@ -399,8 +399,10 @@ export async function postScheduledReport(
   }
 
   let data: ReportData;
+  let image: Buffer;
   try {
     data = await loadReportData(input.guildId, input.period);
+    image = await buildReportImage(data, input.guildLabel ?? input.guildId);
   } catch (error: unknown) {
     await releaseClaim();
     return { posted: false, messageId: null, error: safeError(error, input.token) };
@@ -410,23 +412,22 @@ export async function postScheduledReport(
     return { posted: false, messageId: null, skipped: true };
   }
 
-  const embed = buildReportEmbed({
-    data,
-    guildLabel: input.guildLabel ?? input.guildId,
-    now: new Date(),
-  });
+  const name = `club-report-${input.period.type}-${input.period.periodKey}.png`;
   const body = {
-    embeds: [embed.toJSON()],
+    content: reportImageTitle(input.period),
+    embeds: [],
+    attachments: [{ id: '0', filename: name, description: describeReportImage(data) }],
     allowed_mentions: { parse: [] },
     flags: 0,
   };
+  const files = [{ key: 'files[0]', name, data: image, contentType: 'image/png' }];
 
   let messageId: string | null = null;
   if (existingMessageId !== null) {
     try {
       const message = (await input.rest.patch(
         Routes.channelMessage(channelId, existingMessageId),
-        { body },
+        { body, files },
       )) as { id?: string } | undefined;
       messageId = asString(message?.id) ?? existingMessageId;
     } catch (error: unknown) {
@@ -441,6 +442,7 @@ export async function postScheduledReport(
     try {
       const message = (await input.rest.post(Routes.channelMessages(channelId), {
         body,
+        files,
       })) as { id?: string } | undefined;
       messageId = asString(message?.id);
     } catch (error: unknown) {
