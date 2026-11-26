@@ -545,6 +545,24 @@ describe('registerClubs', () => {
 });
 
 describe('runSync', () => {
+  it('skips a completed period normally but re-runs it with force', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['sync_runs:select'] = () => ({
+      data: { id: 'run-1', status: 'completed', started_at: T0.toISOString() },
+    });
+
+    const skipped = await runSync({ now: T0, guildId: 'guild-test' });
+    expect(skipped.status).toBe('skipped');
+    expect(skipped.error).toBe('Sync already completed for this period');
+
+    const forced = await runSync({ now: T0, guildId: 'guild-test', force: true });
+    expect(forced.status).toBe('completed');
+    expect(forced.syncRunId).toBe('run-1');
+    expect(
+      callsFor('sync_runs', 'upsert').some((call) => call.payload.status === 'running'),
+    ).toBe(true);
+  });
+
   it('fails the run when the API returns an empty roster that contradicts club stats', async () => {
     setHandlers(
       withInfrastructureHandlers({

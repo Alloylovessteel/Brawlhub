@@ -26,7 +26,15 @@ export const syncCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
   .setDescription("Run or inspect this server's BrawlHub club synchronisation")
   .addSubcommand((subcommand) =>
-    subcommand.setName('run').setDescription("Run this server's BrawlHub club synchronisation"),
+    subcommand
+      .setName('run')
+      .setDescription("Run this server's BrawlHub club synchronisation")
+      .addBooleanOption((option) =>
+        option
+          .setName('force')
+          .setDescription('Re-run even if this 15-minute period already completed')
+          .setRequired(false),
+      ),
   )
   .addSubcommand((subcommand) =>
     subcommand
@@ -39,7 +47,7 @@ export async function handleSyncCommand(interaction: ChatInputCommandInteraction
     await handleSyncStatus(interaction);
     return;
   }
-  await handleSync(interaction);
+  await handleSync(interaction, interaction.options.getBoolean('force') ?? false);
 }
 
 function websiteLine(): string | undefined {
@@ -89,7 +97,10 @@ async function refreshOverviewAfterSync(
   }
 }
 
-export async function handleSync(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function handleSync(
+  interaction: ChatInputCommandInteraction,
+  force = false,
+): Promise<void> {
   let deferred = false;
   try {
     await interaction.deferReply({ flags: 64 });
@@ -129,7 +140,9 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
     }
 
     // Run only this guild to preserve per-server isolation for manual syncs.
-    const outcome = await runManagedSync({ run: () => runSync({ guildId: interaction.guildId! }).then((r) => [r]) });
+    const outcome = await runManagedSync({
+      run: () => runSync({ guildId: interaction.guildId!, force }).then((r) => [r]),
+    });
     const site = websiteLine();
     if (outcome.kind === 'overlap') {
       await interaction.editReply({

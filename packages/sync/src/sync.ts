@@ -816,6 +816,7 @@ async function acquireRun(
   nowMs: number,
   clubIds: readonly string[],
   clubTags: readonly string[],
+  force: boolean,
 ): Promise<AcquireOutcome> {
   const existingResult = await db
     .from('sync_runs')
@@ -826,7 +827,7 @@ async function acquireRun(
   requireOk(existingResult.error, 'Read sync_runs');
   const existing = (existingResult.data ?? null) as RunRow | null;
 
-  if (existing?.status === 'completed') {
+  if (existing?.status === 'completed' && !force) {
     return {
       kind: 'skip',
       result: skippedResult(existing.id, 'Sync already completed for this period'),
@@ -1550,6 +1551,8 @@ export interface RunSyncOptions {
   notifierForGuild?: (guildId: string) => SyncNotifier | undefined | Promise<SyncNotifier | undefined>;
   client?: BrawlStarsClient;
   guildId?: string;
+  /** Re-run a completed period instead of returning the existing completed result. */
+  force?: boolean;
   /** Testable override for the lock heartbeat interval. */
   lockRenewalIntervalMs?: number;
   /** Stable per-run notification owner; generated when absent. */
@@ -1802,7 +1805,16 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       }
     };
 
-    const acquired = await acquireRun(db, scope, periodStartIso, nowIso, nowMs, clubIds, clubTags);
+    const acquired = await acquireRun(
+      db,
+      scope,
+      periodStartIso,
+      nowIso,
+      nowMs,
+      clubIds,
+      clubTags,
+      options.force === true,
+    );
     if (acquired.kind === 'skip') {
       return { ...acquired.result, ...guildContext(requestedGuildId) };
     }

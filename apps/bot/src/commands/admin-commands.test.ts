@@ -57,6 +57,7 @@ const mocks = vi.hoisted(() => {
     sync: {
       previewClubRegistration: vi.fn(),
       registerClubs: vi.fn(),
+      runSync: vi.fn(),
     },
     clubs: {
       getRegisteredClubs: vi.fn(),
@@ -310,6 +311,8 @@ beforeEach(() => {
   mocks.sync.previewClubRegistration.mockResolvedValue(preview());
   mocks.sync.registerClubs.mockReset();
   mocks.sync.registerClubs.mockResolvedValue({ registered: 1, rejected: [] });
+  mocks.sync.runSync.mockReset();
+  mocks.sync.runSync.mockResolvedValue(syncResult());
 
   mocks.clubs.getRegisteredClubs.mockReset();
   mocks.clubs.getRegisteredClubs.mockResolvedValue([{ id: CLUB_ID, tag: '2UG9', name: 'Alpha' }]);
@@ -470,6 +473,23 @@ describe('/sync', () => {
     const json = syncCommandData.toJSON() as any;
     expect(json.name).toBe('sync');
     expect(json.options.map((option: any) => option.name)).toEqual(['run', 'status']);
+    expect(json.options[0].options.map((option: any) => option.name)).toEqual(['force']);
+  });
+
+  it('passes force through to a fresh guild sync', async () => {
+    const interaction = chat(null);
+
+    await handleSync(interaction, true);
+
+    const runner = mocks.guard.runManagedSync.mock.calls[0]?.[0]?.run as
+      | (() => Promise<unknown>)
+      | undefined;
+    if (runner === undefined) throw new Error('sync runner was not configured');
+    mocks.sync.runSync.mockResolvedValueOnce(syncResult({ status: 'completed' }));
+
+    await runner();
+
+    expect(mocks.sync.runSync).toHaveBeenCalledWith({ guildId: GUILD_ID, force: true });
   });
 
   it('rejects unauthorized users', async () => {
