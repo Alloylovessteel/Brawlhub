@@ -410,8 +410,8 @@ describe('loadUndeliveredClubLogEvents', () => {
     });
     expect(groups[0]?.events.map((event) => event.description)).toEqual([
       'New Role (48,617 🏆) was demoted to none.',
-      '#MOVER transferred from #ALPHA to another club',
-      '#LEAVER left #ALPHA',
+      'Mover transferred from Alpha to another club',
+      'Leaver left Alpha',
       'Club open (29/30)',
       'Club full (30/30)',
     ]);
@@ -448,7 +448,7 @@ describe('loadUndeliveredClubLogEvents', () => {
 
     expect(groups).toHaveLength(1);
     expect(groups[0]?.events.map((event) => event.description)).toEqual([
-      '#OLDMEMBER joined #ALPHA',
+      'Old Member joined Alpha',
     ]);
   });
 

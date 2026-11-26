@@ -10,6 +10,7 @@ import {
   advanceClubLogDigestClaim,
   claimClubLogDigestWindows,
   loadClubLogs,
+  loadPostedClubLogDigestPosts,
   loadUndeliveredClubLogEvents,
   markClubLogDigestClaimDelivered,
   markClubLogDigestPosted,
@@ -32,7 +33,6 @@ const DIGEST_LABELS: Readonly<Record<ClubLogPeriod, string>> = {
   week: 'Weekly',
   season: 'Season',
 };
-
 function safeError(error: unknown, token: string): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes(token) ? message.split(token).join(REDACTED) : message;
@@ -128,6 +128,83 @@ function digestContent(
 ): string {
   const label = DIGEST_LABELS[boundary.period];
   return `${safeText(clubName, 60)} • Club Log / Trophy Progression / ${label} — ${boundary.label} (UTC)`;
+}
+
+/**
+ * Edit an already-posted daily trophy digest with the latest completed sync
+ * data. Only the currently due `today` window is touched; weekly and season
+ * digests stay immutable. A refresh replaces the existing Discord message
+ * instead of posting a duplicate.
+ */
+export async function refreshTodayClubLogDigest(
+  guildId: string,
+  now: Date = new Date(),
+): Promise<void> {
+  const config = getBotConfig();
+  const token = config.token;
+  if (token === undefined) return;
+
+  const boundary = dueClubLogDigests(now, {
+    seasonStartIso: config.seasonStartIso,
+    seasonEndIso: config.seasonEndIso,
+  }).find((candidate) => candidate.period === 'today');
+  if (boundary === undefined) return;
+
+  let posts: Awaited<ReturnType<typeof loadPostedClubLogDigestPosts>>;
+  let logs: Awaited<ReturnType<typeof loadClubLogs>>;
+  try {
+    [posts, logs] = await Promise.all([
+      loadPostedClubLogDigestPosts(guildId, 'today', boundary.periodKey),
+      loadClubLogs(guildId),
+    ]);
+  } catch (error) {
+    logger.warn('Daily club log digests could not be loaded for refresh', {
+      guildId,
+      error: safeError(error, token),
+    });
+    return;
+  }
+  if (posts.length === 0) return;
+
+  const rest = new REST({ version: '10' }).setToken(token);
+  const logsById = new Map(logs.map((log) => [log.id, log]));
+  for (const post of posts) {
+    const log = logsById.get(post.logId);
+    if (log === undefined || !log.periods.includes('today')) continue;
+    try {
+      const page = await loadClubLogView({
+        guildId,
+        tag: log.clubTag,
+        period: 'today',
+        // Keep the original window label, but allow snapshots captured after
+        // the scheduled post so a sync that ran afterwards is reflected.
+        now: boundary.windowEnd,
+      });
+      if (page.kind !== 'ok') throw new Error('Club lookup failed');
+      const image = await buildClubLogDigestImage(page.value, DIGEST_LABELS.today);
+      const name = filename(log.clubTag, `today-${boundary.periodKey}-refresh`);
+      await rest.patch(Routes.channelMessage(post.channelId, post.messageId), {
+        body: {
+          content: digestContent(log.clubName, boundary),
+          allowed_mentions: { parse: [] },
+          attachments: [{ id: '0', filename: name }],
+        },
+        files: [{ key: 'files[0]', name, data: image, contentType: 'image/png' }],
+      });
+      logger.info('Daily club log digest refreshed', {
+        guildId,
+        logId: log.id,
+        periodKey: boundary.periodKey,
+      });
+    } catch (error) {
+      logger.warn('Daily club log digest could not be refreshed', {
+        guildId,
+        logId: log.id,
+        periodKey: boundary.periodKey,
+        error: safeError(error, token),
+      });
+    }
+  }
 }
 
 /**

@@ -88,9 +88,19 @@ function playerFrom(value: unknown): {
   };
 }
 
+function safeLabel(value: string | null, fallback: string): string {
+  if (value === null) return fallback;
+  const cleaned = value
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/<[@#&](?:!?\d+|everyone|here)>/gi, '')
+    .replace(/[<@>`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned === '' ? fallback : cleaned.slice(0, 80);
+}
+
 function playerLabel(event: Pick<ClubLogEvent, 'playerTag' | 'playerName'>): string {
-  if (event.playerTag !== null) return `#${event.playerTag}`;
-  return event.playerName ?? 'Unknown player';
+  return safeLabel(event.playerName, event.playerTag === null ? 'Unknown player' : `#${event.playerTag}`);
 }
 
 const ROLE_LABELS: Readonly<Record<string, string>> = {
@@ -543,19 +553,19 @@ function parseMembershipEvent(
   const toClubId = eventId(row['to_club_id']);
   const player = playerFrom(row['player']);
   const label = playerLabel({ playerTag: player.tag, playerName: player.name });
-  const clubTag = `#${cleanTag(log.clubTag)}`;
+  const clubName = safeLabel(log.clubName, `#${cleanTag(log.clubTag)}`);
 
   let description: string | null = null;
   if (eventType === 'join' && toClubId === log.clubId) {
-    description = `${label} joined ${clubTag}`;
+    description = `${label} joined ${clubName}`;
   } else if (eventType === 'leave' && fromClubId === log.clubId) {
-    description = `${label} left ${clubTag}`;
+    description = `${label} left ${clubName}`;
   } else if (eventType === 'transfer' && fromClubId === log.clubId && toClubId === log.clubId) {
-    description = `${label} transferred within ${clubTag}`;
+    description = `${label} transferred within ${clubName}`;
   } else if (eventType === 'transfer' && fromClubId === log.clubId) {
-    description = `${label} transferred from ${clubTag} to another club`;
+    description = `${label} transferred from ${clubName} to another club`;
   } else if (eventType === 'transfer' && toClubId === log.clubId) {
-    description = `${label} transferred from another club to ${clubTag}`;
+    description = `${label} transferred from another club to ${clubName}`;
   }
   if (description === null) return null;
 
@@ -1157,6 +1167,44 @@ export async function readPostedClubLogDigests(
     keys.add(digestKey(logId, period, periodKey));
   }
   return keys;
+}
+
+/** Read delivered posts for one completed window so a digest can be edited in place. */
+export async function loadPostedClubLogDigestPosts(
+  guildId: string,
+  period: ClubLogPeriod,
+  periodKey: string,
+  options: ClubLogServiceOptions = {},
+): Promise<ClubLogDigestPost[]> {
+  const parsedGuildId = requireGuildId(guildId);
+  if (!isClubLogPeriod(period)) return [];
+  const db = dbFor(options);
+  const result = await db
+    .from('guild_club_log_digest_posts')
+    .select('log_id, period, period_key, channel_id, message_id')
+    .eq('guild_id', parsedGuildId)
+    .eq('period', period)
+    .eq('period_key', periodKey);
+  requireOk(result.error, 'Read club log digest posts');
+  const allowedLogIds = new Set((await loadClubLogRows(parsedGuildId, { db })).map((log) => log.id));
+  const posts: ClubLogDigestPost[] = [];
+  for (const item of result.data ?? []) {
+    const row = record(item);
+    const logId = eventId(row?.['log_id']);
+    const channelId = asString(row?.['channel_id']);
+    const messageId = asString(row?.['message_id']);
+    if (
+      logId === null ||
+      !allowedLogIds.has(logId) ||
+      channelId === null ||
+      messageId === null ||
+      isDigestSentinel(messageId)
+    ) {
+      continue;
+    }
+    posts.push({ logId, period, periodKey, channelId, messageId });
+  }
+  return posts;
 }
 
 /**

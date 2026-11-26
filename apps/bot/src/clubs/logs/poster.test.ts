@@ -10,6 +10,7 @@ const NOV_22 = new Date('2026-11-22T00:00:00.000Z');
 
 const mocks = vi.hoisted(() => ({
   post: vi.fn(),
+  patch: vi.fn(),
   getBotConfig: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   service: {
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
     loadUndeliveredClubLogEvents: vi.fn(),
     markClubLogEventsDelivered: vi.fn(),
     loadClubLogs: vi.fn(),
+    loadPostedClubLogDigestPosts: vi.fn(),
     readPostedClubLogDigests: vi.fn(),
     claimClubLogDigestWindows: vi.fn(),
     advanceClubLogDigestClaim: vi.fn(),
@@ -40,8 +42,15 @@ vi.mock('discord.js', async (importOriginal) => {
       post(...args: unknown[]): Promise<unknown> {
         return mocks.post(...args);
       }
+      patch(...args: unknown[]): Promise<unknown> {
+        return mocks.patch(...args);
+      }
     },
-    Routes: { channelMessages: (channelId: string) => `channels/${channelId}/messages` },
+    Routes: {
+      channelMessages: (channelId: string) => `channels/${channelId}/messages`,
+      channelMessage: (channelId: string, messageId: string) =>
+        `channels/${channelId}/messages/${messageId}`,
+    },
   };
 });
 vi.mock('../../config', () => ({ getBotConfig: mocks.getBotConfig }));
@@ -51,7 +60,12 @@ vi.mock('./digest', () => mocks.digest);
 vi.mock('./page-view', () => mocks.pageView);
 vi.mock('./image', () => mocks.image);
 
-import { runClubLogsPost, runClubLogDigests, startClubLogsSchedule } from './poster';
+import {
+  refreshTodayClubLogDigest,
+  runClubLogsPost,
+  runClubLogDigests,
+  startClubLogsSchedule,
+} from './poster';
 import type { ClubLogPeriod } from '../types';
 import type { ClubLogGroup } from './types';
 import type { ClubLogView } from '../types';
@@ -128,6 +142,8 @@ function boundaries() {
 beforeEach(() => {
   mocks.post.mockReset();
   mocks.post.mockResolvedValue({ id: 'message-1' });
+  mocks.patch.mockReset();
+  mocks.patch.mockResolvedValue({ id: 'message-1' });
   mocks.getBotConfig.mockReset();
   mocks.getBotConfig.mockReturnValue({
     token: TOKEN,
@@ -145,6 +161,16 @@ beforeEach(() => {
   mocks.service.markClubLogEventsDelivered.mockResolvedValue(undefined);
   mocks.service.loadClubLogs.mockReset();
   mocks.service.loadClubLogs.mockResolvedValue([log()]);
+  mocks.service.loadPostedClubLogDigestPosts.mockReset();
+  mocks.service.loadPostedClubLogDigestPosts.mockResolvedValue([
+    {
+      logId: LOG_ID,
+      period: 'today',
+      periodKey: '2026-11-21',
+      channelId: CHANNEL_ID,
+      messageId: 'message-1',
+    },
+  ]);
   mocks.service.readPostedClubLogDigests.mockReset();
   mocks.service.readPostedClubLogDigests.mockResolvedValue(new Set<string>());
   mocks.service.claimClubLogDigestWindows.mockReset();
@@ -469,6 +495,82 @@ describe('runClubLogDigests', () => {
 
     expect(mocks.service.readClubLogGuildIds).not.toHaveBeenCalled();
     expect(mocks.post).not.toHaveBeenCalled();
+  });
+});
+
+describe('refreshTodayClubLogDigest', () => {
+  it("edits today's posted digest in place with fresh snapshot data", async () => {
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.service.loadPostedClubLogDigestPosts).toHaveBeenCalledWith(
+      GUILD_ID,
+      'today',
+      '2026-11-21',
+    );
+    expect(mocks.pageView.loadClubLogView).toHaveBeenCalledWith({
+      guildId: GUILD_ID,
+      tag: 'ALPHA',
+      period: 'today',
+      now: new Date('2026-11-21T23:59:59.999Z'),
+    });
+    expect(mocks.image.buildClubLogDigestImage).toHaveBeenCalledWith(view(), 'Daily');
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(mocks.patch).toHaveBeenCalledOnce();
+    const [route, request] = mocks.patch.mock.calls[0] as [string, Record<string, unknown>];
+    expect(route).toBe(`channels/${CHANNEL_ID}/messages/message-1`);
+    const body = request['body'] as Record<string, unknown>;
+    expect(body['content']).toBe('Alpha • Club Log / Trophy Progression / Daily — Nov 21 (UTC)');
+    expect(body['allowed_mentions']).toEqual({ parse: [] });
+    const attachments = body['attachments'] as Array<Record<string, unknown>>;
+    expect(attachments).toHaveLength(1);
+    const filename = attachments[0]?.['filename'] as string;
+    expect(filename).toMatch(/^club-log-alpha-today-2026-11-21-refresh-\d+\.png$/);
+    const files = request['files'] as Array<Record<string, unknown>>;
+    expect(files).toEqual([
+      {
+        key: 'files[0]',
+        name: filename,
+        data: Buffer.from('fake-digest-png'),
+        contentType: 'image/png',
+      },
+    ]);
+    expect(mocks.logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('only refreshes logs subscribed to today', async () => {
+    mocks.service.loadClubLogs.mockResolvedValue([log(['week', 'season'])]);
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.image.buildClubLogDigestImage).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when no digest for that day has been posted', async () => {
+    mocks.service.loadPostedClubLogDigestPosts.mockResolvedValue([]);
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.pageView.loadClubLogView).not.toHaveBeenCalled();
+  });
+
+  it('leaves the existing message alone when fresh data cannot be rendered', async () => {
+    mocks.pageView.loadClubLogView.mockResolvedValue({ kind: 'unregistered', tag: 'ALPHA' });
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).toHaveBeenCalledOnce();
+  });
+
+  it('does nothing without a Discord token', async () => {
+    mocks.getBotConfig.mockReturnValue({ token: undefined });
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.service.loadPostedClubLogDigestPosts).not.toHaveBeenCalled();
+    expect(mocks.patch).not.toHaveBeenCalled();
   });
 });
 

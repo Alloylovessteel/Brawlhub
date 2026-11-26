@@ -14,6 +14,7 @@ function clean(value: string | undefined, maxLength: number): string {
   }
   const sanitized = value
     .replace(/[\r\n\t]+/g, ' ')
+    .replace(/<[@#&](?:!?\d+|everyone|here)>/gi, '')
     .replace(/[<@>`]/g, '')
     .trim();
   if (sanitized === '') {
@@ -24,42 +25,25 @@ function clean(value: string | undefined, maxLength: number): string {
 
 function formatPlayer(input: SyncNotificationInput): string {
   const name = clean(input.playerName, 60);
+  if (name !== 'unknown') return name;
   const tag = clean(input.playerTag, 24).replace(/^#+/, '');
-  return tag === '' || tag === 'unknown' ? name : `${name} (#${tag})`;
+  return tag === '' || tag === 'unknown' ? 'Unknown player' : `#${tag}`;
 }
 
-function formatOccurredAt(value: string | undefined): string {
-  if (value === undefined) return 'an unknown time';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return 'an unknown time';
-  const time = new Intl.DateTimeFormat('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-    timeZone: 'UTC',
-  }).format(parsed);
-  const date = new Intl.DateTimeFormat('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'UTC',
-  }).format(parsed);
-  return `${time} UTC, ${date}`;
-}
-
-function formatRemainingMembers(value: number | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown';
-  return Math.trunc(value).toLocaleString('en-US');
+function formatClubName(value: string | undefined): string {
+  const cleaned = clean(value, 80);
+  return cleaned === 'unknown' ? 'the club' : cleaned;
 }
 
 function formatAction(input: SyncNotificationInput): string {
+  const clubName = formatClubName(input.clubName);
   switch (input.eventType) {
     case 'join':
-      return 'joined the club';
+      return `joined ${clubName}`;
     case 'leave':
-      return 'left the club';
+      return `left ${clubName}`;
     case 'transfer':
-      return `transferred from ${clean(input.fromClubName, 60)} to ${clean(input.toClubName, 60)}`;
+      return `transferred from ${formatClubName(input.fromClubName)} to ${formatClubName(input.toClubName)}`;
     default:
       return 'updated club membership';
   }
@@ -67,10 +51,7 @@ function formatAction(input: SyncNotificationInput): string {
 
 /** Build the public, mention-safe plain-text membership notice. */
 export function buildClubMembershipNoticeContent(input: SyncNotificationInput): string {
-  return [
-    `${formatPlayer(input)} ${formatAction(input)} at ${formatOccurredAt(input.occurredAt)}`,
-    `remaining members: ${formatRemainingMembers(input.remainingMembers)}`,
-  ].join('\n');
+  return `${formatPlayer(input)} ${formatAction(input)}`;
 }
 
 function readFallbackChannelId(): string | undefined {

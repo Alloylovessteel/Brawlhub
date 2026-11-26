@@ -17,20 +17,16 @@ function input(overrides: Partial<SyncNotificationInput> = {}): SyncNotification
   };
 }
 
-const WHEN = '23:18 UTC, 23 Nov 2026';
-
 describe('buildClubMembershipNoticeContent', () => {
-  it('states the leave time/date and remaining members as plain text', () => {
-    expect(buildClubMembershipNoticeContent(input())).toBe(
-      `gynophobe (#2QGGRYQQRR) left the club at ${WHEN}\nremaining members: 29`,
-    );
+  it('states the player name and club name as plain text', () => {
+    expect(buildClubMembershipNoticeContent(input())).toBe('gynophobe left Kuromi Nek');
   });
 
   it('formats joins and transfers the same way', () => {
     const join = buildClubMembershipNoticeContent(
       input({ eventType: 'join', fromClubName: undefined }),
     );
-    expect(join).toContain(`gynophobe (#2QGGRYQQRR) joined the club at ${WHEN}`);
+    expect(join).toBe('gynophobe joined Kuromi Nek');
 
     const transfer = buildClubMembershipNoticeContent(
       input({
@@ -39,19 +35,24 @@ describe('buildClubMembershipNoticeContent', () => {
         toClubName: 'Kuromi Krew',
       }),
     );
-    expect(transfer).toContain(
-      `gynophobe (#2QGGRYQQRR) transferred from Kuromi Nek to Kuromi Krew at ${WHEN}`,
-    );
-    expect(transfer).toContain('remaining members: 29');
+    expect(transfer).toBe('gynophobe transferred from Kuromi Nek to Kuromi Krew');
   });
 
   it('strips mention syntax from names', () => {
     const content = buildClubMembershipNoticeContent(
-      input({ playerName: '<@everyone> gynophobe', clubName: '<#123> Kuromi Nek' }),
+      input({ eventType: 'join', playerName: '<@everyone> gynophobe', clubName: '<#123> Kuromi Nek' }),
     );
 
+    expect(content).toBe('gynophobe joined Kuromi Nek');
     expect(content).not.toContain('<@');
     expect(content).not.toContain('<#');
-    expect(content).toContain('gynophobe');
+  });
+
+  it('falls back to the player tag and a generic club name when data is missing', () => {
+    const content = buildClubMembershipNoticeContent(
+      input({ eventType: 'join', playerName: '', playerTag: 'YQPQ0Q2CL', clubName: '' }),
+    );
+
+    expect(content).toBe('#YQPQ0Q2CL joined the club');
   });
 });

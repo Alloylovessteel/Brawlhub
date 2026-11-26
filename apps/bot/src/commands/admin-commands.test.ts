@@ -68,6 +68,9 @@ const mocks = vi.hoisted(() => {
     overview: {
       refreshOverviewNow: vi.fn(),
     },
+    clubLogs: {
+      refreshTodayClubLogDigest: vi.fn(),
+    },
     rateLimit: {
       checkBotRateLimit: vi.fn(),
       clearBotRateLimits: vi.fn(),
@@ -85,6 +88,7 @@ vi.mock('@brawlhub/sync', () => mocks.sync);
 vi.mock('../clubs/service', () => mocks.clubs);
 vi.mock('../clubs/archival', () => mocks.archival);
 vi.mock('../clubs/overview/service', () => mocks.overview);
+vi.mock('../clubs/logs/poster', () => mocks.clubLogs);
 vi.mock('../sync/guard', () => mocks.guard);
 vi.mock('../discord/rate-limit', () => mocks.rateLimit);
 
@@ -324,6 +328,8 @@ beforeEach(() => {
 
   mocks.overview.refreshOverviewNow.mockReset();
   mocks.overview.refreshOverviewNow.mockResolvedValue({ posted: true, messageId: 'overview-1' });
+  mocks.clubLogs.refreshTodayClubLogDigest.mockReset();
+  mocks.clubLogs.refreshTodayClubLogDigest.mockResolvedValue(undefined);
 
   mocks.rateLimit.checkBotRateLimit.mockReset();
   mocks.rateLimit.checkBotRateLimit.mockReturnValue({ allowed: true, retryAfterSeconds: 0 });
@@ -513,6 +519,7 @@ describe('/sync', () => {
     expect(mocks.service.loadSyncRun).toHaveBeenCalledWith('run-1');
     expect(mocks.embeds.buildSyncResultEmbed).toHaveBeenCalledWith(failed, syncRun());
     expect(mocks.overview.refreshOverviewNow).not.toHaveBeenCalled();
+    expect(mocks.clubLogs.refreshTodayClubLogDigest).not.toHaveBeenCalled();
     expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
   });
 
@@ -525,6 +532,7 @@ describe('/sync', () => {
       label: 'Test Guild',
       iconUrl: 'https://example.test/icon.png',
     });
+    expect(mocks.clubLogs.refreshTodayClubLogDigest).toHaveBeenCalledWith(GUILD_ID);
     expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
   });
 
@@ -538,6 +546,17 @@ describe('/sync', () => {
     await handleSync(interaction);
 
     expect(mocks.overview.refreshOverviewNow).toHaveBeenCalledOnce();
+    expect(mocks.clubLogs.refreshTodayClubLogDigest).toHaveBeenCalledWith(GUILD_ID);
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
+  });
+
+  it('keeps the sync reply when the daily club log refresh fails', async () => {
+    mocks.clubLogs.refreshTodayClubLogDigest.mockRejectedValueOnce(new Error('Discord unavailable'));
+    const interaction = chat(null);
+
+    await handleSync(interaction);
+
+    expect(mocks.clubLogs.refreshTodayClubLogDigest).toHaveBeenCalledWith(GUILD_ID);
     expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
   });
 

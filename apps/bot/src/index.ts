@@ -12,7 +12,7 @@ import { registerDiscordAuthorizationEvents } from './discord/events.js';
 import { getGatewayIntents } from './discord/intents.js';
 import { markDiscordDisconnected, markDiscordReady } from './status/runtime.js';
 import { startClubOverviewSchedule } from './clubs/overview/service.js';
-import { startClubLogsSchedule } from './clubs/logs/poster.js';
+import { refreshTodayClubLogDigest, startClubLogsSchedule } from './clubs/logs/poster.js';
 import { startReportsSchedule } from './reports/schedule.js';
 import { waitForInFlightWork } from './shutdown.js';
 import {
@@ -179,6 +179,18 @@ async function postOperatorSyncResult(result: SyncResult): Promise<void> {
   }
 }
 
+/** Edit today's club log in place after a completed scheduled sync. */
+async function refreshDailyClubLogAfterScheduledSync(guildId: string): Promise<void> {
+  try {
+    await refreshTodayClubLogDigest(guildId);
+  } catch (error: unknown) {
+    logger.warn('Scheduled daily club log refresh failed', {
+      guildId,
+      error: safeError(error, token),
+    });
+  }
+}
+
 /** Run scheduled sync for all guilds, skipping if a previous batch is running. */
 async function executeSync(): Promise<void> {
   try {
@@ -217,6 +229,9 @@ async function executeSync(): Promise<void> {
 
       logger.info('Scheduled sync finished', meta);
       await postOperatorSyncResult(result);
+      if (result.guildId !== undefined && result.guildId !== '') {
+        await refreshDailyClubLogAfterScheduledSync(result.guildId);
+      }
     }
 
     if (outcome.results.some((result) => result.status === 'completed')) {
