@@ -109,7 +109,7 @@ AS $$
        AND cce.detected_at >= p_start
        AND cce.detected_at < p_end
      GROUP BY cce.club_id
-  )
+  ),
   per_club AS (
     SELECT sc.id,
            COALESCE(i.total, 0) AS joins,
