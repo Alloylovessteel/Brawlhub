@@ -153,15 +153,20 @@ export async function handleSync(interaction: ChatInputCommandInteraction): Prom
       return;
     }
     await recordSyncRunAudit(actor, result, { guildId: interaction.guildId });
-    await refreshOverviewAfterSync(interaction, result);
-    await refreshDailyClubLogAfterSync(result, interaction.guildId);
-    await postOperatorNotice(result);
+    // Start the follow-ups together. The deferred reply only waits for stored
+    // run details, so a slow Discord image edit cannot keep /sync run pending.
+    const followUps = [
+      refreshOverviewAfterSync(interaction, result),
+      refreshDailyClubLogAfterSync(result, interaction.guildId),
+      postOperatorNotice(result),
+    ];
     const run = result.syncRunId === '' ? null : await loadSyncRun(result.syncRunId);
     await interaction.editReply({
       ...(site === undefined ? {} : { content: site }),
       embeds: [buildSyncResultEmbed(result, run)],
       allowedMentions: { parse: [] },
     });
+    await Promise.allSettled(followUps);
   } catch (error) {
     if (!deferred) {
       await replyAdminError(interaction, error);

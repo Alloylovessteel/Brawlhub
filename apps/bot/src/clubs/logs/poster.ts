@@ -32,6 +32,8 @@ const REDACTED = '[REDACTED]';
 const INITIAL_DELAY_MS = 20_000;
 const DEFAULT_EVENT_INTERVAL_MINUTES = 5;
 const DIGEST_POLL_MS = 60_000;
+/** Bounded fan-out for independent per-log Discord posts and image renders. */
+const POST_CONCURRENCY = 4;
 
 const DIGEST_LABELS: Readonly<Record<ClubLogPeriod, string>> = {
   today: 'Daily',
@@ -58,6 +60,33 @@ function filename(tag: string, suffix: string): string {
   return `club-log-${slug}-${suffix}-${Date.now()}.png`;
 }
 
+/** Run independent per-log work with a cap so one slow Discord call does not serialize every club. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let firstError: unknown;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (firstError === undefined) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      try {
+        results[index] = await mapper(items[index]!, index);
+      } catch (error) {
+        firstError = error;
+        return;
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (firstError !== undefined) throw firstError;
+  return results;
+}
+
 /** Post one changes-only image per subscribed club when new events exist. */
 export async function runClubLogsPost(): Promise<void> {
   const token = getBotConfig().token;
@@ -77,8 +106,8 @@ export async function runClubLogsPost(): Promise<void> {
   for (const guildId of guildIds) {
     try {
       const groups = await loadUndeliveredClubLogEvents(guildId);
-      for (const { log, events } of groups) {
-        if (events.length === 0) continue;
+      await mapWithConcurrency(groups, POST_CONCURRENCY, async ({ log, events }) => {
+        if (events.length === 0) return;
         try {
           // Changes post once under the legacy `today` key so old event-ledger
           // rows from 0032 are not republished as a new event log.
@@ -113,7 +142,7 @@ export async function runClubLogsPost(): Promise<void> {
             error: safeError(error, token),
           });
         }
-      }
+      });
     } catch (error) {
       logger.warn('Club log events could not be loaded for guild', {
         guildId,
@@ -189,10 +218,10 @@ export async function refreshTodayClubLogDigest(
 
   const rest = new REST({ version: '10' }).setToken(token);
   const logsById = new Map(logs.map((log) => [log.id, log]));
-  for (const sourcePost of posts) {
+  await mapWithConcurrency(posts, POST_CONCURRENCY, async (sourcePost) => {
     let post = sourcePost;
     const log = logsById.get(post.logId);
-    if (log === undefined || !log.periods.includes('today')) continue;
+    if (log === undefined || !log.periods.includes('today')) return;
     const details = {
       guildId,
       logId: log.id,
@@ -215,7 +244,7 @@ export async function refreshTodayClubLogDigest(
         !(await rekeyClubLogDigestPost(guildId, post, liveBoundary.periodKey))
       ) {
         logger.warn('Daily club log digest ledger key is occupied; message left unchanged', details);
-        continue;
+        return;
       }
       post = { ...post, periodKey: liveBoundary.periodKey };
       const name = filename(log.clubTag, `today-${liveBoundary.periodKey}-live`);
@@ -234,7 +263,7 @@ export async function refreshTodayClubLogDigest(
         error: safeError(error, token),
       });
     }
-  }
+  });
 }
 
 /**

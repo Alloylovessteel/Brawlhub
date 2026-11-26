@@ -49,6 +49,9 @@ const NOTIFICATION_LEASE_SECONDS = 120;
 /** Page size for the unsent-event RPC; pagination stops at 20 collected events. */
 const UNSENT_EVENT_PAGE_SIZE = 25;
 const MAX_UNSENT_EVENT_PAGES = 100;
+/** Bounded fan-out for independent API reads and idempotent DB writes. */
+const SYNC_FETCH_CONCURRENCY = 6;
+const SYNC_WRITE_CONCURRENCY = 6;
 
 type EventType = 'join' | 'leave' | 'transfer';
 
@@ -142,106 +145,110 @@ export async function collectBattleLogs(
   for (const state of states) byPlayer.set(state.playerId, state.tag);
   let inserted = 0;
 
-  for (const [playerId, tag] of byPlayer) {
-    let items: BattleLogItem[];
-    try {
-      items = await withTimeout(client.getBattleLog(tag), timeoutMs, `Battle log for ${tag}`);
-    } catch (error) {
-      log.warn('Battle log fetch failed', {
-        tag,
-        syncRunId,
-        reason: sanitizeError(error),
-      });
-      options.onError?.({ playerId, tag, phase: 'fetch', error });
-      continue;
-    }
+  await mapWithConcurrency(
+    [...byPlayer.entries()],
+    SYNC_WRITE_CONCURRENCY,
+    async ([playerId, tag]) => {
+      let items: BattleLogItem[];
+      try {
+        items = await withTimeout(client.getBattleLog(tag), timeoutMs, `Battle log for ${tag}`);
+      } catch (error) {
+        log.warn('Battle log fetch failed', {
+          tag,
+          syncRunId,
+          reason: sanitizeError(error),
+        });
+        options.onError?.({ playerId, tag, phase: 'fetch', error });
+        return;
+      }
 
-    const rows = items
-      .map((item) => {
-        const battleTime = parseBattleTime(item.battleTime);
-        if (battleTime === null) return null;
-        return {
-          player_id: playerId,
-          sync_run_id: syncRunId,
-          battle_time: battleTime,
-          battle_key: battleKey(item),
-          mode: item.event?.mode ?? item.battle?.mode ?? null,
-          map: item.event?.map ?? null,
-          battle_type: item.battle?.type ?? null,
-          result: item.battle?.result ?? null,
-          trophy_change:
-            typeof item.battle?.trophyChange === 'number' && Number.isFinite(item.battle.trophyChange)
-              ? item.battle.trophyChange
-              : null,
-          raw: item as unknown as Record<string, unknown>,
-        };
-      })
-      .filter((row): row is NonNullable<typeof row> => row !== null);
-    if (rows.length === 0) continue;
+      const rows = items
+        .map((item) => {
+          const battleTime = parseBattleTime(item.battleTime);
+          if (battleTime === null) return null;
+          return {
+            player_id: playerId,
+            sync_run_id: syncRunId,
+            battle_time: battleTime,
+            battle_key: battleKey(item),
+            mode: item.event?.mode ?? item.battle?.mode ?? null,
+            map: item.event?.map ?? null,
+            battle_type: item.battle?.type ?? null,
+            result: item.battle?.result ?? null,
+            trophy_change:
+              typeof item.battle?.trophyChange === 'number' && Number.isFinite(item.battle.trophyChange)
+                ? item.battle.trophyChange
+                : null,
+            raw: item as unknown as Record<string, unknown>,
+          };
+        })
+        .filter((row): row is NonNullable<typeof row> => row !== null);
+      if (rows.length === 0) return;
 
-    const emit = (row: NonNullable<typeof rows[number]>): void => {
-      options.onCollected?.({
-        playerId: row.player_id,
-        key: row.battle_key,
-        battleTime: row.battle_time,
-        mode: row.mode,
-        map: row.map,
-        battleType: row.battle_type,
-        result: row.result,
-        trophyChange: row.trophy_change,
-        raw: row.raw,
-      });
-    };
-    if (options.emitAllBattles === true) {
-      for (const row of rows) emit(row);
-    }
+      const emit = (row: NonNullable<typeof rows[number]>): void => {
+        options.onCollected?.({
+          playerId: row.player_id,
+          key: row.battle_key,
+          battleTime: row.battle_time,
+          mode: row.mode,
+          map: row.map,
+          battleType: row.battle_type,
+          result: row.result,
+          trophyChange: row.trophy_change,
+          raw: row.raw,
+        });
+      };
+      if (options.emitAllBattles === true) {
+        for (const row of rows) emit(row);
+      }
 
-    const result = await db
-      .from('player_battles')
-      .upsert(rows, { onConflict: 'player_id,battle_key', ignoreDuplicates: true })
-      .select('id');
-    if (result.error) {
-      log.warn('Battle log write failed', {
-        tag,
-        syncRunId,
-        reason: result.error.message,
-      });
-      options.onError?.({ playerId, tag, phase: 'write', error: result.error });
-      continue;
-    }
-    const insertedRows = Array.isArray(result.data) ? result.data : [];
-    inserted += insertedRows.length;
+      const result = await db
+        .from('player_battles')
+        .upsert(rows, { onConflict: 'player_id,battle_key', ignoreDuplicates: true })
+        .select('id');
+      if (result.error) {
+        log.warn('Battle log write failed', {
+          tag,
+          syncRunId,
+          reason: result.error.message,
+        });
+        options.onError?.({ playerId, tag, phase: 'write', error: result.error });
+        return;
+      }
+      const insertedRows = Array.isArray(result.data) ? result.data : [];
+      inserted += insertedRows.length;
 
-    if (options.emitAllBattles !== true) {
-      for (const row of rows) emit(row);
-    }
+      if (options.emitAllBattles !== true) {
+        for (const row of rows) emit(row);
+      }
 
-    const latest = rows.reduce<string | null>((max, row) => {
-      if (max === null) return row.battle_time;
-      return row.battle_time > max ? row.battle_time : max;
-    }, null);
-    if (latest !== null) {
-      const { data: current } = await db
-        .from('players')
-        .select('last_battle_at')
-        .eq('id', playerId)
-        .maybeSingle();
-      const currentValue = typeof current?.last_battle_at === 'string' ? current.last_battle_at : null;
-      if (currentValue === null || latest > currentValue) {
-        const { error: updateError } = await db
+      const latest = rows.reduce<string | null>((max, row) => {
+        if (max === null) return row.battle_time;
+        return row.battle_time > max ? row.battle_time : max;
+      }, null);
+      if (latest !== null) {
+        const { data: current } = await db
           .from('players')
-          .update({ last_battle_at: latest })
-          .eq('id', playerId);
-        if (updateError) {
-          log.warn('Could not update player last_battle_at', {
-            tag,
-            syncRunId,
-            reason: updateError.message,
-          });
+          .select('last_battle_at')
+          .eq('id', playerId)
+          .maybeSingle();
+        const currentValue = typeof current?.last_battle_at === 'string' ? current.last_battle_at : null;
+        if (currentValue === null || latest > currentValue) {
+          const { error: updateError } = await db
+            .from('players')
+            .update({ last_battle_at: latest })
+            .eq('id', playerId);
+          if (updateError) {
+            log.warn('Could not update player last_battle_at', {
+              tag,
+              syncRunId,
+              reason: updateError.message,
+            });
+          }
         }
       }
-    }
-  }
+    },
+  );
 
   return inserted;
 }
@@ -493,6 +500,36 @@ export async function withTimeout<T>(
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * Run independent items with a bounded concurrency. Results stay in input
+ * order, and the first error stops new work while already-started work drains.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let firstError: unknown;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (firstError === undefined) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      try {
+        results[index] = await mapper(items[index]!, index);
+      } catch (error) {
+        firstError = error;
+        return;
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (firstError !== undefined) throw firstError;
+  return results;
 }
 
 function readPositiveEnv(name: string, fallback: number): number {
@@ -1770,15 +1807,16 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       return { ...acquired.result, ...guildContext(requestedGuildId) };
     }
     runId = acquired.runId;
+    const activeRunId = runId;
     affectedColumns = acquired.affectedColumns;
 
     // 1. Fetch everything before mutating any temporal state. A single API
     //    failure aborts the whole run; partial rosters are never persisted.
-    const fetched: FetchedClub[] = [];
-    for (const row of clubRows) {
-      fetched.push(await fetchClubData(apiClient, row, apiTimeoutMs));
-      await assertOwnership('next club fetch');
-    }
+    //    Independent clubs are fetched concurrently, but no writes start until
+    //    every roster has been validated.
+    const fetched = await mapWithConcurrency(clubRows, SYNC_FETCH_CONCURRENCY, (row) =>
+      fetchClubData(apiClient, row, apiTimeoutMs),
+    );
     counters.clubsProcessed = fetched.length;
     await assertOwnership('player writes');
     const memberCountsById = new Map(fetched.map((club) => [club.row.id, club.memberCount]));
@@ -1787,20 +1825,44 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
 
     // 2. Players. A failed optional profile fetch is recorded for operator
     // notifications; roster identity still comes from the official club API.
+    // Profile reads and idempotent player upserts are independent per player.
     const collectPlayerProfiles = readBooleanEnv('SYNC_COLLECT_PLAYER_PROFILES', true);
-    const states: RosterState[] = [];
-    const memberFailures: SyncMemberFailure[] = [];
-    for (const entry of roster.values()) {
-      const fullProfile = collectPlayerProfiles
-        ? await fetchPlayerProfile(apiClient, entry.tag, apiTimeoutMs, (reason) => {
-            memberFailures.push({ tag: entry.tag, name: entry.name, reason });
-          })
-        : undefined;
-      await assertOwnership('player upsert');
-      const playerId = await upsertPlayer(db, apiClient, entry, nowIso, apiTimeoutMs, fullProfile);
-      states.push({ ...entry, playerId });
-      counters.playersUpserted += 1;
-    }
+    const rosterEntries = [...roster.values()];
+    const profileResults = await mapWithConcurrency(
+      rosterEntries,
+      SYNC_FETCH_CONCURRENCY,
+      async (entry) => {
+        if (!collectPlayerProfiles) return { profile: undefined, failure: null };
+        let failure: string | null = null;
+        const profile = await fetchPlayerProfile(apiClient, entry.tag, apiTimeoutMs, (reason) => {
+          failure = reason;
+        });
+        return { profile, failure };
+      },
+    );
+    const memberFailures: SyncMemberFailure[] = profileResults.flatMap((result, index) => {
+      const entry = rosterEntries[index]!;
+      return result.failure === null
+        ? []
+        : [{ tag: entry.tag, name: entry.name, reason: result.failure }];
+    });
+    await assertOwnership('player upserts');
+    const states = await mapWithConcurrency(
+      rosterEntries,
+      SYNC_WRITE_CONCURRENCY,
+      async (entry, index) => {
+        const playerId = await upsertPlayer(
+          db,
+          apiClient,
+          entry,
+          nowIso,
+          apiTimeoutMs,
+          profileResults[index]?.profile,
+        );
+        counters.playersUpserted += 1;
+        return { ...entry, playerId };
+      },
+    );
     await assertOwnership('membership writes');
     memberCounts = {
       membersExpected: roster.size,
@@ -1936,7 +1998,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     //    payload digest is unchanged). Read the previous count before writing
     //    the new snapshot so the comparison uses stored history.
     await assertOwnership('snapshot writes');
-    for (const club of fetched) {
+    await mapWithConcurrency(fetched, SYNC_WRITE_CONCURRENCY, async (club) => {
       const previousCount = await readPreviousMemberCount(db, club.row.id);
       if (previousCount !== undefined) {
         const wasFull = previousCount >= CLUB_CAPACITY;
@@ -1948,7 +2010,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
             toCount: club.memberCount,
             isFull,
             detectedAt: nowIso,
-            runId,
+            runId: activeRunId,
           });
           counters.capacityEvents += 1;
         }
@@ -1957,7 +2019,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         table: 'club_snapshots',
         entityColumn: 'club_id',
         entityId: club.row.id,
-        runId,
+        runId: activeRunId,
         hash: club.hash,
         raw: club.rawClub,
         capturedAt: nowIso,
@@ -1966,13 +2028,13 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       if (written) {
         counters.snapshotsWritten += 1;
       }
-    }
-    for (const state of states) {
+    });
+    await mapWithConcurrency(states, SYNC_WRITE_CONCURRENCY, async (state) => {
       const written = await writeSnapshot(db, {
         table: 'player_snapshots',
         entityColumn: 'player_id',
         entityId: state.playerId,
-        runId,
+        runId: activeRunId,
         hash: payloadHash(state.raw),
         raw: state.raw,
         capturedAt: nowIso,
@@ -1981,7 +2043,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       if (written) {
         counters.snapshotsWritten += 1;
       }
-    }
+    });
 
     if (collectBattleLogsEnabled && states.length > 0 && runId !== undefined) {
       await assertOwnership('battle log collection');

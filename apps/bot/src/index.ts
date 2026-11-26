@@ -11,7 +11,11 @@ import { runManagedSync } from './sync/guard.js';
 import { registerDiscordAuthorizationEvents } from './discord/events.js';
 import { getGatewayIntents } from './discord/intents.js';
 import { markDiscordDisconnected, markDiscordReady } from './status/runtime.js';
-import { startClubOverviewSchedule } from './clubs/overview/service.js';
+import {
+  refreshOverviewNow,
+  startClubOverviewSchedule,
+  type GuildOverviewContext,
+} from './clubs/overview/service.js';
 import { refreshTodayClubLogDigest, startClubLogsSchedule } from './clubs/logs/poster.js';
 import { startReportsSchedule } from './reports/schedule.js';
 import { waitForInFlightWork } from './shutdown.js';
@@ -191,6 +195,29 @@ async function refreshDailyClubLogAfterScheduledSync(guildId: string): Promise<v
   }
 }
 
+/** Resolve guild presentation details without letting Discord failures stop sync. */
+async function resolveGuildOverviewContext(guildId: string): Promise<GuildOverviewContext> {
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    return { label: guild.name, iconUrl: guild.iconURL() ?? null };
+  } catch {
+    return { label: null, iconUrl: null };
+  }
+}
+
+/** Refresh the posted overview as soon as scheduled sync makes snapshots visible. */
+async function refreshOverviewAfterScheduledSync(guildId: string): Promise<void> {
+  try {
+    const context = await resolveGuildOverviewContext(guildId);
+    await refreshOverviewNow(guildId, context);
+  } catch (error: unknown) {
+    logger.warn('Scheduled club overview refresh failed', {
+      guildId,
+      error: safeError(error, token),
+    });
+  }
+}
+
 /** Run scheduled sync for all guilds, skipping if a previous batch is running. */
 async function executeSync(): Promise<void> {
   try {
@@ -201,6 +228,7 @@ async function executeSync(): Promise<void> {
       logger.warn('Scheduled sync skipped: a sync run is already in progress');
       return;
     }
+    const followUps: Promise<void>[] = [];
     for (const result of outcome.results) {
       const meta = {
         syncRunId: result.syncRunId,
@@ -215,7 +243,7 @@ async function executeSync(): Promise<void> {
 
       if (result.status === 'failed') {
         logger.warn('Scheduled sync failed', meta);
-        await postOperatorSyncResult(result);
+        followUps.push(postOperatorSyncResult(result));
         continue;
       }
       if (result.status === 'skipped') {
@@ -228,12 +256,14 @@ async function executeSync(): Promise<void> {
       }
 
       logger.info('Scheduled sync finished', meta);
-      await postOperatorSyncResult(result);
+      followUps.push(postOperatorSyncResult(result));
       if (result.guildId !== undefined && result.guildId !== '') {
-        await refreshDailyClubLogAfterScheduledSync(result.guildId);
+        followUps.push(refreshOverviewAfterScheduledSync(result.guildId));
+        followUps.push(refreshDailyClubLogAfterScheduledSync(result.guildId));
       }
     }
 
+    await Promise.allSettled(followUps);
     if (outcome.results.some((result) => result.status === 'completed')) {
       await refreshConfiguredClubRolesSafely();
       await refreshAutoRolesSafely();
@@ -348,14 +378,7 @@ client.once('clientReady', async () => {
   });
   await recoverSyncState();
   startSyncSchedule();
-  stopOverviewSchedule = startClubOverviewSchedule(async (guildId) => {
-    try {
-      const guild = await client.guilds.fetch(guildId);
-      return { label: guild.name, iconUrl: guild.iconURL() ?? null };
-    } catch {
-      return { label: null, iconUrl: null };
-    }
-  });
+  stopOverviewSchedule = startClubOverviewSchedule(resolveGuildOverviewContext);
   stopClubLogsSchedule = startClubLogsSchedule();
   stopReportsSchedule = startReportsSchedule();
   stopRetentionSchedule = startBattleRawRetentionSchedule();

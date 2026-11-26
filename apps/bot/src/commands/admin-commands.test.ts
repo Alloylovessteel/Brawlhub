@@ -569,6 +569,22 @@ describe('/sync', () => {
     expect(mocks.overview.refreshOverviewNow).toHaveBeenCalledOnce();
     expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
   });
+
+  it('sends the sync reply without waiting for slow club log refreshes', async () => {
+    let releaseRefresh!: () => void;
+    const slowRefresh = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    mocks.clubLogs.refreshTodayClubLogDigest.mockReturnValueOnce(slowRefresh);
+    const interaction = chat(null);
+
+    const pending = handleSync(interaction);
+    await vi.waitFor(() => expect(interaction.editReply).toHaveBeenCalledOnce());
+    expect(payload(interaction, 'editReply').embeds).toEqual([{ kind: 'sync-result' }]);
+
+    releaseRefresh();
+    await pending;
+  });
 });
 
 describe('/sync status', () => {
