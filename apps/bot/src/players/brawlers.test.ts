@@ -58,7 +58,23 @@ function fakeDb(tables: Record<string, Row[]>): SupabaseClient {
     return builder;
   }
 
-  return { from } as unknown as SupabaseClient;
+  async function rpc(name: string, args: Record<string, unknown> = {}) {
+    if (name !== 'player_lookup_scoped_by_tag') return { data: [], error: null };
+    const clubIds = (Array.isArray(args['p_club_ids']) ? args['p_club_ids'] : []).map(String);
+    const wanted = String(args['p_tag'] ?? '').replace(/^#+/, '').toUpperCase();
+    const memberships = tables['club_memberships'] ?? [];
+    const player = (tables['players'] ?? []).find((row) => {
+      if (String(row['tag'] ?? '').replace(/^#+/, '').toUpperCase() !== wanted) return false;
+      return memberships.some(
+        (membership) =>
+          clubIds.includes(String(membership['club_id'])) &&
+          String(membership['player_id']) === String(row['id']),
+      );
+    });
+    return { data: player === undefined ? [] : [{ player }], error: null };
+  }
+
+  return { from, rpc } as unknown as SupabaseClient;
 }
 
 function brawler(name: string, overrides: Partial<PlayerBrawlerDetail> = {}): PlayerBrawlerDetail {

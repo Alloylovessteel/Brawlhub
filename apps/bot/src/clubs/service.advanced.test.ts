@@ -387,7 +387,7 @@ describe('advanced club loaders', () => {
     expect(result.kind).toBe('ok');
     if (result.kind !== 'ok') return;
     expect(result.value.members).toEqual([]);
-    expect(result.value.rosterSource).toBe('none');
+    expect(result.value.rosterSource).toBe('snapshot');
     expect(calls.some((call) => call.table === 'players')).toBe(false);
     expect(mocks.createBrawlStarsClient).not.toHaveBeenCalled();
     expect(mocks.getSharedBrawlStarsClient).not.toHaveBeenCalled();

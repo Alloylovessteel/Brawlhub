@@ -6,6 +6,7 @@ import {
 } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  isDefinitiveDiscordRejection,
   replyExpiredComponent,
   replyUnknownComponent,
   respondToAutocomplete,
@@ -115,5 +116,33 @@ describe('component feedback helpers', () => {
     await expect(
       replyUnknownComponent({ customId: 'unknown:page:2' } as unknown as ButtonInteraction),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('isDefinitiveDiscordRejection', () => {
+  it('recognises definitive HTTP statuses, codes and messages', () => {
+    expect(isDefinitiveDiscordRejection({ status: 404 })).toBe(true);
+    expect(isDefinitiveDiscordRejection({ code: 50001 })).toBe(true);
+    expect(isDefinitiveDiscordRejection({ code: '50013' })).toBe(true);
+    expect(isDefinitiveDiscordRejection({ message: 'Missing Access' })).toBe(true);
+    expect(
+      isDefinitiveDiscordRejection(
+        new DiscordAPIError(
+          { code: 50035, message: 'Invalid Form Body' },
+          50035,
+          400,
+          'POST',
+          '/channels/1/messages',
+          { body: undefined, files: [] },
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps network, timeout and rate-limit failures uncertain', () => {
+    expect(isDefinitiveDiscordRejection(new Error('fetch failed'))).toBe(false);
+    expect(isDefinitiveDiscordRejection({ status: 429 })).toBe(false);
+    expect(isDefinitiveDiscordRejection({ status: 500 })).toBe(false);
+    expect(isDefinitiveDiscordRejection({ message: 'Request timed out' })).toBe(false);
   });
 });

@@ -40,9 +40,9 @@ CREATE TRIGGER guild_settings_touch_reports_enabled_at
   FOR EACH ROW
   EXECUTE FUNCTION public.touch_guild_reports_enabled_at();
 
--- Existing configured guilds are opted in as of deployment; because the RPC
--- only allows period_start >= reports_enabled_at, historical catch-up is
--- intentionally suppressed for them.
+-- Existing configured guilds are opted in as of deployment. The delivery RPC
+-- admits periods whose end is after reports_enabled_at, so they receive the
+-- day/week/month already in progress at deployment but no earlier periods.
 UPDATE public.guild_settings
    SET reports_enabled_at = now()
  WHERE reports_enabled_at IS NULL
@@ -138,7 +138,10 @@ AS $$
       FROM public.guild_settings gs
       JOIN requested r ON true
      WHERE gs.reports_enabled_at IS NOT NULL
-       AND r.period_start >= gs.reports_enabled_at
+       -- Keep the period that was in progress at opt-in (its end is after
+       -- reports_enabled_at) while suppressing periods that had already
+       -- ended before opt-in.
+       AND r.period_end > gs.reports_enabled_at
   ),
   missing AS (
     SELECT e.*
@@ -519,7 +522,7 @@ COMMENT ON FUNCTION public.touch_guild_reports_enabled_at() IS
 COMMENT ON FUNCTION public.report_ledger_message_is_delivered(text) IS
   'True for a plain Discord message ID or a delivered claim sentinel carrying a message ID.';
 COMMENT ON FUNCTION public.push_missing_report_deliveries(jsonb, integer, text, text, text) IS
-  'Return keyset pages of opted-in guild/period report deliveries that are still missing.';
+  'Return keyset pages of opted-in guild/period deliveries still missing; a period is due when it ended after opt-in.';
 COMMENT ON FUNCTION public.push_missing_inactivity_deliveries(text, integer, text) IS
   'Return keyset pages of opted-in guilds still missing a durable inactivity post for the day.';
 COMMENT ON FUNCTION public.push_report_clubs(text, integer, text, uuid) IS

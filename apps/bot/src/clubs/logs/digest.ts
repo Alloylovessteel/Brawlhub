@@ -37,6 +37,13 @@ function shiftDays(date: Date, days: number): Date {
   );
 }
 
+/** Monday 00:00 UTC for the week containing the supplied instant. */
+function startOfWeek(date: Date): Date {
+  const midnight = utcMidnight(date);
+  const mondayOffset = (midnight.getUTCDay() + 6) % 7;
+  return shiftDays(midnight, -mondayOffset);
+}
+
 function dateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -73,9 +80,10 @@ export function currentClubLogDigestBoundary(now: Date): ClubLogDigestBoundary {
 
 /**
  * Digests due at this instant. Daily is always due (for the day that just
- * ended); weekly is due only on Monday; season is due only at the first UTC
- * midnight on or after the configured season reset. Because the delivery
- * ledger is keyed by period/window, rechecking on every poll is safe.
+ * ended); the most recent completed week is checked on every poll so a missed
+ * Monday can be recovered; season is due only at the first UTC midnight on or
+ * after the configured season reset. Because the delivery ledger is keyed by
+ * period/window, rechecking on every poll is safe.
  */
 export function dueClubLogDigests(now: Date, config: ClubLogDigestConfig): ClubLogDigestBoundary[] {
   const midnight = utcMidnight(now);
@@ -91,16 +99,16 @@ export function dueClubLogDigests(now: Date, config: ClubLogDigestConfig): ClubL
     },
   ];
 
-  if (now.getUTCDay() === 1) {
-    const completedWeekStart = shiftDays(midnight, -7);
-    boundaries.push({
-      period: 'week',
-      periodKey: dateKey(completedWeekStart),
-      windowStart: completedWeekStart,
-      windowEnd,
-      label: formatRange(completedWeekStart, completedDay),
-    });
-  }
+  const currentWeekStart = startOfWeek(midnight);
+  const completedWeekStart = shiftDays(currentWeekStart, -7);
+  const completedWeekEnd = new Date(currentWeekStart.getTime() - 1);
+  boundaries.push({
+    period: 'week',
+    periodKey: dateKey(completedWeekStart),
+    windowStart: completedWeekStart,
+    windowEnd: completedWeekEnd,
+    label: formatRange(completedWeekStart, completedWeekEnd),
+  });
 
   const seasonStart = parseIso(config.seasonStartIso);
   const configuredSeasonEnd = parseIso(config.seasonEndIso);

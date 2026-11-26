@@ -155,3 +155,32 @@ export function logAutocompleteError(
     error: safeErrorMessage(error, secrets),
   });
 }
+
+/**
+ * Discord errors that prove a message was not created. Timeouts, rate limits
+ * and network failures remain ambiguous: the request may have reached Discord
+ * even though the caller saw an error, so claims must stay in place for those.
+ */
+export function isDefinitiveDiscordRejection(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as Record<string, unknown>;
+  const status = candidate['status'];
+  const code = candidate['code'];
+  const normalizedCode = typeof code === 'number' ? code : Number(code);
+
+  if (status === 400 || status === 401 || status === 403 || status === 404) return true;
+  if (
+    Number.isFinite(normalizedCode) &&
+    [50001, 50004, 50013, 50035].includes(normalizedCode)
+  ) {
+    return true;
+  }
+
+  const message = candidate['message'];
+  return (
+    typeof message === 'string' &&
+    ['Missing Access', 'Missing Permissions', 'Cannot send messages to this channel'].includes(
+      message,
+    )
+  );
+}

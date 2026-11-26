@@ -533,6 +533,20 @@ function parseMembershipRoster(value: unknown): RosterMember[] {
   return members;
 }
 
+/**
+ * Parse a snapshot roster while distinguishing a valid empty roster from
+ * missing/invalid member data. An explicit empty array is authoritative: the
+ * club was observed without members and older rosters must not be resurrected.
+ */
+function parseSnapshotRoster(value: unknown): { members: RosterMember[]; authoritative: boolean } {
+  if (!Array.isArray(value)) return { members: [], authoritative: false };
+  const members = parseApiMembers(value);
+  // An explicit empty array is a real observation. A partly malformed roster is
+  // still usable when at least one member parses, preserving the prior fallback
+  // behaviour for a roster whose entries are all invalid.
+  return { members, authoritative: value.length === 0 || members.length > 0 };
+}
+
 function readRawDescription(raw: unknown): string | null {
   const value = record(raw)?.['description'];
   return asString(value);
@@ -575,9 +589,9 @@ function snapshotRoster(
     .sort((a, b) => Date.parse(a.capturedAt) - Date.parse(b.capturedAt));
 
   for (let index = eligible.length - 1; index >= 0; index -= 1) {
-    const roster = parseApiMembers(record(eligible[index]?.raw)?.['members']);
-    if (roster.length > 0) {
-      return { roster, capturedAt: eligible[index]?.capturedAt ?? '' };
+    const parsed = parseSnapshotRoster(record(eligible[index]?.raw)?.['members']);
+    if (parsed.authoritative) {
+      return { roster: parsed.members, capturedAt: eligible[index]?.capturedAt ?? '' };
     }
   }
   return null;

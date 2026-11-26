@@ -179,6 +179,12 @@ function scopeCalls(): Array<{ name: string; args: Row }> {
     .map((call) => ({ name: call[0] as string, args: call[1] as Row }));
 }
 
+function snapshotPageCalls(): Array<{ name: string; args: Row }> {
+  return state.rpc.mock.calls
+    .filter((call) => call[0] === 'player_snapshot_page')
+    .map((call) => ({ name: call[0] as string, args: call[1] as Row }));
+}
+
 function statsCalls(): Array<{ name: string; args: Row }> {
   return state.rpc.mock.calls
     .filter((call) => call[0] === 'web_overview_stats')
@@ -269,7 +275,7 @@ describe('web scoped data reads', () => {
     expect((playersFilter?.value as string[])).toHaveLength(1001);
   });
 
-  it('uses historical scope (including closed memberships) for snapshot and battle views', async () => {
+  it('uses SQL-side historical scope for snapshots and RPC scope for battles', async () => {
     const queries = await import('./queries');
     state.tables['players'] = [playerRow(PLAYER_A)];
 
@@ -278,9 +284,50 @@ describe('web scoped data reads', () => {
     await queries.getAllPlayerSnapshots(undefined, { clubIds: [CLUB_A] });
     await queries.getSnapshotCollectionStart({ clubIds: [CLUB_A] });
 
-    const calls = scopeCalls();
-    expect(calls).toHaveLength(4);
-    expect(calls.every((call) => call.args['p_current_only'] === false)).toBe(true);
+    const battleScopeCalls = scopeCalls();
+    expect(battleScopeCalls).toHaveLength(1);
+    expect(battleScopeCalls[0]?.args['p_current_only']).toBe(false);
+
+    const pages = snapshotPageCalls();
+    expect(pages).toHaveLength(3);
+    expect(pages.every((call) => call.args['p_newest_first'] === false)).toBe(true);
+    expect(pages.every((call) => call.args['p_completed_only'] === false)).toBe(true);
+    expect(pages[0]?.args).toMatchObject({ p_player_id: PLAYER_A, p_club_ids: [CLUB_A] });
+    expect(pages[1]?.args).toMatchObject({ p_player_ids: null, p_club_ids: [CLUB_A] });
+    expect(state.calls.some((call) => call.table === 'player_snapshots')).toBe(false);
+  });
+
+  it('pages more than 1000 player snapshots without a REST row cap', async () => {
+    const { getPlayerSnapshots } = await import('./queries');
+    const snapshotRow = (index: number) => ({
+      id: `snapshot-${index}`,
+      player_id: PLAYER_A,
+      sync_run_id: `run-${index}`,
+      captured_at: new Date(Date.parse('2026-01-01T00:00:00.000Z') + index * 60_000).toISOString(),
+      trophies: 1000 + index,
+      payload_hash: `hash-${index}`,
+    });
+    const firstPage = Array.from({ length: 1000 }, (_, index) => snapshotRow(index));
+    const last = firstPage[999]!;
+    const secondPage = [snapshotRow(1000)];
+    state.rpc.mockImplementation(async (name: string, args: Row) => {
+      if (name !== 'player_snapshot_page') return { data: [], error: null };
+      if (args['p_after_captured_at'] === null) return { data: firstPage, error: null };
+      if (args['p_after_captured_at'] === last.captured_at && args['p_after_id'] === last.id) {
+        return { data: secondPage, error: null };
+      }
+      return { data: [], error: null };
+    });
+
+    const result = await getPlayerSnapshots(PLAYER_A, { allowedClubIds: [CLUB_A] });
+
+    expect(result.error).toBeNull();
+    expect(result.rows).toHaveLength(1001);
+    expect(result.rows[1000]?.trophies).toBe(2000);
+    const pages = snapshotPageCalls();
+    expect(pages).toHaveLength(2);
+    expect(pages[1]?.args['p_after_captured_at']).toBe(last.captured_at);
+    expect(pages[1]?.args['p_after_id']).toBe(last.id);
   });
 });
 

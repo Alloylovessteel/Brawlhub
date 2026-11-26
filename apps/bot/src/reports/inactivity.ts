@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mdBold, mdCode, mdList, mdParagraphs, mdSection } from '../discord/embed-format';
 import { EMBED_COLORS } from '../discord/embed-style';
+import { isDefinitiveDiscordRejection } from '../discord/errors';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
@@ -624,6 +625,7 @@ export async function postInactivityReports(
 
     const body = { embeds: [embed.toJSON()], allowed_mentions: { parse: [] }, flags: 0 };
     let messageId: string | null = null;
+    let attemptedFreshPost = false;
     try {
       if (existingMessageId !== null) {
         try {
@@ -636,6 +638,7 @@ export async function postInactivityReports(
         }
       }
       if (messageId === null) {
+        attemptedFreshPost = true;
         const message = (await rest.post(Routes.channelMessages(channelId), {
           body,
         })) as { id?: string } | undefined;
@@ -643,9 +646,15 @@ export async function postInactivityReports(
         if (messageId === null) throw new Error('Discord inactivity post returned no message ID');
       }
     } catch (error: unknown) {
-      // A failed send may still have reached Discord; the `sending` claim is
-      // intentionally kept so a retry cannot post a second message.
-      warnUncertain();
+      if (attemptedFreshPost && isDefinitiveDiscordRejection(error)) {
+        // Discord proved this POST did not create a message, so the claim can
+        // be released for the next poll instead of being reconciled forever.
+        await releaseClaim();
+      } else {
+        // A failed send may still have reached Discord; the `sending` claim is
+        // intentionally kept so a retry cannot post a second message.
+        warnUncertain();
+      }
       failed += 1;
       logger.warn('Inactivity report failed for guild', {
         guildId,

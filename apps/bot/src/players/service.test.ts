@@ -44,6 +44,30 @@ interface Call {
   readonly maybeSingle: boolean;
 }
 
+interface RpcCall {
+  readonly name: string;
+  readonly args: Row;
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function normalizedTag(value: unknown): string {
+  return asText(value)?.trim().replace(/^#+/, '').toUpperCase() ?? '';
+}
+
+function clubScopedPlayerIds(tables: Tables, clubIds: readonly string[]): Set<string> {
+  const allowedClubs = new Set(clubIds);
+  const ids = new Set<string>();
+  for (const row of tables['club_memberships'] ?? []) {
+    if (!allowedClubs.has(String(row['club_id']))) continue;
+    const playerId = asText(row['player_id']);
+    if (playerId !== null) ids.add(playerId);
+  }
+  return ids;
+}
+
 function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
   const calls: Call[] = [];
 
@@ -148,7 +172,99 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
     return builder;
   }
 
-  return { from, calls };
+  const rpcCalls: RpcCall[] = [];
+
+  async function rpc(name: string, args: Row = {}) {
+    rpcCalls.push({ name, args: { ...args } });
+    if (failingTables.includes('players') && (name === 'player_search_scoped' || name === 'player_lookup_scoped_by_tag')) {
+      return { data: null, error: { message: 'players unavailable' } };
+    }
+
+    if (name === 'player_search_scoped') {
+      const clubIds = (Array.isArray(args['p_club_ids']) ? args['p_club_ids'] : []).map(String);
+      const allowedPlayers = clubScopedPlayerIds(tables, clubIds);
+      const query = asText(args['p_search'])?.trim().replace(/^#+/, '').toLowerCase() ?? '';
+      let rows = (tables['players'] ?? []).filter((row) => {
+        if (!allowedPlayers.has(String(row['id']))) return false;
+        if (query === '') return true;
+        return `${asText(row['tag']) ?? ''} ${asText(row['name']) ?? ''}`.toLowerCase().includes(query);
+      });
+      rows = rows.sort((a, b) =>
+        String(a['name']).localeCompare(String(b['name'])) ||
+        String(a['id']).localeCompare(String(b['id'])),
+      );
+      const afterName = asText(args['p_after_name']);
+      const afterId = asText(args['p_after_id']);
+      if (afterName !== null) {
+        rows = rows.filter((row) =>
+          String(row['name']) > afterName ||
+          (String(row['name']) === afterName && afterId !== null && String(row['id']) > afterId),
+        );
+      }
+      const limit = Math.min(Math.max(Number(args['p_limit'] ?? 25), 1), 25);
+      return {
+        data: rows.slice(0, limit).map((player) => ({ player })),
+        error: null,
+      };
+    }
+
+    if (name === 'player_lookup_scoped_by_tag') {
+      const clubIds = (Array.isArray(args['p_club_ids']) ? args['p_club_ids'] : []).map(String);
+      const allowedPlayers = clubScopedPlayerIds(tables, clubIds);
+      const wanted = normalizedTag(args['p_tag']);
+      const player = (tables['players'] ?? []).find(
+        (row) => normalizedTag(row['tag']) === wanted && allowedPlayers.has(String(row['id'])),
+      );
+      return { data: player === undefined ? [] : [{ player }], error: null };
+    }
+
+    if (name === 'player_snapshot_page') {
+      const playerId = asText(args['p_player_id']);
+      const playerIds = (Array.isArray(args['p_player_ids']) ? args['p_player_ids'] : []).map(String);
+      const clubIds = (Array.isArray(args['p_club_ids']) ? args['p_club_ids'] : []).map(String);
+      const scopedPlayers = clubScopedPlayerIds(tables, clubIds);
+      const since = asText(args['p_since']);
+      const completedOnly = args['p_completed_only'] === true;
+      const completedRuns = new Set(
+        (tables['sync_runs'] ?? [])
+          .filter((row) => row['status'] === 'completed')
+          .map((row) => String(row['id'])),
+      );
+      let rows = (tables['player_snapshots'] ?? []).filter((row) => {
+        const id = String(row['player_id']);
+        if (playerId !== null && id !== playerId) return false;
+        if (playerIds.length > 0 && !playerIds.includes(id)) return false;
+        if (clubIds.length > 0 && !scopedPlayers.has(id)) return false;
+        if (playerId === null && playerIds.length === 0 && clubIds.length === 0) return false;
+        if (since !== null && String(row['captured_at']) < since) return false;
+        if (completedOnly && !completedRuns.has(String(row['sync_run_id']))) return false;
+        return true;
+      });
+      const newestFirst = args['p_newest_first'] === true;
+      rows = rows.sort((a, b) => {
+        const byTime = String(a['captured_at']).localeCompare(String(b['captured_at']));
+        const byId = String(a['id']).localeCompare(String(b['id']));
+        return newestFirst ? -byTime || -byId : byTime || byId;
+      });
+      const afterCapturedAt = asText(args['p_after_captured_at']);
+      const afterId = asText(args['p_after_id']);
+      if (afterCapturedAt !== null && afterId !== null) {
+        rows = rows.filter((row) => {
+          const time = String(row['captured_at']);
+          const id = String(row['id']);
+          return newestFirst
+            ? time < afterCapturedAt || (time === afterCapturedAt && id < afterId)
+            : time > afterCapturedAt || (time === afterCapturedAt && id > afterId);
+        });
+      }
+      const limit = Math.min(Math.max(Number(args['p_limit'] ?? 1000), 1), 1000);
+      return { data: rows.slice(0, limit), error: null };
+    }
+
+    return { data: [], error: null };
+  }
+
+  return { from, rpc, calls, rpcCalls };
 }
 
 const NOW = new Date('2026-11-18T12:00:00.000Z');
@@ -517,9 +633,9 @@ describe('player service', () => {
     ).resolves.toEqual({ kind: 'not-found', tag: 'Q8VR' });
   });
 
-  it('loads more than 100 completed history windows and reads snapshots newest-first', async () => {
+  it('pages more than 1000 completed history windows newest-first', async () => {
     const data = tables();
-    const runs = Array.from({ length: 601 }, (_, index) => ({
+    const runs = Array.from({ length: 1201 }, (_, index) => ({
       id: `history-run-${index}`,
       status: 'completed',
       started_at: new Date(Date.parse('2026-01-01T00:00:00.000Z') + index * 60_000).toISOString(),
@@ -544,12 +660,21 @@ describe('player service', () => {
 
     expect(result.kind).toBe('ok');
     if (result.kind !== 'ok') return;
-    expect(result.value.points).toHaveLength(601);
+    expect(result.value.points).toHaveLength(1201);
     expect(result.value.points[0]?.trophies).toBe(4000);
-    expect(result.value.points[600]?.trophies).toBe(4600);
-    const snapshotCall = db.calls.find((call) => call.table === 'player_snapshots');
-    expect(snapshotCall?.limit).toBeNull();
-    expect(snapshotCall?.orders).toBe(1);
+    expect(result.value.points[1200]?.trophies).toBe(5200);
+    const snapshotCalls = db.rpcCalls.filter((call) => call.name === 'player_snapshot_page');
+    expect(snapshotCalls).toHaveLength(2);
+    expect(snapshotCalls[0]?.args).toMatchObject({
+      p_player_id: 'p1',
+      p_since: null,
+      p_completed_only: true,
+      p_newest_first: true,
+      p_limit: 1000,
+      p_after_captured_at: null,
+      p_after_id: null,
+    });
+    expect(snapshotCalls[1]?.args['p_after_captured_at']).toBe(runs[201]?.finished_at);
   });
 
   it('denies stored player history when no guild context is available', async () => {
@@ -605,13 +730,18 @@ describe('player service', () => {
     expect(db.calls).toEqual([]);
   });
 
-  it('supports stored-player autocomplete search', async () => {
+  it('supports stored-player autocomplete search in SQL', async () => {
     const db = createFakeDb(tables());
     const result = await searchPlayers('alp', { db: db as never, guildId: 'guild-1' });
     expect(result.map((player) => player.tag)).toEqual(['2C0Y']);
-    const playerQuery = db.calls.find((call) => call.table === 'players');
-    expect(playerQuery?.or).toContain('name.ilike.%alp%');
-    expect(playerQuery?.ins['id']).toEqual(['p1', 'p3']);
+    const searchCall = db.rpcCalls.find((call) => call.name === 'player_search_scoped');
+    expect(searchCall?.args).toMatchObject({
+      p_club_ids: ['club-a'],
+      p_search: 'alp',
+      p_limit: 25,
+    });
+    expect(db.calls.some((call) => call.table === 'club_memberships')).toBe(false);
+    expect(db.calls.some((call) => call.table === 'players')).toBe(false);
   });
 
   it('applies guild scope before the autocomplete row cap', async () => {
@@ -633,9 +763,13 @@ describe('player service', () => {
     const result = await searchPlayers('alp', { db: db as never, guildId: 'guild-1' });
 
     expect(result.map((player) => player.tag)).toEqual(['2C0Y']);
-    const playerQuery = db.calls.find((call) => call.table === 'players');
-    expect(playerQuery?.ins['id']).toEqual(['p1', 'p3']);
-    expect(playerQuery?.limit).toBe(25);
+    const searchCall = db.rpcCalls.find((call) => call.name === 'player_search_scoped');
+    expect(searchCall?.args).toMatchObject({
+      p_club_ids: ['club-a'],
+      p_search: 'alp',
+      p_limit: 25,
+    });
+    expect(db.calls.some((call) => call.table === 'players')).toBe(false);
   });
 
   it('surfaces database and API-unavailable errors safely', async () => {

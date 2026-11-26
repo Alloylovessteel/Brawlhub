@@ -569,6 +569,38 @@ describe('postInactivityReports', () => {
     }
   });
 
+  it('releases a fresh claim when Discord definitively rejects a new post', async () => {
+    const ledger = fakeLedger();
+    const { db } = fakeDb(digestHandlers(ledger));
+    const post = vi.fn(async () => {
+      throw { status: 404, message: 'Unknown Channel', code: 10003 };
+    });
+    const rest = { post, patch: vi.fn() } as unknown as REST;
+
+    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+      posted: 0,
+      failed: 1,
+    });
+
+    expect(ledger.rows()).toEqual([]);
+  });
+
+  it('keeps a fresh claim when a new post outcome is ambiguous', async () => {
+    const ledger = fakeLedger();
+    const { db } = fakeDb(digestHandlers(ledger));
+    const post = vi.fn(async () => {
+      throw new Error('request timed out');
+    });
+    const rest = { post, patch: vi.fn() } as unknown as REST;
+
+    await expect(postInactivityReports(NOW, rest, undefined, db)).resolves.toEqual({
+      posted: 0,
+      failed: 1,
+    });
+
+    expect(ledger.rows()[0]?.message_id).toMatch(/^claim:[^:]+:sending$/);
+  });
+
   it('edits a message recovered from a delivered sentinel', async () => {
     const ledger = fakeLedger([
       {

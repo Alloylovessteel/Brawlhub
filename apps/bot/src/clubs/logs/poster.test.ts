@@ -392,16 +392,35 @@ describe('runClubLogDigests', () => {
     expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
   });
 
-  it('suppresses the completed-window post when a live current-day digest exists', async () => {
+  it('posts the completed archive even when a live current-day digest exists', async () => {
     mocks.service.readPostedClubLogDigests.mockResolvedValue(
       new Set([`${LOG_ID}:today:2026-11-22`]),
     );
 
     await runClubLogDigests(NOV_22);
 
-    expect(mocks.service.claimClubLogDigestWindows).not.toHaveBeenCalled();
-    expect(mocks.post).not.toHaveBeenCalled();
-    expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
+    expect(mocks.service.claimClubLogDigestWindows).toHaveBeenCalledWith(
+      GUILD_ID,
+      [
+        {
+          logId: LOG_ID,
+          period: 'today',
+          periodKey: '2026-11-21',
+          channelId: CHANNEL_ID,
+        },
+      ],
+      { now: NOV_22 },
+    );
+    expect(mocks.post).toHaveBeenCalledOnce();
+    expect(mocks.service.markClubLogDigestPosted).toHaveBeenCalledWith(GUILD_ID, [
+      {
+        logId: LOG_ID,
+        period: 'today',
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+    ]);
   });
 
   it('passes the completed season baseline and label to the season renderer', async () => {
@@ -451,6 +470,20 @@ describe('runClubLogDigests', () => {
     const warning = mocks.logger.warn.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(JSON.stringify(warning)).not.toContain(TOKEN);
     expect(warning['periodKey']).toBe('2026-11-21');
+  });
+
+  it('releases the claim when Discord definitively rejects the post', async () => {
+    mocks.post.mockRejectedValue({ status: 403, code: 50001, message: 'Missing Access' });
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.service.releaseClubLogDigestClaims).toHaveBeenCalledWith(GUILD_ID, 'claim-1', [
+      `${LOG_ID}:today:2026-11-21`,
+    ]);
+    expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).toHaveBeenCalledOnce();
+    const warning = mocks.logger.warn.mock.calls[0]?.[0] as string;
+    expect(warning).toContain('released for retry');
   });
 
   it('releases the claim when rendering fails before Discord is called', async () => {

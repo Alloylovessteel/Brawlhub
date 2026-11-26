@@ -200,6 +200,7 @@ export async function getClubById(
 
 const WEB_SCOPE_PAGE_SIZE = 1000;
 const WEB_SCOPE_MAX_PAGES = 1000;
+const SNAPSHOT_PAGE_SIZE = 1000;
 
 /**
  * Read a complete distinct player-id scope through the database RPC. Keyset
@@ -245,6 +246,82 @@ async function getScopedPlayerIds(
   }
 
   return { ids, error: null };
+}
+
+interface SnapshotPageScope {
+  readonly p_player_id?: string | null;
+  readonly p_player_ids?: readonly string[] | null;
+  readonly p_club_ids?: readonly string[] | null;
+}
+
+/**
+ * Read player snapshots through the SQL-side page RPC. Scope, date bounds and
+ * completed-run status are all applied before the row cap, and the keyset keeps
+ * rows captured at the same instant from being lost between pages.
+ */
+async function readPlayerSnapshotPages(
+  scope: SnapshotPageScope,
+  input: { days?: number; limit?: number } = {},
+): Promise<{ rows: PlayerSnapshotRow[]; error: string | null }> {
+  const db = createTrustedClient();
+  const since = input.days === undefined
+    ? null
+    : new Date(Date.now() - input.days * 24 * 60 * 60 * 1000).toISOString();
+  const maxRows = input.limit === undefined ? undefined : Math.max(1, Math.floor(input.limit));
+  const rows: PlayerSnapshotRow[] = [];
+  const seen = new Set<string>();
+  let afterCapturedAt: string | null = null;
+  let afterId: string | null = null;
+
+  for (let page = 0; page < WEB_SCOPE_MAX_PAGES; page += 1) {
+    if (maxRows !== undefined && rows.length >= maxRows) break;
+    const { data, error } = await db.rpc('player_snapshot_page', {
+      p_player_id: scope.p_player_id ?? null,
+      p_player_ids: Array.isArray(scope.p_player_ids) ? [...scope.p_player_ids] : null,
+      p_club_ids: Array.isArray(scope.p_club_ids) ? [...scope.p_club_ids] : null,
+      p_since: since,
+      p_completed_only: false,
+      p_newest_first: false,
+      p_limit: SNAPSHOT_PAGE_SIZE,
+      p_after_captured_at: afterCapturedAt,
+      p_after_id: afterId,
+    });
+    if (error !== null && error !== undefined) return { rows: [], error: error.message };
+
+    const pageRows = Array.isArray(data) ? data : [];
+    for (const value of pageRows) {
+      const row = value as AnyRecord;
+      const id = typeof row?.['id'] === 'string' ? row['id'] : null;
+      const playerId = typeof row?.['player_id'] === 'string' ? row['player_id'] : null;
+      const syncRunId = typeof row?.['sync_run_id'] === 'string' ? row['sync_run_id'] : null;
+      const capturedAt = typeof row?.['captured_at'] === 'string' ? row['captured_at'] : null;
+      if (id === null || playerId === null || syncRunId === null || capturedAt === null) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push({
+        id,
+        player_id: playerId,
+        sync_run_id: syncRunId,
+        captured_at: capturedAt,
+        trophies: typeof row['trophies'] === 'number' ? row['trophies'] : null,
+        payload_hash: typeof row['payload_hash'] === 'string' ? row['payload_hash'] : '',
+      });
+    }
+
+    if (pageRows.length < SNAPSHOT_PAGE_SIZE) break;
+    const last = pageRows[pageRows.length - 1] as AnyRecord;
+    const capturedAt = typeof last?.['captured_at'] === 'string' ? last['captured_at'] : null;
+    const id = typeof last?.['id'] === 'string' ? last['id'] : null;
+    if (capturedAt === null || id === null) break;
+    if (capturedAt === afterCapturedAt && id === afterId) break;
+    afterCapturedAt = capturedAt;
+    afterId = id;
+  }
+
+  return {
+    rows: maxRows === undefined ? rows : rows.slice(0, maxRows),
+    error: null,
+  };
 }
 
 export async function getPlayers(input: {
@@ -464,24 +541,14 @@ export async function getPlayerSnapshots(
   const validId = parseUuid(playerId);
   if (validId === null) return emptyResult('Invalid player id');
   if (scopeEmpty(input.allowedClubIds)) return emptyResult(null);
-  if (input.allowedClubIds !== undefined) {
-    const scoped = await getScopedPlayerIds(input.allowedClubIds, false);
-    if (scoped.error !== null) return emptyResult(scoped.error);
-    if (!scoped.ids.includes(validId)) return emptyResult(null);
-  }
-  const supabase = await createServerSupabaseClient();
-  let query = supabase
-    .from('player_snapshots')
-    .select('id, player_id, sync_run_id, captured_at, trophies, payload_hash')
-    .eq('player_id', validId)
-    .order('captured_at', { ascending: true });
-  if (input.days !== undefined) {
-    const since = new Date(Date.now() - input.days * 24 * 60 * 60 * 1000).toISOString();
-    query = query.gte('captured_at', since);
-  }
-  if (input.limit !== undefined) query = query.limit(input.limit);
-  const { data, count, error } = await query;
-  return { rows: (data ?? []) as PlayerSnapshotRow[], count: count ?? 0, error: errorText(error) };
+  const { rows, error } = await readPlayerSnapshotPages(
+    {
+      p_player_id: validId,
+      ...(input.allowedClubIds === undefined ? {} : { p_club_ids: input.allowedClubIds }),
+    },
+    input,
+  );
+  return { rows, count: rows.length, error };
 }
 
 export async function getPlayerBattles(
@@ -671,32 +738,14 @@ export async function getAllPlayerSnapshots(
   options: { clubIds?: readonly string[]; playerIds?: readonly string[] } = {},
 ): Promise<QueryResult<PlayerSnapshotRow>> {
   if (scopeEmpty(options.clubIds) || scopeEmpty(options.playerIds)) return emptyResult(null);
-  let playerScope: string[] | undefined;
-  if (options.clubIds !== undefined) {
-    const scoped = await getScopedPlayerIds(options.clubIds, false);
-    if (scoped.error !== null) return emptyResult(scoped.error);
-    playerScope = scoped.ids;
-    if (playerScope.length === 0) return emptyResult(null);
-  }
-  if (options.playerIds !== undefined) {
-    const selected = [...new Set(options.playerIds)];
-    playerScope =
-      playerScope === undefined
-        ? selected
-        : selected.filter((id) => playerScope!.includes(id));
-    if (playerScope.length === 0) return emptyResult(null);
-  }
-  const supabase = await createServerSupabaseClient();
-  let query = supabase
-    .from('player_snapshots')
-    .select('id, player_id, sync_run_id, captured_at, trophies, payload_hash')
-    .order('captured_at', { ascending: true });
-  if (playerScope !== undefined) query = query.in('player_id', playerScope);
-  if (days !== undefined) {
-    query = query.gte('captured_at', new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString());
-  }
-  const { data, count, error } = await query;
-  return { rows: (data ?? []) as PlayerSnapshotRow[], count: count ?? 0, error: errorText(error) };
+  const { rows, error } = await readPlayerSnapshotPages(
+    {
+      ...(options.clubIds === undefined ? {} : { p_club_ids: options.clubIds }),
+      ...(options.playerIds === undefined ? {} : { p_player_ids: options.playerIds }),
+    },
+    days === undefined ? {} : { days },
+  );
+  return { rows, count: rows.length, error };
 }
 
 /**
@@ -722,39 +771,17 @@ export async function getSnapshotCollectionStart(
     return { capturedAt: null, error: errorText(clubTimes.error) };
   }
 
-  let playerIds: string[] | undefined;
-  if (options.clubIds !== undefined) {
-    const scoped = await getScopedPlayerIds(options.clubIds, false);
-    if (scoped.error !== null) return { capturedAt: null, error: scoped.error };
-    playerIds = scoped.ids;
-  }
-
-  let playerQuery = supabase
-    .from('player_snapshots')
-    .select('captured_at')
-    .order('captured_at', { ascending: true })
-    .limit(1);
-  if (playerIds !== undefined) {
-    if (playerIds.length === 0) {
-      return {
-        capturedAt:
-          typeof clubTimes.data?.[0]?.captured_at === 'string'
-            ? clubTimes.data[0].captured_at
-            : null,
-        error: null,
-      };
-    }
-    playerQuery = playerQuery.in('player_id', playerIds);
-  }
-  const playerTimes = await playerQuery;
-  if (playerTimes.error !== null && playerTimes.error !== undefined) {
-    return { capturedAt: null, error: errorText(playerTimes.error) };
+  const playerEarliestResult = await readPlayerSnapshotPages(
+    options.clubIds === undefined ? {} : { p_club_ids: options.clubIds },
+    { limit: 1 },
+  );
+  if (playerEarliestResult.error !== null) {
+    return { capturedAt: null, error: playerEarliestResult.error };
   }
 
   const clubEarliest =
     typeof clubTimes.data?.[0]?.captured_at === 'string' ? clubTimes.data[0].captured_at : null;
-  const playerEarliest =
-    typeof playerTimes.data?.[0]?.captured_at === 'string' ? playerTimes.data[0].captured_at : null;
+  const playerEarliest = playerEarliestResult.rows[0]?.captured_at ?? null;
   if (clubEarliest === null) return { capturedAt: playerEarliest, error: null };
   if (playerEarliest === null) return { capturedAt: clubEarliest, error: null };
   return { capturedAt: clubEarliest < playerEarliest ? clubEarliest : playerEarliest, error: null };

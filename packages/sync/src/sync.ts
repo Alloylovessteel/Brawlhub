@@ -125,6 +125,10 @@ export interface CollectBattleLogsOptions {
     readonly phase: 'fetch' | 'write';
     readonly error: unknown;
   }) => void;
+  /** Verified immediately before every mutation while a sync lease is held. */
+  readonly assertBeforeWrite?: () => Promise<void>;
+  /** Stops queued per-player work when the sync lease is lost. */
+  readonly fence?: AbortSignal;
 }
 
 /**
@@ -202,6 +206,7 @@ export async function collectBattleLogs(
         for (const row of rows) emit(row);
       }
 
+      await options.assertBeforeWrite?.();
       const result = await db
         .from('player_battles')
         .upsert(rows, { onConflict: 'player_id,battle_key', ignoreDuplicates: true })
@@ -234,6 +239,7 @@ export async function collectBattleLogs(
           .maybeSingle();
         const currentValue = typeof current?.last_battle_at === 'string' ? current.last_battle_at : null;
         if (currentValue === null || latest > currentValue) {
+          await options.assertBeforeWrite?.();
           const { error: updateError } = await db
             .from('players')
             .update({ last_battle_at: latest })
@@ -248,6 +254,7 @@ export async function collectBattleLogs(
         }
       }
     },
+    options.fence,
   );
 
   return inserted;
@@ -504,18 +511,20 @@ export async function withTimeout<T>(
 
 /**
  * Run independent items with a bounded concurrency. Results stay in input
- * order, and the first error stops new work while already-started work drains.
+ * order. The first error or an aborted lock lease stops new work while
+ * already-started work drains, so a lost lease cannot start fresh mutations.
  */
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   mapper: (item: T, index: number) => Promise<R>,
+  fence?: AbortSignal,
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   let nextIndex = 0;
   let firstError: unknown;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (firstError === undefined) {
+    while (firstError === undefined && fence?.aborted !== true) {
       const index = nextIndex;
       nextIndex += 1;
       if (index >= items.length) return;
@@ -529,6 +538,9 @@ async function mapWithConcurrency<T, R>(
   });
   await Promise.all(workers);
   if (firstError !== undefined) throw firstError;
+  if (fence?.aborted === true) {
+    throw new Error('Sync lock lost while work was in progress; aborting run');
+  }
   return results;
 }
 
@@ -1202,6 +1214,7 @@ async function upsertPlayer(
   nowIso: string,
   timeoutMs: number,
   fullProfile?: Player,
+  assertBeforeWrite?: () => Promise<void>,
 ): Promise<string> {
   const existing = await db.from('players').select('id').eq('tag', entry.tag).maybeSingle();
   requireOk(existing.error, `Read player ${entry.tag}`);
@@ -1225,6 +1238,7 @@ async function upsertPlayer(
     ...extra,
     last_synced_at: nowIso,
   };
+  await assertBeforeWrite?.();
   const result = await db
     .from('players')
     .upsert(payload, { onConflict: 'tag' })
@@ -1394,7 +1408,11 @@ async function claimNotification(
   return typeof result.data === 'string' && result.data.length > 0 ? result.data : null;
 }
 
-async function writeSnapshot(db: SupabaseClient, write: SnapshotWrite): Promise<boolean> {
+async function writeSnapshot(
+  db: SupabaseClient,
+  write: SnapshotWrite,
+  assertBeforeWrite?: () => Promise<void>,
+): Promise<boolean> {
   const latestResult = await db
     .from(write.table)
     .select('payload_hash, sync_run_id')
@@ -1428,6 +1446,7 @@ async function writeSnapshot(db: SupabaseClient, write: SnapshotWrite): Promise<
     raw: write.raw,
     ...write.extra,
   };
+  await assertBeforeWrite?.();
   const result = await db.from(write.table).upsert(payload, {
     onConflict: `${write.entityColumn},sync_run_id`,
   });
@@ -1826,8 +1845,11 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     //    failure aborts the whole run; partial rosters are never persisted.
     //    Independent clubs are fetched concurrently, but no writes start until
     //    every roster has been validated.
-    const fetched = await mapWithConcurrency(clubRows, SYNC_FETCH_CONCURRENCY, (row) =>
-      fetchClubData(apiClient, row, apiTimeoutMs),
+    const fetched = await mapWithConcurrency(
+      clubRows,
+      SYNC_FETCH_CONCURRENCY,
+      (row) => fetchClubData(apiClient, row, apiTimeoutMs),
+      lockRenewal.signal,
     );
     counters.clubsProcessed = fetched.length;
     await assertOwnership('player writes');
@@ -1851,6 +1873,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         });
         return { profile, failure };
       },
+      lockRenewal.signal,
     );
     const memberFailures: SyncMemberFailure[] = profileResults.flatMap((result, index) => {
       const entry = rosterEntries[index]!;
@@ -1870,10 +1893,12 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
           nowIso,
           apiTimeoutMs,
           profileResults[index]?.profile,
+          () => assertOwnership(`player upsert for ${entry.tag}`),
         );
         counters.playersUpserted += 1;
         return { ...entry, playerId };
       },
+      lockRenewal.signal,
     );
     await assertOwnership('membership writes');
     memberCounts = {
@@ -1907,6 +1932,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         const fromRole = normalizeRole(open.role);
         const toRole = normalizeRole(state.role);
         if (fromRole !== toRole) {
+          await assertOwnership(`role change for ${state.tag}`);
           await applyClubRoleChange(db, {
             clubId: state.clubId,
             playerId: state.playerId,
@@ -1924,6 +1950,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         continue;
       }
       const eventType: EventType = open === undefined ? 'join' : 'transfer';
+      await assertOwnership(`${eventType} write for ${state.tag}`);
       await applyMembershipTransition(db, {
         playerId: state.playerId,
         eventType,
@@ -1947,6 +1974,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       if (presentPlayerIds.has(open.player_id)) {
         continue;
       }
+      await assertOwnership(`leave write for ${open.player_id}`);
       await applyMembershipTransition(db, {
         playerId: open.player_id,
         eventType: 'leave',
@@ -2010,52 +2038,71 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     //    payload digest is unchanged). Read the previous count before writing
     //    the new snapshot so the comparison uses stored history.
     await assertOwnership('snapshot writes');
-    await mapWithConcurrency(fetched, SYNC_WRITE_CONCURRENCY, async (club) => {
-      const previousCount = await readPreviousMemberCount(db, club.row.id);
-      if (previousCount !== undefined) {
-        const wasFull = previousCount >= CLUB_CAPACITY;
-        const isFull = club.memberCount >= CLUB_CAPACITY;
-        if (wasFull !== isFull) {
-          await recordCapacityEvent(db, {
-            clubId: club.row.id,
-            fromCount: previousCount,
-            toCount: club.memberCount,
-            isFull,
-            detectedAt: nowIso,
-            runId: activeRunId,
-          });
-          counters.capacityEvents += 1;
+    await mapWithConcurrency(
+      fetched,
+      SYNC_WRITE_CONCURRENCY,
+      async (club) => {
+        const previousCount = await readPreviousMemberCount(db, club.row.id);
+        if (previousCount !== undefined) {
+          const wasFull = previousCount >= CLUB_CAPACITY;
+          const isFull = club.memberCount >= CLUB_CAPACITY;
+          if (wasFull !== isFull) {
+            await assertOwnership(`capacity event for ${club.row.tag}`);
+            await recordCapacityEvent(db, {
+              clubId: club.row.id,
+              fromCount: previousCount,
+              toCount: club.memberCount,
+              isFull,
+              detectedAt: nowIso,
+              runId: activeRunId,
+            });
+            counters.capacityEvents += 1;
+          }
         }
-      }
-      const written = await writeSnapshot(db, {
-        table: 'club_snapshots',
-        entityColumn: 'club_id',
-        entityId: club.row.id,
-        runId: activeRunId,
-        hash: club.hash,
-        raw: club.rawClub,
-        capturedAt: nowIso,
-        extra: { trophies: club.trophies, member_count: club.memberCount },
-      });
-      if (written) {
-        counters.snapshotsWritten += 1;
-      }
-    });
-    await mapWithConcurrency(states, SYNC_WRITE_CONCURRENCY, async (state) => {
-      const written = await writeSnapshot(db, {
-        table: 'player_snapshots',
-        entityColumn: 'player_id',
-        entityId: state.playerId,
-        runId: activeRunId,
-        hash: payloadHash(state.raw),
-        raw: state.raw,
-        capturedAt: nowIso,
-        extra: { trophies: state.trophies },
-      });
-      if (written) {
-        counters.snapshotsWritten += 1;
-      }
-    });
+        const written = await writeSnapshot(
+          db,
+          {
+            table: 'club_snapshots',
+            entityColumn: 'club_id',
+            entityId: club.row.id,
+            runId: activeRunId,
+            hash: club.hash,
+            raw: club.rawClub,
+            capturedAt: nowIso,
+            extra: { trophies: club.trophies, member_count: club.memberCount },
+          },
+          () => assertOwnership(`club snapshot for ${club.row.tag}`),
+        );
+        if (written) {
+          counters.snapshotsWritten += 1;
+        }
+      },
+      lockRenewal.signal,
+    );
+    await mapWithConcurrency(
+      states,
+      SYNC_WRITE_CONCURRENCY,
+      async (state) => {
+        const written = await writeSnapshot(
+          db,
+          {
+            table: 'player_snapshots',
+            entityColumn: 'player_id',
+            entityId: state.playerId,
+            runId: activeRunId,
+            hash: payloadHash(state.raw),
+            raw: state.raw,
+            capturedAt: nowIso,
+            extra: { trophies: state.trophies },
+          },
+          () => assertOwnership(`player snapshot for ${state.tag}`),
+        );
+        if (written) {
+          counters.snapshotsWritten += 1;
+        }
+      },
+      lockRenewal.signal,
+    );
 
     if (collectBattleLogsEnabled && states.length > 0 && runId !== undefined) {
       await assertOwnership('battle log collection');
@@ -2065,6 +2112,10 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
         states.map((state) => ({ playerId: state.playerId, tag: state.tag })),
         runId,
         apiTimeoutMs,
+        {
+          assertBeforeWrite: () => assertOwnership('battle log write'),
+          fence: lockRenewal.signal,
+        },
       );
       await assertOwnership('notification delivery');
     }

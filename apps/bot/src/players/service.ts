@@ -61,6 +61,8 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 const PLAYER_API_CACHE_MS = 30_000;
 const DEFAULT_STALE_AFTER_MS = 15 * 60_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const SNAPSHOT_PAGE_SIZE = 1000;
+const SNAPSHOT_MAX_PAGES = 1000;
 
 const PLAYER_COLUMNS = [
   'id',
@@ -89,9 +91,6 @@ const PLAYER_COLUMNS = [
   'is_qualified_from_championship_challenge',
   'profile_extra',
 ].join(', ');
-
-const PLAYER_SNAPSHOT_COLUMNS =
-  'id, player_id, sync_run_id, captured_at, trophies';
 
 const PLAYER_BATTLE_COLUMNS =
   'id, sync_run_id, battle_time, mode, map, battle_type, result, trophy_change, raw';
@@ -497,19 +496,14 @@ async function readGuildClubIds(guildId: string | null | undefined, db: Database
     .filter((id): id is string => id !== null);
 }
 
-async function readPlayerIdsInClubs(clubIds: readonly string[], db: DatabaseClient): Promise<Set<string>> {
-  if (clubIds.length === 0) return new Set();
-  const { data, error } = await db
-    .from('club_memberships')
-    .select('player_id')
-    .in('club_id', [...new Set(clubIds)]);
-  requireOk(error, 'Read guild members');
-  const ids = new Set<string>();
-  for (const row of data ?? []) {
-    const playerId = asString(record(row)?.['player_id']);
-    if (playerId !== null) ids.add(playerId);
-  }
-  return ids;
+async function readRpcRows(
+  db: DatabaseClient,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown[]> {
+  const { data, error } = await db.rpc(name, args);
+  requireOk(error, `Read ${name}`);
+  return Array.isArray(data) ? data : [];
 }
 
 /** True when a stored player belongs to one of the guild's active registered clubs. */
@@ -524,8 +518,11 @@ async function isPlayerInGuildScope(
     : await readGuildClubIds(guildId, db);
   if (guildClubIds === null) return false;
   if (player.id === null || guildClubIds.length === 0) return false;
-  const allowed = await readPlayerIdsInClubs(guildClubIds, db);
-  return allowed.has(player.id);
+  const rows = await readRpcRows(db, 'player_lookup_scoped_by_tag', {
+    p_club_ids: [...new Set(guildClubIds)],
+    p_tag: player.tag,
+  });
+  return rows.length > 0;
 }
 
 /** Read a stored player only when it is visible inside the invoking guild. */
@@ -535,9 +532,19 @@ async function readGuildScopedPlayer(
   db: DatabaseClient,
   guildClubIds?: readonly string[] | null,
 ): Promise<PlayerIdentity | null> {
-  const player = await readPlayerByTag(tag, db);
-  if (player === null) return null;
-  return (await isPlayerInGuildScope(player, guildId, db, guildClubIds)) ? player : null;
+  const clubIds = guildClubIds !== undefined
+    ? guildClubIds
+    : await readGuildClubIds(guildId, db);
+  if (clubIds === null || clubIds.length === 0) return null;
+  const rows = await readRpcRows(db, 'player_lookup_scoped_by_tag', {
+    p_club_ids: [...new Set(clubIds)],
+    p_tag: tag,
+  });
+  for (const value of rows) {
+    const player = parsePlayerRow(record(value)?.['player']);
+    if (player !== null) return player;
+  }
+  return null;
 }
 
 export async function searchPlayers(
@@ -552,29 +559,19 @@ export async function searchPlayers(
   const guildId = isDb ? null : (dbOrOptions as PlayerSearchOptions).guildId;
 
   const cleaned = query.trim().replace(/^#+/, '');
-  const escaped = escapeIlike(cleaned);
 
-  // Guild visibility must be applied before the row cap: otherwise 25 earlier
-  // matches from other guilds can hide every player this guild can actually see.
+  // Scope and search are applied before the row cap inside PostgreSQL: an
+  // application-side membership set could be truncated before this guild's
+  // matches were ever considered.
   const guildClubIds = await readGuildClubIds(guildId, db);
   if (guildClubIds.length === 0) return [];
-  const allowedPlayerIds = [...await readPlayerIdsInClubs(guildClubIds, db)];
-  if (allowedPlayerIds.length === 0) return [];
-
-  let builder = db
-    .from('players')
-    .select(PLAYER_COLUMNS)
-    .in('id', allowedPlayerIds)
-    .order('name', { ascending: true })
-    .limit(25);
-  if (escaped !== '') {
-    builder = builder.or(`tag.ilike.%${escaped}%,name.ilike.%${escaped}%`);
-  }
-
-  const { data, error } = await builder;
-  requireOk(error, 'Search players');
-  return (data ?? [])
-    .map((row: unknown) => parsePlayerRow(row))
+  const rows = await readRpcRows(db, 'player_search_scoped', {
+    p_club_ids: [...new Set(guildClubIds)],
+    p_search: cleaned,
+    p_limit: 25,
+  });
+  return rows
+    .map((value) => parsePlayerRow(record(value)?.['player']))
     .filter((row): row is PlayerIdentity => row !== null);
 }
 
@@ -582,27 +579,43 @@ async function readCompletedSnapshots(
   playerId: string,
   db: DatabaseClient,
 ): Promise<{ snapshots: ClubSnapshot[]; completedRunIds: Set<string> }> {
-  // Newest first, and no row cap: status is resolved only for the runs that
-  // actually produced these snapshots, so an old run can never be dropped by a
-  // global "recent completed runs" window.
-  const { data, error } = await db
-    .from('player_snapshots')
-    .select(PLAYER_SNAPSHOT_COLUMNS)
-    .eq('player_id', playerId)
-    .order('captured_at', { ascending: false });
-  requireOk(error, 'Read player history');
+  // The database filters completed runs and pages by (captured_at, id), so a
+  // REST row cap cannot hide older windows or duplicate rows captured together.
+  const all: ClubSnapshot[] = [];
+  const seen = new Set<string>();
+  let afterCapturedAt: string | null = null;
+  let afterId: string | null = null;
 
-  const all = (data ?? [])
-    .map((row: unknown) => playerSnapshotAsClubSnapshot(row))
-    .filter((snapshot): snapshot is ClubSnapshot => snapshot !== null);
-  const completedRunIds = new Set(
-    (await readCompletedRunsForIds(all.map((snapshot) => snapshot.syncRunId), db)).map(
-      (run) => run.id,
-    ),
-  );
+  for (let page = 0; page < SNAPSHOT_MAX_PAGES; page += 1) {
+    const rows = await readRpcRows(db, 'player_snapshot_page', {
+      p_player_id: playerId,
+      p_since: null,
+      p_completed_only: true,
+      p_newest_first: true,
+      p_limit: SNAPSHOT_PAGE_SIZE,
+      p_after_captured_at: afterCapturedAt,
+      p_after_id: afterId,
+    });
+    if (rows.length === 0) break;
+    for (const value of rows) {
+      const snapshot = playerSnapshotAsClubSnapshot(value);
+      if (snapshot === null || seen.has(snapshot.id)) continue;
+      seen.add(snapshot.id);
+      all.push(snapshot);
+    }
+    if (rows.length < SNAPSHOT_PAGE_SIZE) break;
+    const last = record(rows[rows.length - 1]);
+    const capturedAt = asString(last?.['captured_at']);
+    const id = asString(last?.['id']);
+    if (capturedAt === null || id === null) break;
+    if (capturedAt === afterCapturedAt && id === afterId) break;
+    afterCapturedAt = capturedAt;
+    afterId = id;
+  }
+
   return {
-    snapshots: all.filter((snapshot) => completedRunIds.has(snapshot.syncRunId)),
-    completedRunIds,
+    snapshots: all,
+    completedRunIds: new Set(all.map((snapshot) => snapshot.syncRunId)),
   };
 }
 

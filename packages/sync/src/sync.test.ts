@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createTrustedClient } from '@brawlhub/database';
 import type { BattleLogItem, BrawlStarsClient, Club, ClubMember } from '@brawlhub/brawl-stars';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { recoverInterruptedSyncs, registerClubs, runSync, startSyncLockRenewal } from './index';
+import {
+  collectBattleLogs,
+  recoverInterruptedSyncs,
+  registerClubs,
+  runSync,
+  startSyncLockRenewal,
+} from './index';
 
 type Call = {
   table: string;
@@ -1153,6 +1160,43 @@ describe('runSync', () => {
     }>;
     expect(payload.map((row) => row.battle_time)).toContain('2026-01-01T00:05:00.000Z');
     expect(callsFor('players', 'update')).toHaveLength(0);
+  });
+});
+
+describe('collectBattleLogs fencing', () => {
+  it('stops queued players and skips writes once the sync lease is lost', async () => {
+    setHandlers({
+      'player_battles:upsert': () => ({ data: [{ id: 'battle-1' }] }),
+      'players:select': () => ({ data: { last_battle_at: null } }),
+      'players:update': () => ({ data: [] }),
+    });
+    const controller = new AbortController();
+    const getBattleLog = vi.fn(async () => {
+      controller.abort();
+      return [OLD_BATTLE];
+    });
+    const assertBeforeWrite = vi.fn(async () => {
+      if (controller.signal.aborted) throw new Error('Sync lock lost before battle log write');
+    });
+    const states = Array.from({ length: 8 }, (_, index) => ({
+      playerId: `player-${index}`,
+      tag: `TAG${index}`,
+    }));
+
+    await expect(
+      collectBattleLogs(
+        createTrustedClient() as unknown as SupabaseClient,
+        apiClient({ getBattleLog }),
+        states,
+        'run-1',
+        1000,
+        { fence: controller.signal, assertBeforeWrite },
+      ),
+    ).rejects.toThrow(/lock lost/i);
+
+    expect(getBattleLog).toHaveBeenCalledTimes(1);
+    expect(assertBeforeWrite).toHaveBeenCalledTimes(1);
+    expect(callsFor('player_battles', 'upsert')).toHaveLength(0);
   });
 });
 

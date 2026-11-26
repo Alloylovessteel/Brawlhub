@@ -1,6 +1,7 @@
 import { createLogger } from '@brawlhub/logging';
 import { REST, Routes } from 'discord.js';
 import { getBotConfig } from '../../config';
+import { isDefinitiveDiscordRejection } from '../../discord/errors';
 import { cleanTag } from '../../discord/format';
 import type { ClubLogPeriod } from '../types';
 import {
@@ -169,8 +170,9 @@ function digestContent(
 /**
  * Edit the daily trophy digest in place as a live current-UTC-day view after a
  * sync. The original completed-day ledger row is advanced to the current day so
- * the same Discord message keeps being edited instead of a second message
- * being posted. Weekly and season digests are never touched.
+ * the same Discord message keeps being edited. The completed window is still
+ * posted independently by the digest poll, preserving daily archive history.
+ * Weekly and season digests are never touched.
  */
 export async function refreshTodayClubLogDigest(
   guildId: string,
@@ -299,19 +301,12 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
         readPostedClubLogDigests(guildId),
       ]);
       const pending = new Map<string, { log: (typeof logs)[number]; boundary: ClubLogDigestBoundary }>();
-      const liveTodayKey = currentClubLogDigestBoundary(now).periodKey;
       for (const log of logs) {
         for (const boundary of boundaries) {
           if (!log.periods.includes(boundary.period)) continue;
           if (posted.has(digestKey(log.id, boundary))) continue;
-          // A refreshed daily message is an edited live view of the current
-          // UTC day. Suppress the completed-window post it replaced.
-          if (
-            boundary.period === 'today' &&
-            posted.has(`${log.id}:today:${liveTodayKey}`)
-          ) {
-            continue;
-          }
+          // A refreshed live message keeps the current-day key, so the
+          // completed window remains due and receives its own archived post.
           pending.set(digestKey(log.id, boundary), { log, boundary });
         }
       }
@@ -400,7 +395,7 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
             messageId,
           });
         } catch (error) {
-          if (reachedSending) {
+          if (reachedSending && !isDefinitiveDiscordRejection(error)) {
             // Discord may have accepted the message, so the claim is kept for
             // manual reconciliation instead of being released for a repost.
             logger.warn('Club trophy digest outcome is uncertain; manual reconciliation may be needed', {

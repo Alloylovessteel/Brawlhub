@@ -724,6 +724,33 @@ describe('postScheduledReport', () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it('releases a fresh claim when Discord definitively rejects the post', async () => {
+    const patch = vi.fn(async () => ({ id: 'unused' }));
+    const post = vi.fn(async () => {
+      throw Object.assign(new Error('Missing Access'), { status: 403, code: 50001 });
+    });
+
+    const result = await callPost(fakeRest(patch, post));
+
+    expect(result.posted).toBe(false);
+    expect(result.uncertain).toBeUndefined();
+    expect(result.error).toContain('Missing Access');
+    expect(fake.ledger).toEqual([]);
+  });
+
+  it('keeps a fresh claim when the post outcome is ambiguous', async () => {
+    const patch = vi.fn(async () => ({ id: 'unused' }));
+    const post = vi.fn(async () => {
+      throw new Error('request timed out');
+    });
+
+    const result = await callPost(fakeRest(patch, post));
+
+    expect(result.posted).toBe(false);
+    expect(result.uncertain).toBe(true);
+    expect(fake.ledger[0]?.message_id).toMatch(/^claim:[^:]+:sending$/);
+  });
+
   it('never posts when the channel is blank', async () => {
     const patch = vi.fn(async () => ({ id: 'unused' }));
     const post = vi.fn(async () => ({ id: 'unused' }));
@@ -863,7 +890,7 @@ describe('readMissingReportDeliveries', () => {
       for (const setting of settingsFixture) {
         if (setting.reports_enabled_at === null) continue;
         for (const period of periods) {
-          if (Date.parse(period.period_start) < Date.parse(setting.reports_enabled_at)) continue;
+          if (Date.parse(period.period_end) <= Date.parse(setting.reports_enabled_at)) continue;
           const channelId = channelFor(setting, period.type);
           if (channelId === null) continue;
           const delivered = fake.ledger.find(
@@ -1081,7 +1108,7 @@ describe('readMissingReportDeliveries', () => {
     expect(missing.inactivityPeriodKey).toBe(INACTIVITY_KEY);
   });
 
-  it('only considers opted-in guilds and periods at or after reports_enabled_at', async () => {
+  it('only considers opted-in guilds and periods that ended after reports_enabled_at', async () => {
     setSettings([
       ...defaultSettings(),
       {
@@ -1122,6 +1149,36 @@ describe('readMissingReportDeliveries', () => {
         (target) => target.period.type === 'monthly' && target.period.periodKey === '2026-10',
       ),
     ).toBe(true);
+  });
+
+  it('includes the period in progress at opt-in when it is later completed', async () => {
+    const rollout = new Date('2026-11-26T17:00:00.000Z');
+    setSettings([
+      {
+        guild_id: THIRD_GUILD_ID,
+        overview_channel_id: CHANNEL_ID,
+        report_daily_channel_id: null,
+        report_weekly_channel_id: null,
+        report_monthly_channel_id: null,
+        report_inactivity_days: 1,
+        report_inactivity_channel_id: null,
+        reports_enabled_at: rollout.toISOString(),
+      },
+    ]);
+    setLedger([]);
+
+    const missing = await readMissingReportDeliveries(new Date('2026-12-01T01:00:00.000Z'));
+    const keys = (type: string): string[] =>
+      missing.targets
+        .filter((target) => target.guildId === THIRD_GUILD_ID && target.period.type === type)
+        .map((target) => target.period.periodKey);
+
+    expect(keys('daily')).toContain('2026-11-26');
+    expect(keys('daily')).not.toContain('2026-11-25');
+    expect(keys('weekly')).toContain('2026-W48');
+    expect(keys('weekly')).not.toContain('2026-W47');
+    expect(keys('monthly')).toContain('2026-11');
+    expect(keys('monthly')).not.toContain('2026-10');
   });
 
   it('uses the report-channel override returned by the RPC', async () => {

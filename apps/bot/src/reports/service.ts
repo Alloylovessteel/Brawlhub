@@ -4,6 +4,7 @@ import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import { REST, Routes } from 'discord.js';
 import { getBotConfig } from '../config';
+import { isDefinitiveDiscordRejection } from '../discord/errors';
 import { buildReportImage, describeReportImage, reportImageTitle } from './image';
 import {
   latestCompletedReportPeriod,
@@ -479,6 +480,12 @@ export async function postScheduledReport(
       })) as { id?: string } | undefined;
       messageId = asString(message?.id);
     } catch (error: unknown) {
+      if (isDefinitiveDiscordRejection(error)) {
+        // Discord proved the POST did not happen, so the sending claim can be
+        // removed and the scheduler may retry on its next tick.
+        await releaseClaim();
+        return { posted: false, messageId: null, error: safeError(error, input.token) };
+      }
       // The claim is already marked `sending`; a timeout may still have sent.
       logger.warn('Report send outcome is uncertain', {
         guildId: input.guildId,

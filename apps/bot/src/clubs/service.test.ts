@@ -439,6 +439,49 @@ describe('club data service', () => {
     expect(result.view.latestSyncAt).toBe(oldRun.finished_at);
   });
 
+  it('treats an explicit empty snapshot roster as authoritative', async () => {
+    const emptyRun = {
+      ...RUN,
+      id: 'run-empty',
+      captured_at: '2026-11-22T10:00:00.000Z',
+      finished_at: '2026-11-22T10:00:00.000Z',
+    };
+    const emptySnapshot = {
+      ...SNAPSHOT,
+      id: 'snapshot-empty',
+      sync_run_id: emptyRun.id,
+      captured_at: emptyRun.finished_at,
+      member_count: 0,
+      raw: { ...SNAPSHOT.raw, members: [] },
+    };
+    const { db, calls } = createFakeDb({
+      ...standardHandlers(),
+      'sync_runs:select': (call) => {
+        const ids = call.filters['id__in'];
+        return { data: Array.isArray(ids) && ids.includes(emptyRun.id) ? [RUN, emptyRun] : [RUN] };
+      },
+      'club_snapshots:select': () => ({ data: [SNAPSHOT, emptySnapshot] }),
+    });
+    const client = api({
+      getClub: vi.fn(async () => {
+        throw new BrawlStarsApiError('offline', 0);
+      }),
+      getClubMembers: vi.fn(async () => {
+        throw new BrawlStarsApiError('offline', 0);
+      }),
+    });
+
+    const result = await loadClubView({ tag: CLUB.tag }, { db, api: client, useCache: false });
+
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.view.liveStatus).toBe('sync-only');
+    expect(result.view.roster).toEqual([]);
+    expect(result.view.rosterAvailable).toBe(false);
+    expect(result.view.rosterSource).toBe('snapshot');
+    expect(calls.some((call) => call.table === 'club_memberships')).toBe(false);
+  });
+
   it('uses the memberships roster when no completed snapshot contains one', async () => {
     const { db, calls } = createFakeDb({
       ...standardHandlers(),
