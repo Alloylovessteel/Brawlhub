@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => ({
     errorCount: 0,
     membersNotFound: 0,
   })),
+  syncNicknameAfterVerification: vi.fn(async () => ({ kind: 'ok' as const })),
 }));
 
 vi.mock('../verification/index.js', () => ({
@@ -62,6 +63,9 @@ vi.mock('../operator-notifier.js', () => ({
 }));
 vi.mock('../role-automation/index.js', () => ({
   reconcileGuildRolesForPlayer: mocks.reconcileGuildRolesForPlayer,
+}));
+vi.mock('../nickname-sync/service.js', () => ({
+  syncNicknameAfterVerification: mocks.syncNicknameAfterVerification,
 }));
 
 import { handleMemberVerify } from './member-verify.js';
@@ -110,6 +114,12 @@ describe('member verification guild scoping', () => {
       'guild-1',
       'user-1',
       { client: interaction.client },
+    );
+    expect(mocks.syncNicknameAfterVerification).toHaveBeenCalledWith(
+      interaction.client,
+      'guild-1',
+      'user-1',
+      'Player',
     );
   });
 

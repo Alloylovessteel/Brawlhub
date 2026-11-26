@@ -15,6 +15,7 @@ import {
   notifyVerificationCompleted,
   notifyVerificationFailed,
 } from '../operator-notifier.js';
+import { syncNicknameAfterVerification } from '../nickname-sync/service.js';
 import { reconcileGuildRolesForPlayer } from '../role-automation/index.js';
 
 const COMMAND_NAME = 'member-verify';
@@ -88,6 +89,34 @@ async function reconcileRolesAfterVerification(
   } catch (error) {
     // Role reconciliation must never make a successful verification look failed.
     logger.warn('Post-verification auto role reconciliation failed', {
+      guildId: interaction.guildId,
+      discordUserId: interaction.user.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function syncNicknameAfterVerificationForInteraction(
+  interaction: ChatInputCommandInteraction,
+  playerName: string,
+): Promise<void> {
+  if (interaction.guildId === null) return;
+  try {
+    const result = await syncNicknameAfterVerification(
+      interaction.client,
+      interaction.guildId,
+      interaction.user.id,
+      playerName,
+    );
+    if (result.kind === 'ok') {
+      logger.info('Post-verification nickname synced', {
+        guildId: interaction.guildId,
+        discordUserId: interaction.user.id,
+      });
+    }
+  } catch (error) {
+    // Nickname sync must never make a successful verification look failed.
+    logger.warn('Post-verification nickname sync failed', {
       guildId: interaction.guildId,
       discordUserId: interaction.user.id,
       error: error instanceof Error ? error.message : String(error),
@@ -282,6 +311,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
   });
   await postVerificationOperatorNotice(interaction, result);
   await reconcileRolesAfterVerification(interaction);
+  await syncNicknameAfterVerificationForInteraction(interaction, result.playerName);
 }
 
 async function handleCancel(interaction: ChatInputCommandInteraction): Promise<void> {

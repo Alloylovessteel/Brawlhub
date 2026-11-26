@@ -113,10 +113,12 @@ export const HELP_CATEGORIES: readonly HelpCategory[] = [
       },
       {
         name: 'fn',
-        usage: '/fn list | /fn set tier:DIAMOND role:@ROLE | /fn me',
+        usage:
+          '/fn list | /fn set tier:DIAMOND role:@ROLE | /fn me | /fn nickname view | /fn nickname set prefix:[TAG] | /fn nickname clear | /fn nickname enable | /fn nickname disable | /fn nickname me',
         description:
-          'View ranked roles, map an official tier to a Discord role, or refresh your own role.',
-        permission: 'clubs:write for /fn set',
+          'View ranked roles, map an official tier to a Discord role, refresh your own role, and configure automatic verified-player nicknames with a custom club-tag prefix.',
+        permission:
+          'clubs:write for /fn set and /fn nickname set, clear, enable and disable',
       },
     ],
   },

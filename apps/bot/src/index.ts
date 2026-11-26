@@ -27,6 +27,7 @@ import {
 } from './single-instance.js';
 import { startBattleRawRetentionSchedule } from './retention/schedule.js';
 import { refreshAllConfiguredClubRoles } from './club-roles/service.js';
+import { refreshAllConfiguredNicknames } from './nickname-sync/service.js';
 import {
   reconcileAllConfiguredRoles,
   setRoleAutomationClient,
@@ -144,6 +145,26 @@ async function refreshAutoRolesSafely(): Promise<void> {
     }
   } catch (error) {
     logger.warn('Auto role reconciliation failed', { error: safeError(error, token) });
+  }
+  await refreshVerifiedNicknamesSafely();
+}
+
+/** Sync verified-member nicknames without affecting role reconciliation or sync outcomes. */
+async function refreshVerifiedNicknamesSafely(): Promise<void> {
+  try {
+    const result = await refreshAllConfiguredNicknames(client);
+    if (result.guilds > 0 || result.failures > 0) {
+      logger.info('Verified nickname refresh finished', {
+        guilds: result.guilds,
+        members: result.members,
+        updated: result.updated,
+        unchanged: result.unchanged,
+        notMembers: result.notMembers,
+        failures: result.failures,
+      });
+    }
+  } catch (error) {
+    logger.warn('Verified nickname refresh failed', { error: safeError(error, token) });
   }
 }
 

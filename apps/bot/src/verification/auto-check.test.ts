@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   loadUsername: vi.fn(),
   notifyOperator: vi.fn(),
   reconcileRoles: vi.fn(),
+  syncNickname: vi.fn(async () => ({ kind: 'ok' as const })),
 }));
 
 vi.mock('../state/index.js', () => ({
@@ -26,6 +27,10 @@ vi.mock('../operator-notifier.js', () => ({
 
 vi.mock('../role-automation/index.js', () => ({
   reconcileGuildRolesForPlayer: mocks.reconcileRoles,
+}));
+
+vi.mock('../nickname-sync/service.js', () => ({
+  syncNicknameAfterVerification: mocks.syncNickname,
 }));
 
 import {
@@ -126,6 +131,7 @@ beforeEach(() => {
     errorCount: 0,
     membersNotFound: 0,
   });
+  mocks.syncNickname.mockResolvedValue({ kind: 'ok' });
 });
 
 describe('runVerificationAutoCheck', () => {
@@ -138,6 +144,7 @@ describe('runVerificationAutoCheck', () => {
       loadUsername: mocks.loadUsername,
       notifyOperator: mocks.notifyOperator,
       reconcileRoles: mocks.reconcileRoles,
+      syncNickname: mocks.syncNickname,
     });
 
     expect(summary).toMatchObject({ candidates: 1, checked: 1, verified: 1 });
@@ -159,6 +166,7 @@ describe('runVerificationAutoCheck', () => {
       }),
     );
     expect(mocks.reconcileRoles).toHaveBeenCalledWith(GUILD_ONE, DISCORD_USER_ID, { client });
+    expect(mocks.syncNickname).toHaveBeenCalledWith(client, GUILD_ONE, DISCORD_USER_ID, 'Alpha');
   });
 
   it('leaves a mismatched challenge pending without sending notices', async () => {

@@ -31,7 +31,7 @@ BrawlHub now registers **20 top-level slash commands** instead of **42**. The ch
 | `/inactivity` | `/inactivity` (unchanged) |
 | `/audit` | `/audit` (unchanged) |
 | `/help` | `/help`, `/info`, `/ping` |
-| `/fn` | `/fn` (unchanged) |
+| `/fn` | `/fn` (same anchor; `/fn nickname` configures automatic verified-player nicknames) |
 | `/auto` | `/auto` (unchanged) |
 | `/update` | `/update` (unchanged) |
 | `/club-roles` | `/club-roles` (unchanged) |

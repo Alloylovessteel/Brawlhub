@@ -1,5 +1,6 @@
 import { createLogger } from '@brawlhub/logging';
 import type { Client } from 'discord.js';
+import { syncNicknameAfterVerification } from '../nickname-sync/service.js';
 import { notifyVerificationCompleted } from '../operator-notifier.js';
 import { reconcileGuildRolesForPlayer } from '../role-automation/index.js';
 import {
@@ -63,6 +64,7 @@ export interface VerificationAutoCheckDeps {
   readonly loadUsername?: (discordUserId: string) => Promise<string | null>;
   readonly notifyOperator?: typeof notifyVerificationCompleted;
   readonly reconcileRoles?: typeof reconcileGuildRolesForPlayer;
+  readonly syncNickname?: typeof syncNicknameAfterVerification;
   readonly batchSize?: number;
 }
 
@@ -230,6 +232,27 @@ async function handleVerified(
     }
   } catch (error) {
     logger.warn('Automatic verification auto role reconciliation failed', {
+      guildId: record.guildId,
+      discordUserId: record.discordUserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    const nickname = await (deps.syncNickname ?? syncNicknameAfterVerification)(
+      client,
+      record.guildId,
+      record.discordUserId,
+      result.playerName,
+    );
+    if (nickname.kind === 'ok') {
+      logger.info('Automatic verification nickname synced', {
+        guildId: record.guildId,
+        discordUserId: record.discordUserId,
+      });
+    }
+  } catch (error) {
+    logger.warn('Automatic verification nickname sync failed', {
       guildId: record.guildId,
       discordUserId: record.discordUserId,
       error: error instanceof Error ? error.message : String(error),
