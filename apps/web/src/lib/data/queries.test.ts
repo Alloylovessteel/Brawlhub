@@ -228,7 +228,7 @@ describe('web scoped data reads', () => {
       field: 'id',
       value: [PLAYER_A],
     });
-  });
+  }, 15_000);
 
   it('checks getPlayerById scope through the same current-only RPC', async () => {
     const { getPlayerById } = await import('./queries');

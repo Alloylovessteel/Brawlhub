@@ -8,6 +8,11 @@ const mocks = vi.hoisted(() => ({
   })),
   readMissingReportDeliveries: vi.fn(async (_now: Date) => ({
     periods: [] as Array<{ type: 'daily' | 'weekly' | 'monthly'; periodKey: string }>,
+    targets: [] as Array<{
+      guildId: string;
+      channelId: string;
+      period: { type: 'daily' | 'weekly' | 'monthly'; periodKey: string };
+    }>,
     inactivityPeriodKey: null as string | null,
   })),
   postInactivityReports: vi.fn(async (_now: Date, _rest?: unknown, _token?: string | undefined) => ({
@@ -38,6 +43,11 @@ type ReportType = 'daily' | 'weekly' | 'monthly';
 function missing(types: readonly ReportType[], inactivityPeriodKey: string | null = null) {
   return {
     periods: types.map((type) => ({ type, periodKey: `${type}-period` })),
+    targets: types.map((type) => ({
+      guildId: '111111111111111111',
+      channelId: '222222222222222222',
+      period: { type, periodKey: `${type}-period` },
+    })),
     inactivityPeriodKey,
   };
 }

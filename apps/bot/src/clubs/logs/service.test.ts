@@ -165,11 +165,13 @@ import {
   advanceClubLogDigestClaim,
   claimClubLogDigestWindows,
   loadClubLogs,
+  loadPostedClubLogDigestPosts,
   loadUndeliveredClubLogEvents,
   markClubLogDigestClaimDelivered,
   markClubLogDigestPosted,
   markClubLogEventsDelivered,
   readPostedClubLogDigests,
+  rekeyClubLogDigestPost,
   releaseClubLogDigestClaims,
   removeClubLog,
 } from './service';
@@ -751,6 +753,144 @@ describe('digest post ledger', () => {
       `${LOG_ID}:today:2026-11-21`,
       `${LOG_ID}:week:2026-11-16`,
     ]);
+  });
+
+  it('loads delivered posts for one window and ignores sentinels or foreign logs', async () => {
+    setHandler('guild_club_log_digest_posts:select', (call) => {
+      expect(call.filters['guild_id']).toBe(GUILD_ID);
+      expect(call.filters['period']).toBe('today');
+      expect(call.filters['period_key']).toBe('2026-11-21');
+      return {
+        data: [
+          {
+            log_id: LOG_ID,
+            period: 'today',
+            period_key: '2026-11-21',
+            channel_id: CHANNEL_ID,
+            message_id: 'message-1',
+          },
+          {
+            log_id: LOG_ID,
+            period: 'today',
+            period_key: '2026-11-21',
+            channel_id: CHANNEL_ID,
+            message_id: 'claim-delivered:claim-1:2026-11-21:message-2',
+          },
+          {
+            log_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+            period: 'today',
+            period_key: '2026-11-21',
+            channel_id: CHANNEL_ID,
+            message_id: 'message-3',
+          },
+        ],
+      };
+    });
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [{ log_id: LOG_ID, period: 'today' }] }));
+
+    await expect(loadPostedClubLogDigestPosts(GUILD_ID, 'today', '2026-11-21')).resolves.toEqual([
+      {
+        logId: LOG_ID,
+        period: 'today',
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+    ]);
+  });
+
+  it('rekeys an exact delivered row to the current day', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [{ log_id: LOG_ID, period: 'today' }] }));
+    setHandler('guild_club_log_digest_posts:update', (call) => ({
+      data: [call.payload],
+    }));
+
+    const moved = await rekeyClubLogDigestPost(
+      GUILD_ID,
+      {
+        logId: LOG_ID,
+        period: 'today',
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+      '2026-11-22',
+    );
+
+    expect(moved).toBe(true);
+    const update = callsFor('guild_club_log_digest_posts', 'update')[0];
+    expect(update?.payload).toEqual({ period_key: '2026-11-22' });
+    expect(update?.filters).toMatchObject({
+      guild_id: GUILD_ID,
+      log_id: LOG_ID,
+      period: 'today',
+      period_key: '2026-11-21',
+      message_id: 'message-1',
+    });
+    expect(callsFor('guild_club_log_digest_posts', 'upsert')).toHaveLength(0);
+    expect(callsFor('guild_club_log_digest_posts', 'insert')).toHaveLength(0);
+  });
+
+  it('accepts an already-rekeyed row and removes the exact duplicate pointer', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [{ log_id: LOG_ID, period: 'today' }] }));
+    setHandler('guild_club_log_digest_posts:select', () => ({
+      data: { channel_id: CHANNEL_ID, message_id: 'message-1' },
+    }));
+    setHandler('guild_club_log_digest_posts:delete', () => ({ data: [] }));
+
+    const moved = await rekeyClubLogDigestPost(
+      GUILD_ID,
+      {
+        logId: LOG_ID,
+        period: 'today',
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+      '2026-11-22',
+    );
+
+    expect(moved).toBe(true);
+    const removed = callsFor('guild_club_log_digest_posts', 'delete')[0];
+    expect(removed?.filters).toEqual({
+      guild_id: GUILD_ID,
+      log_id: LOG_ID,
+      period: 'today',
+      period_key: '2026-11-21',
+      message_id: 'message-1',
+    });
+    expect(callsFor('guild_club_log_digest_posts', 'update')).toHaveLength(0);
+  });
+
+  it('refuses to rekey when the current-day key belongs to another message', async () => {
+    setHandler('guild_club_logs:select', () => ({ data: [logRow()] }));
+    setHandler('clubs:select', () => ({ data: [clubRow()] }));
+    setHandler('guild_club_log_periods:select', () => ({ data: [{ log_id: LOG_ID, period: 'today' }] }));
+    setHandler('guild_club_log_digest_posts:select', () => ({
+      data: { channel_id: CHANNEL_ID, message_id: 'claim-delivered:claim-1:2026-11-22:message-2' },
+    }));
+
+    await expect(
+      rekeyClubLogDigestPost(
+        GUILD_ID,
+        {
+          logId: LOG_ID,
+          period: 'today',
+          periodKey: '2026-11-21',
+          channelId: CHANNEL_ID,
+          messageId: 'message-1',
+        },
+        '2026-11-22',
+      ),
+    ).resolves.toBe(false);
+    expect(callsFor('guild_club_log_digest_posts', 'update')).toHaveLength(0);
+    expect(callsFor('guild_club_log_digest_posts', 'delete')).toHaveLength(0);
   });
 
   it('writes digest rows with the guild id and ignores foreign logs', async () => {

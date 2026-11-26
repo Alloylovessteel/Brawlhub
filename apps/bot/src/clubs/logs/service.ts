@@ -1208,6 +1208,68 @@ export async function loadPostedClubLogDigestPosts(
 }
 
 /**
+ * Move one delivered daily digest row to the current UTC-day key without
+ * creating a second pointer to the same Discord message. The caller must have
+ * already rendered successfully; a conflict leaves the original row untouched.
+ */
+export async function rekeyClubLogDigestPost(
+  guildId: string,
+  post: ClubLogDigestPost,
+  toPeriodKey: string,
+  options: ClubLogServiceOptions = {},
+): Promise<boolean> {
+  const parsedGuildId = requireGuildId(guildId);
+  if (post.periodKey === toPeriodKey) return true;
+  if (!isClubLogPeriod(post.period)) return false;
+  const db = dbFor(options);
+  const allowedLogIds = new Set((await loadClubLogRows(parsedGuildId, { db })).map((log) => log.id));
+  if (!allowedLogIds.has(post.logId)) return false;
+
+  const target = await db
+    .from('guild_club_log_digest_posts')
+    .select('channel_id, message_id')
+    .eq('guild_id', parsedGuildId)
+    .eq('log_id', post.logId)
+    .eq('period', post.period)
+    .eq('period_key', toPeriodKey)
+    .maybeSingle();
+  requireOk(target.error, 'Read target club log digest post');
+  const targetRow = record(target.data);
+  if (targetRow !== null) {
+    if (
+      asString(targetRow['channel_id']) !== post.channelId ||
+      asString(targetRow['message_id']) !== post.messageId
+    ) {
+      return false;
+    }
+    const duplicate = await db
+      .from('guild_club_log_digest_posts')
+      .delete()
+      .eq('guild_id', parsedGuildId)
+      .eq('log_id', post.logId)
+      .eq('period', post.period)
+      .eq('period_key', post.periodKey)
+      .eq('message_id', post.messageId);
+    requireOk(duplicate.error, 'Remove duplicate club log digest post');
+    return true;
+  }
+
+  const moved = await db
+    .from('guild_club_log_digest_posts')
+    .update({ period_key: toPeriodKey })
+    .eq('guild_id', parsedGuildId)
+    .eq('log_id', post.logId)
+    .eq('period', post.period)
+    .eq('period_key', post.periodKey)
+    .eq('message_id', post.messageId)
+    .select('period_key');
+  requireOk(moved.error, 'Advance club log digest post');
+  return (moved.data ?? []).some(
+    (item) => asString(record(item)?.['period_key']) === toPeriodKey,
+  );
+}
+
+/**
  * Overwrite a claim sentinel with the real Discord message ID. Duplicate
  * inserts are intentionally not ignored here, or a pending claim would block
  * its own completion forever.

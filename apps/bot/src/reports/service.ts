@@ -1,16 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import { REST, Routes } from 'discord.js';
 import { getBotConfig } from '../config';
 import { buildReportImage, describeReportImage, reportImageTitle } from './image';
-import { normalizeInactivityDays } from './inactivity';
 import {
   latestCompletedReportPeriod,
   previousCompletedReportPeriod,
   REPORT_TYPES,
-  reportChannelFor,
-  type ReportChannelSettings,
   type ReportPeriod,
   type ReportType,
 } from './period';
@@ -23,6 +21,9 @@ const LEDGER_WRITE_ATTEMPTS = 2;
 const warnedUncertainReports = new Set<string>();
 const REPORT_CLAIM_PREFIX = 'claim:';
 const REPORT_DELIVERED_PREFIX = 'claim-delivered:';
+const REPORT_PAGE_SIZE = 1000;
+/** Bounds the paging loops if an RPC ever repeats a cursor instead of ending. */
+const MAX_REPORT_PAGES = 100;
 type ReportClaimStage = 'reserved' | 'loading' | 'sending';
 /** Explicit retention window for catching up periods missed during an outage. */
 const MAX_CATCHUP_PERIODS: Readonly<Record<ReportType, number>> = {
@@ -87,6 +88,17 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
 }
 
+/** Read a table-valued RPC (PostgREST returns an array of rows). */
+async function readRpcRows(
+  db: SupabaseClient,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown[]> {
+  const { data, error } = await db.rpc(name, args);
+  requireOk(error, name);
+  return Array.isArray(data) ? data : [];
+}
+
 function requireOk(error: unknown, action: string): void {
   if (error === null || error === undefined) return;
   const candidate = asRecord(error);
@@ -147,17 +159,9 @@ function isRecoverableReportClaim(claim: ParsedReportClaim): boolean {
 
 /**
  * A delivered sentinel carries the Discord message ID, so it is durable even
- * before reconciliation. Only a claim whose stage is provably pre-send can be
- * safely reclaimed; sending and legacy claims are uncertain.
+ * before reconciliation. Delivery filtering now lives in the SQL RPC; the
+ * parser below still recovers that ID when replaying a report edit.
  */
-function isDeliveredReportMessage(messageId: string | null): boolean {
-  if (messageId === null) return false;
-  if (messageId.startsWith(REPORT_DELIVERED_PREFIX)) {
-    return parseReportDeliveredClaim(messageId) !== null;
-  }
-  return !messageId.startsWith(REPORT_CLAIM_PREFIX);
-}
-
 function parseReportDeliveredClaim(messageId: string): string | null {
   if (!messageId.startsWith(REPORT_DELIVERED_PREFIX)) return null;
   const separator = messageId.indexOf(':', REPORT_DELIVERED_PREFIX.length);
@@ -174,72 +178,101 @@ function asCount(value: unknown): number {
 }
 
 /**
- * Load one guild's activity from stored sync history. Both the club list and
- * the event aggregation are database RPCs so REST row caps cannot omit clubs
- * or undercount a busy period.
+ * Load one guild's activity from stored sync history. Clubs, guild totals and
+ * per-club activity are read through keyset-paged RPCs so REST row caps cannot
+ * omit clubs or undercount a busy period.
  */
 export async function loadReportData(guildId: string, period: ReportPeriod): Promise<ReportData> {
   const db = createTrustedClient();
-  const [clubsResult, activityResult] = await Promise.all([
-    db.rpc('push_report_clubs', { p_guild_id: guildId }),
-    db.rpc('push_report_activity', {
+  const summaries: MutableClubSummary[] = [];
+  const byClub = new Map<string, MutableClubSummary>();
+
+  let clubCursor: { name: string; id: string } | null = null;
+  const seenClubCursors = new Set<string>();
+  for (let page = 0; page < MAX_REPORT_PAGES; page += 1) {
+    const rows = await readRpcRows(db, 'push_report_clubs', {
+      p_guild_id: guildId,
+      p_limit: REPORT_PAGE_SIZE,
+      ...(clubCursor === null
+        ? {}
+        : { p_after_name: clubCursor.name, p_after_id: clubCursor.id }),
+    });
+    for (const raw of rows) {
+      const row = asRecord(raw);
+      const clubId = asString(row?.['id']);
+      if (row === null || clubId === null) continue;
+      const summary: MutableClubSummary = {
+        clubId,
+        tag: asString(row['tag']) ?? '',
+        name: asString(row['name']) ?? '',
+        joins: 0,
+        leaves: 0,
+        transfers: 0,
+        roleChanges: 0,
+        capacityOpens: 0,
+        capacityCloses: 0,
+      };
+      summaries.push(summary);
+      byClub.set(clubId, summary);
+    }
+    if (rows.length < REPORT_PAGE_SIZE) break;
+    const last = asRecord(rows[rows.length - 1]);
+    const lastName = asString(last?.['name']);
+    const lastId = asString(last?.['id']);
+    if (lastName === null || lastId === null) break;
+    const cursorKey = `${lastName}\u0000${lastId}`;
+    if (seenClubCursors.has(cursorKey)) break;
+    seenClubCursors.add(cursorKey);
+    clubCursor = { name: lastName, id: lastId };
+  }
+
+  const totalsRows = await readRpcRows(db, 'push_report_activity_totals', {
+    p_guild_id: guildId,
+    p_start: period.start.toISOString(),
+    p_end: period.end.toISOString(),
+  });
+  const totalsRow = asRecord(totalsRows[0]);
+  const totals: ReportData['totals'] = {
+    clubs: summaries.length,
+    joins: asCount(totalsRow?.['joins']),
+    leaves: asCount(totalsRow?.['leaves']),
+    transfers: asCount(totalsRow?.['transfers']),
+    roleChanges: asCount(totalsRow?.['role_changes']),
+    capacityOpens: asCount(totalsRow?.['capacity_opens']),
+    capacityCloses: asCount(totalsRow?.['capacity_closes']),
+  };
+
+  let activityCursor: string | null = null;
+  const seenActivityCursors = new Set<string>();
+  for (let page = 0; page < MAX_REPORT_PAGES; page += 1) {
+    const rows = await readRpcRows(db, 'push_report_activity', {
       p_guild_id: guildId,
       p_start: period.start.toISOString(),
       p_end: period.end.toISOString(),
-    }),
-  ]);
-  requireOk(clubsResult.error, 'Read report clubs');
-  requireOk(activityResult.error, 'Aggregate report activity');
-
-  const summaries: MutableClubSummary[] = [];
-  const byClub = new Map<string, MutableClubSummary>();
-  for (const raw of Array.isArray(clubsResult.data) ? clubsResult.data : []) {
-    const row = asRecord(raw);
-    const clubId = asString(row?.['id']);
-    if (row === null || clubId === null) continue;
-    const summary: MutableClubSummary = {
-      clubId,
-      tag: asString(row['tag']) ?? '',
-      name: asString(row['name']) ?? '',
-      joins: 0,
-      leaves: 0,
-      transfers: 0,
-      roleChanges: 0,
-      capacityOpens: 0,
-      capacityCloses: 0,
-    };
-    summaries.push(summary);
-    byClub.set(clubId, summary);
-  }
-
-  let totals: ReportData['totals'] = {
-    clubs: summaries.length,
-    joins: 0,
-    leaves: 0,
-    transfers: 0,
-    roleChanges: 0,
-    capacityOpens: 0,
-    capacityCloses: 0,
-  };
-  for (const raw of Array.isArray(activityResult.data) ? activityResult.data : []) {
-    const row = asRecord(raw);
-    if (row === null) continue;
-    const clubId = asString(row['club_id']);
-    const values = {
-      joins: asCount(row['joins']),
-      leaves: asCount(row['leaves']),
-      transfers: asCount(row['transfers']),
-      roleChanges: asCount(row['role_changes']),
-      capacityOpens: asCount(row['capacity_opens']),
-      capacityCloses: asCount(row['capacity_closes']),
-    };
-    if (clubId === null) {
-      totals = { clubs: summaries.length, ...values };
-      continue;
+      p_limit: REPORT_PAGE_SIZE,
+      ...(activityCursor === null ? {} : { p_after_id: activityCursor }),
+    });
+    for (const raw of rows) {
+      const row = asRecord(raw);
+      if (row === null) continue;
+      const clubId = asString(row['club_id']);
+      if (clubId === null) continue;
+      const summary = byClub.get(clubId);
+      if (summary === undefined) continue;
+      Object.assign(summary, {
+        joins: asCount(row['joins']),
+        leaves: asCount(row['leaves']),
+        transfers: asCount(row['transfers']),
+        roleChanges: asCount(row['role_changes']),
+        capacityOpens: asCount(row['capacity_opens']),
+        capacityCloses: asCount(row['capacity_closes']),
+      });
     }
-    const summary = byClub.get(clubId);
-    if (summary === undefined) continue;
-    Object.assign(summary, values);
+    if (rows.length < REPORT_PAGE_SIZE) break;
+    const lastId = asString(asRecord(rows[rows.length - 1])?.['club_id']);
+    if (lastId === null || seenActivityCursors.has(lastId)) break;
+    seenActivityCursors.add(lastId);
+    activityCursor = lastId;
   }
 
   return { period, clubSummaries: summaries, totals };
@@ -520,6 +553,8 @@ export async function postScheduledReport(
 
 export interface MissingReportDeliveryTarget {
   readonly guildId: string;
+  /** Channel resolved by the SQL RPC (report override or overview fallback). */
+  readonly channelId: string;
   readonly period: ReportPeriod;
 }
 
@@ -544,109 +579,102 @@ function reportCatchupPeriods(now: Date, type: ReportType): ReportPeriod[] {
 }
 
 /**
- * Durable delivery state for the scheduler. Ledger keys are authoritative and
- * scoped per guild, so a restart, a missed UTC boundary, or one failed guild
- * cannot hide another guild's undelivered period. Old gaps inside the explicit
- * retention window are included, not just the latest period.
+ * Durable delivery state for the scheduler. The SQL RPCs resolve opted-in
+ * guilds, channel fallbacks and claim semantics server-side and return keyset
+ * pages, so a large ledger can never be read in one capped REST request.
  */
 export async function readMissingReportDeliveries(now: Date): Promise<MissingReportDeliveries> {
   const db = createTrustedClient();
   const inactivityPeriodKey = now.toISOString().slice(0, 10);
 
-  const [settings, posts, inactivity] = await Promise.all([
-    db
-      .from('guild_settings')
-      .select(
-        'guild_id, overview_channel_id, report_daily_channel_id, report_weekly_channel_id, report_monthly_channel_id, report_inactivity_days, report_inactivity_channel_id',
-      )
-      .or(
-        'overview_channel_id.not.is.null,report_daily_channel_id.not.is.null,report_weekly_channel_id.not.is.null,report_monthly_channel_id.not.is.null,report_inactivity_channel_id.not.is.null',
-      ),
-    db.from('guild_report_posts').select('guild_id, report_type, period_key, message_id'),
-    db.from('guild_inactivity_report_posts').select('guild_id, period_key, message_id'),
-  ]);
-  requireOk(settings.error, 'Read report guilds');
-  requireOk(posts.error, 'Read report post ledger');
-  requireOk(inactivity.error, 'Read inactivity report post ledger');
-
-  const guilds = (settings.data ?? [])
-    .map(parseScheduledGuild)
-    .filter((guild): guild is ScheduledGuild => guild !== null);
-  const posted = new Set<string>();
-  for (const item of posts.data ?? []) {
-    const row = asRecord(item);
-    const guildId = asString(row?.['guild_id']);
-    const type = asString(row?.['report_type']);
-    const periodKey = asString(row?.['period_key']);
-    const messageId = asString(row?.['message_id']);
-    if (
-      guildId === null || type === null || periodKey === null ||
-      !isDeliveredReportMessage(messageId)
-    ) {
-      continue;
-    }
-    posted.add(`${guildId}:${type}:${periodKey}`);
-  }
-  const inactivityPosted = new Set<string>();
-  for (const item of inactivity.data ?? []) {
-    const row = asRecord(item);
-    const guildId = asString(row?.['guild_id']);
-    const periodKey = asString(row?.['period_key']);
-    const messageId = asString(row?.['message_id']);
-    if (
-      guildId === null || periodKey !== inactivityPeriodKey ||
-      !isDeliveredReportMessage(messageId)
-    ) {
-      continue;
-    }
-    inactivityPosted.add(guildId);
-  }
+  const periodByKey = new Map<string, ReportPeriod>();
+  const requestedPeriods = REPORT_TYPES.flatMap((type) => {
+    const periods = reportCatchupPeriods(now, type);
+    for (const period of periods) periodByKey.set(`${type}:${period.periodKey}`, period);
+    return periods.map((period) => ({
+      type,
+      period_key: period.periodKey,
+      period_start: period.start.toISOString(),
+      period_end: period.end.toISOString(),
+    }));
+  });
 
   const targets: MissingReportDeliveryTarget[] = [];
   const periods = new Map<string, ReportPeriod>();
-  for (const guild of guilds) {
-    for (const type of REPORT_TYPES) {
-      if (reportChannelFor(guild, type) === null) continue;
-      for (const period of reportCatchupPeriods(now, type)) {
-        if (posted.has(`${guild.guildId}:${type}:${period.periodKey}`)) continue;
-        targets.push({ guildId: guild.guildId, period });
-        periods.set(`${type}:${period.periodKey}`, period);
+  let cursor: { guildId: string; reportType: string; periodKey: string } | null = null;
+  const seenCursors = new Set<string>();
+  for (let page = 0; page < MAX_REPORT_PAGES; page += 1) {
+    const rows = await readRpcRows(db, 'push_missing_report_deliveries', {
+      p_periods: JSON.stringify(requestedPeriods),
+      p_limit: REPORT_PAGE_SIZE,
+      ...(cursor === null
+        ? {}
+        : {
+            p_after_guild_id: cursor.guildId,
+            p_after_report_type: cursor.reportType,
+            p_after_period_key: cursor.periodKey,
+          }),
+    });
+    for (const raw of rows) {
+      const row = asRecord(raw);
+      if (row === null) continue;
+      const guildId = asString(row['guild_id']);
+      const channelId = asString(row['channel_id']);
+      const rawType = asString(row['report_type']);
+      const periodKey = asString(row['period_key']);
+      if (guildId === null || channelId === null || rawType === null || periodKey === null) {
+        continue;
       }
+      const type = REPORT_TYPES.find((candidate) => candidate === rawType);
+      if (type === undefined) continue;
+      const period = periodByKey.get(`${type}:${periodKey}`);
+      if (period === undefined) continue;
+      targets.push({ guildId, channelId, period });
+      periods.set(`${type}:${periodKey}`, period);
     }
+    if (rows.length < REPORT_PAGE_SIZE) break;
+    const last = asRecord(rows[rows.length - 1]);
+    const guildId = asString(last?.['guild_id']);
+    const reportType = asString(last?.['report_type']);
+    const periodKey = asString(last?.['period_key']);
+    if (guildId === null || reportType === null || periodKey === null) break;
+    const cursorKey = `${guildId}\u0000${reportType}\u0000${periodKey}`;
+    if (seenCursors.has(cursorKey)) break;
+    seenCursors.add(cursorKey);
+    cursor = { guildId, reportType, periodKey };
   }
-  const inactivityMissing = guilds.some(
-    (guild) =>
-      guild.inactivityDays !== null &&
-      guild.inactivityChannelId !== null &&
-      !inactivityPosted.has(guild.guildId),
-  );
+
+  // The inactivity RPC only needs to prove that some guild is missing its
+  // durable post for this day, so the loop stops on the first matching page.
+  let inactivityCursor: string | null = null;
+  const seenInactivityCursors = new Set<string>();
+  let inactivityMissing = false;
+  for (let page = 0; page < MAX_REPORT_PAGES; page += 1) {
+    const rows = await readRpcRows(db, 'push_missing_inactivity_deliveries', {
+      p_period_key: inactivityPeriodKey,
+      p_limit: REPORT_PAGE_SIZE,
+      ...(inactivityCursor === null ? {} : { p_after_guild_id: inactivityCursor }),
+    });
+    if (
+      rows.some((raw) => {
+        const row = asRecord(raw);
+        return row !== null && asString(row['guild_id']) !== null;
+      })
+    ) {
+      inactivityMissing = true;
+      break;
+    }
+    if (rows.length < REPORT_PAGE_SIZE) break;
+    const lastGuildId = asString(asRecord(rows[rows.length - 1])?.['guild_id']);
+    if (lastGuildId === null || seenInactivityCursors.has(lastGuildId)) break;
+    seenInactivityCursors.add(lastGuildId);
+    inactivityCursor = lastGuildId;
+  }
 
   return {
     periods: [...periods.values()],
     targets,
     inactivityPeriodKey: inactivityMissing ? inactivityPeriodKey : null,
-  };
-}
-
-interface ScheduledGuild extends ReportChannelSettings {
-  readonly guildId: string;
-  readonly inactivityDays: number | null;
-  readonly inactivityChannelId: string | null;
-}
-
-function parseScheduledGuild(value: unknown): ScheduledGuild | null {
-  const row = asRecord(value);
-  const guildId = asString(row?.['guild_id']);
-  if (row === null || guildId === null) return null;
-  return {
-    guildId,
-    overviewChannelId: asString(row['overview_channel_id']),
-    reportDailyChannelId: asString(row['report_daily_channel_id']),
-    reportWeeklyChannelId: asString(row['report_weekly_channel_id']),
-    reportMonthlyChannelId: asString(row['report_monthly_channel_id']),
-    inactivityDays: normalizeInactivityDays(row['report_inactivity_days']),
-    inactivityChannelId:
-      asString(row['report_inactivity_channel_id']) ?? asString(row['overview_channel_id']),
   };
 }
 
@@ -669,31 +697,7 @@ export async function runScheduledReports(
     return { failedTypes: [...failedTypes], skippedTypes: [], claimedTypes: [] };
   }
 
-  let guilds: ScheduledGuild[];
-  try {
-    const result = await createTrustedClient()
-      .from('guild_settings')
-      .select(
-        'guild_id, overview_channel_id, report_daily_channel_id, report_weekly_channel_id, report_monthly_channel_id',
-      )
-      .or(
-        'overview_channel_id.not.is.null,report_daily_channel_id.not.is.null,report_weekly_channel_id.not.is.null,report_monthly_channel_id.not.is.null',
-      );
-    requireOk(result.error, 'Read report guilds');
-    guilds = (result.data ?? [])
-      .map(parseScheduledGuild)
-      .filter((guild): guild is ScheduledGuild => guild !== null);
-  } catch (error: unknown) {
-    logger.error('Scheduled reports could not read guild targets', {
-      error: safeError(error, token),
-    });
-    for (const type of types) failedTypes.add(type);
-    return { failedTypes: [...failedTypes], skippedTypes: [], claimedTypes: [] };
-  }
-
-  if (guilds.length === 0) return { failedTypes: [], skippedTypes: [], claimedTypes: [] };
   const rest = new REST({ version: '10' }).setToken(token);
-  const guildById = new Map(guilds.map((guild) => [guild.guildId, guild]));
 
   let missing: MissingReportDeliveries;
   try {
@@ -709,14 +713,12 @@ export async function runScheduledReports(
   for (const target of missing.targets) {
     const type = target.period.type;
     if (!types.includes(type)) continue;
-    const guild = guildById.get(target.guildId);
-    if (guild === undefined) continue;
+    const channelId = target.channelId.trim();
+    if (channelId === '') continue;
     try {
-      const channelId = reportChannelFor(guild, type);
-      if (channelId === null) continue;
       const result = await postScheduledReport({
         rest,
-        guildId: guild.guildId,
+        guildId: target.guildId,
         period: target.period,
         channelId,
         token,
@@ -724,11 +726,11 @@ export async function runScheduledReports(
       });
       if (result.uncertain === true) {
         skippedTypes.add(type);
-        const uncertainKey = `${guild.guildId}:${type}:${target.period.periodKey}`;
+        const uncertainKey = `${target.guildId}:${type}:${target.period.periodKey}`;
         if (!warnedUncertainReports.has(uncertainKey)) {
           warnedUncertainReports.add(uncertainKey);
           logger.warn('Scheduled report outcome is uncertain; manual reconciliation may be needed', {
-            guildId: guild.guildId,
+            guildId: target.guildId,
             reportType: type,
             periodKey: target.period.periodKey,
           });
@@ -743,7 +745,7 @@ export async function runScheduledReports(
       if (!result.posted || result.recorded === false || result.error !== undefined) {
         failedTypes.add(type);
         logger.warn('Scheduled report was not fully recorded', {
-          guildId: guild.guildId,
+          guildId: target.guildId,
           reportType: type,
           periodKey: target.period.periodKey,
           messageId: result.messageId,
@@ -753,7 +755,7 @@ export async function runScheduledReports(
     } catch (error: unknown) {
       failedTypes.add(type);
       logger.warn('Scheduled report failed for guild', {
-        guildId: guild.guildId,
+        guildId: target.guildId,
         reportType: type,
         periodKey: target.period.periodKey,
         error: safeError(error, token),

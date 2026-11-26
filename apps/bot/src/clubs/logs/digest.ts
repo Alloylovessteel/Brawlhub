@@ -4,11 +4,11 @@ import type { ClubLogPeriod } from '../types';
 
 export interface ClubLogDigestBoundary {
   readonly period: ClubLogPeriod;
-  /** Stable idempotency key for one completed window. */
+  /** Stable idempotency key for one window or live current-day view. */
   readonly periodKey: string;
-  /** First instant of the completed window (used as the season baseline). */
+  /** First instant of the window (used as the season baseline). */
   readonly windowStart: Date;
-  /** Last instant of the completed window; used as `now` when rendering. */
+  /** Rendering clock: completed-window end, or the current instant for a live view. */
   readonly windowEnd: Date;
   /** Short human-readable label for the message header. */
   readonly label: string;
@@ -53,6 +53,22 @@ function formatRange(start: Date, end: Date): string {
   const last = formatDay(end);
   if (dateKey(start) === dateKey(end)) return `${last}, ${end.getUTCFullYear()}`;
   return `${formatDay(start)} – ${last}, ${end.getUTCFullYear()}`;
+}
+
+/**
+ * Current UTC-day boundary for a live club-log refresh. Unlike a scheduled
+ * digest, this represents the day that is still in progress: `windowEnd` is
+ * the supplied instant and the label is the current UTC date.
+ */
+export function currentClubLogDigestBoundary(now: Date): ClubLogDigestBoundary {
+  const windowStart = utcMidnight(now);
+  return {
+    period: 'today',
+    periodKey: dateKey(windowStart),
+    windowStart,
+    windowEnd: now,
+    label: formatDay(windowStart),
+  };
 }
 
 /**

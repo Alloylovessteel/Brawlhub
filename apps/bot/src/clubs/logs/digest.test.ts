@@ -1,10 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import { dueClubLogDigests } from './digest';
+import { currentClubLogDigestBoundary, dueClubLogDigests } from './digest';
 
 const CONFIG = {
   seasonStartIso: '2026-11-05T08:00:00.000Z',
   seasonEndIso: '2026-12-03T08:00:00.000Z',
 };
+
+describe('currentClubLogDigestBoundary', () => {
+  it('describes the current UTC day rather than the completed day', () => {
+    const now = new Date('2026-11-22T17:30:00.000Z');
+    const boundary = currentClubLogDigestBoundary(now);
+
+    expect(boundary).toEqual({
+      period: 'today',
+      periodKey: '2026-11-22',
+      windowStart: new Date('2026-11-22T00:00:00.000Z'),
+      windowEnd: now,
+      label: 'Nov 22',
+    });
+    expect(dueClubLogDigests(now, CONFIG)[0]?.periodKey).toBe('2026-11-21');
+  });
+
+  it('handles a UTC month rollover', () => {
+    const boundary = currentClubLogDigestBoundary(new Date('2026-12-01T00:05:00.000Z'));
+
+    expect(boundary.periodKey).toBe('2026-12-01');
+    expect(boundary.label).toBe('Dec 1');
+    expect(boundary.windowStart.toISOString()).toBe('2026-12-01T00:00:00.000Z');
+  });
+});
 
 describe('dueClubLogDigests', () => {
   it('always returns the completed UTC day', () => {

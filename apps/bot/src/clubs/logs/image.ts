@@ -213,13 +213,15 @@ export async function buildClubLogPageImage(
 }
 
 /**
- * Scheduled trophy digest: progression rows only, with no membership/role/capacity
- * events. The period label is supplied by the caller so completed windows can be
- * named "Daily"/"Weekly"/"Season" rather than the running "Today"/"This Week".
+ * Trophy digest: progression rows only, with no membership/role/capacity events.
+ * The period label is supplied by the caller so completed windows can be named
+ * "Daily"/"Weekly"/"Season" rather than the running "Today"/"This Week". Live
+ * refreshes use `mode: 'live'` to label the current UTC day honestly.
  */
 export async function buildClubLogDigestImage(
   view: ClubLogView,
   labelOverride?: string,
+  mode: 'completed' | 'live' = 'completed',
 ): Promise<Buffer> {
   const periodLabel = labelOverride ?? CLUB_LOG_PERIOD_LABELS[view.period];
   const rows = view.rows.slice(0, MAX_ROWS);
@@ -246,7 +248,7 @@ export async function buildClubLogDigestImage(
   <text x="60" y="${rowsTop - 18}" font-size="15" font-weight="700" letter-spacing="1.7" fill="#aaa5d6">TROPHY PROGRESSION • ${escapeXml(periodLabel.toUpperCase())}</text>
   <text x="1116" y="${rowsTop - 18}" text-anchor="end" font-size="13" fill="#8e88bd">${view.unavailable} SHOWN AS 0</text>
   ${rowsMarkup}
-  <text x="42" y="${footerY}" font-size="13" fill="#8e88bd">Completed window • official Brawl Stars sync history • stored, not live • missing baselines are shown as 0</text>
+  <text x="42" y="${footerY}" font-size="13" fill="#8e88bd">${mode === 'live' ? 'Current UTC day' : 'Completed window'} • official Brawl Stars sync history • stored, not live • missing baselines are shown as 0</text>
   <text x="1158" y="${footerY}" text-anchor="end" font-size="13" fill="#8e88bd">Made for ${clubName}</text>
 </svg>`;
 

@@ -3,7 +3,11 @@ import { REST, Routes } from 'discord.js';
 import { getBotConfig } from '../../config';
 import { cleanTag } from '../../discord/format';
 import type { ClubLogPeriod } from '../types';
-import { dueClubLogDigests, type ClubLogDigestBoundary } from './digest';
+import {
+  currentClubLogDigestBoundary,
+  dueClubLogDigests,
+  type ClubLogDigestBoundary,
+} from './digest';
 import { buildClubLogDigestImage, buildClubLogEventImage } from './image';
 import { loadClubLogView } from './page-view';
 import {
@@ -17,6 +21,7 @@ import {
   markClubLogEventsDelivered,
   readClubLogGuildIds,
   readPostedClubLogDigests,
+  rekeyClubLogDigestPost,
   releaseClubLogDigestClaims,
   type ClubLogDigestClaimInput,
   type ClubLogDigestPost,
@@ -125,16 +130,18 @@ function digestKey(logId: string, boundary: ClubLogDigestBoundary): string {
 function digestContent(
   clubName: string,
   boundary: ClubLogDigestBoundary,
+  live = false,
 ): string {
   const label = DIGEST_LABELS[boundary.period];
-  return `${safeText(clubName, 60)} • Club Log / Trophy Progression / ${label} — ${boundary.label} (UTC)`;
+  const mode = live ? ' / current UTC day' : '';
+  return `${safeText(clubName, 60)} • Club Log / Trophy Progression / ${label}${mode} — ${boundary.label} (UTC)`;
 }
 
 /**
- * Edit an already-posted daily trophy digest with the latest completed sync
- * data. Only the currently due `today` window is touched; weekly and season
- * digests stay immutable. A refresh replaces the existing Discord message
- * instead of posting a duplicate.
+ * Edit the daily trophy digest in place as a live current-UTC-day view after a
+ * sync. The original completed-day ledger row is advanced to the current day so
+ * the same Discord message keeps being edited instead of a second message
+ * being posted. Weekly and season digests are never touched.
  */
 export async function refreshTodayClubLogDigest(
   guildId: string,
@@ -144,19 +151,33 @@ export async function refreshTodayClubLogDigest(
   const token = config.token;
   if (token === undefined) return;
 
-  const boundary = dueClubLogDigests(now, {
+  const completedBoundary = dueClubLogDigests(now, {
     seasonStartIso: config.seasonStartIso,
     seasonEndIso: config.seasonEndIso,
   }).find((candidate) => candidate.period === 'today');
-  if (boundary === undefined) return;
+  if (completedBoundary === undefined) return;
+  const liveBoundary = currentClubLogDigestBoundary(now);
 
-  let posts: Awaited<ReturnType<typeof loadPostedClubLogDigestPosts>>;
+  let posts: ClubLogDigestPost[];
   let logs: Awaited<ReturnType<typeof loadClubLogs>>;
   try {
-    [posts, logs] = await Promise.all([
-      loadPostedClubLogDigestPosts(guildId, 'today', boundary.periodKey),
-      loadClubLogs(guildId),
-    ]);
+    if (liveBoundary.periodKey === completedBoundary.periodKey) {
+      [posts, logs] = await Promise.all([
+        loadPostedClubLogDigestPosts(guildId, 'today', liveBoundary.periodKey),
+        loadClubLogs(guildId),
+      ]);
+    } else {
+      const [livePosts, completedPosts, loadedLogs] = await Promise.all([
+        loadPostedClubLogDigestPosts(guildId, 'today', liveBoundary.periodKey),
+        loadPostedClubLogDigestPosts(guildId, 'today', completedBoundary.periodKey),
+        loadClubLogs(guildId),
+      ]);
+      const byLog = new Map<string, ClubLogDigestPost>();
+      for (const post of completedPosts) byLog.set(post.logId, post);
+      for (const post of livePosts) byLog.set(post.logId, post);
+      posts = [...byLog.values()];
+      logs = loadedLogs;
+    }
   } catch (error) {
     logger.warn('Daily club log digests could not be loaded for refresh', {
       guildId,
@@ -168,39 +189,48 @@ export async function refreshTodayClubLogDigest(
 
   const rest = new REST({ version: '10' }).setToken(token);
   const logsById = new Map(logs.map((log) => [log.id, log]));
-  for (const post of posts) {
+  for (const sourcePost of posts) {
+    let post = sourcePost;
     const log = logsById.get(post.logId);
     if (log === undefined || !log.periods.includes('today')) continue;
+    const details = {
+      guildId,
+      logId: log.id,
+      periodKey: liveBoundary.periodKey,
+      sourcePeriodKey: post.periodKey,
+    };
     try {
       const page = await loadClubLogView({
         guildId,
         tag: log.clubTag,
         period: 'today',
-        // Keep the original window label, but allow snapshots captured after
-        // the scheduled post so a sync that ran afterwards is reflected.
-        now: boundary.windowEnd,
+        // This is an explicit live current-day view, not a completed window.
+        now: liveBoundary.windowEnd,
+        asOf: liveBoundary.windowEnd,
       });
       if (page.kind !== 'ok') throw new Error('Club lookup failed');
-      const image = await buildClubLogDigestImage(page.value, DIGEST_LABELS.today);
-      const name = filename(log.clubTag, `today-${boundary.periodKey}-refresh`);
+      const image = await buildClubLogDigestImage(page.value, DIGEST_LABELS.today, 'live');
+      if (
+        post.periodKey !== liveBoundary.periodKey &&
+        !(await rekeyClubLogDigestPost(guildId, post, liveBoundary.periodKey))
+      ) {
+        logger.warn('Daily club log digest ledger key is occupied; message left unchanged', details);
+        continue;
+      }
+      post = { ...post, periodKey: liveBoundary.periodKey };
+      const name = filename(log.clubTag, `today-${liveBoundary.periodKey}-live`);
       await rest.patch(Routes.channelMessage(post.channelId, post.messageId), {
         body: {
-          content: digestContent(log.clubName, boundary),
+          content: digestContent(log.clubName, liveBoundary, true),
           allowed_mentions: { parse: [] },
           attachments: [{ id: '0', filename: name }],
         },
         files: [{ key: 'files[0]', name, data: image, contentType: 'image/png' }],
       });
-      logger.info('Daily club log digest refreshed', {
-        guildId,
-        logId: log.id,
-        periodKey: boundary.periodKey,
-      });
+      logger.info('Daily club log digest refreshed as a live view', details);
     } catch (error) {
       logger.warn('Daily club log digest could not be refreshed', {
-        guildId,
-        logId: log.id,
-        periodKey: boundary.periodKey,
+        ...details,
         error: safeError(error, token),
       });
     }
@@ -240,10 +270,19 @@ export async function runClubLogDigests(now: Date = new Date()): Promise<void> {
         readPostedClubLogDigests(guildId),
       ]);
       const pending = new Map<string, { log: (typeof logs)[number]; boundary: ClubLogDigestBoundary }>();
+      const liveTodayKey = currentClubLogDigestBoundary(now).periodKey;
       for (const log of logs) {
         for (const boundary of boundaries) {
           if (!log.periods.includes(boundary.period)) continue;
           if (posted.has(digestKey(log.id, boundary))) continue;
+          // A refreshed daily message is an edited live view of the current
+          // UTC day. Suppress the completed-window post it replaced.
+          if (
+            boundary.period === 'today' &&
+            posted.has(`${log.id}:today:${liveTodayKey}`)
+          ) {
+            continue;
+          }
           pending.set(digestKey(log.id, boundary), { log, boundary });
         }
       }

@@ -140,6 +140,16 @@ describe('buildClubLogDigestImage', () => {
     expect(metadata.format).toBe('png');
   });
 
+  it('renders a live current-day digest with its own footer', async () => {
+    const completed = await buildClubLogDigestImage(view(), 'Daily');
+    const live = await buildClubLogDigestImage(view(), 'Daily', 'live');
+
+    expect(live.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    expect(live.equals(completed)).toBe(false);
+    const metadata = await sharp(live).metadata();
+    expect(metadata.format).toBe('png');
+  });
+
   it('renders a full 30-member digest with zero changes', async () => {
     const rows = Array.from({ length: 30 }, (_, index) => ({
       rank: index + 1,

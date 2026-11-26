@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     markClubLogEventsDelivered: vi.fn(),
     loadClubLogs: vi.fn(),
     loadPostedClubLogDigestPosts: vi.fn(),
+    rekeyClubLogDigestPost: vi.fn(),
     readPostedClubLogDigests: vi.fn(),
     claimClubLogDigestWindows: vi.fn(),
     advanceClubLogDigestClaim: vi.fn(),
@@ -26,7 +27,7 @@ const mocks = vi.hoisted(() => ({
     markClubLogDigestClaimDelivered: vi.fn(),
     markClubLogDigestPosted: vi.fn(),
   },
-  digest: { dueClubLogDigests: vi.fn() },
+  digest: { currentClubLogDigestBoundary: vi.fn(), dueClubLogDigests: vi.fn() },
   pageView: { loadClubLogView: vi.fn() },
   image: { buildClubLogEventImage: vi.fn(), buildClubLogDigestImage: vi.fn() },
 }));
@@ -139,6 +140,21 @@ function boundaries() {
   ];
 }
 
+function liveBoundary(now: Date = NOV_22) {
+  const periodKey = now.toISOString().slice(0, 10);
+  return {
+    period: 'today' as const,
+    periodKey,
+    windowStart: new Date(`${periodKey}T00:00:00.000Z`),
+    windowEnd: now,
+    label: new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'UTC',
+    }).format(now),
+  };
+}
+
 beforeEach(() => {
   mocks.post.mockReset();
   mocks.post.mockResolvedValue({ id: 'message-1' });
@@ -162,15 +178,22 @@ beforeEach(() => {
   mocks.service.loadClubLogs.mockReset();
   mocks.service.loadClubLogs.mockResolvedValue([log()]);
   mocks.service.loadPostedClubLogDigestPosts.mockReset();
-  mocks.service.loadPostedClubLogDigestPosts.mockResolvedValue([
-    {
-      logId: LOG_ID,
-      period: 'today',
-      periodKey: '2026-11-21',
-      channelId: CHANNEL_ID,
-      messageId: 'message-1',
-    },
-  ]);
+  mocks.service.loadPostedClubLogDigestPosts.mockImplementation(
+    (_guildId: string, _period: string, periodKey: string) =>
+      periodKey === '2026-11-21'
+        ? [
+            {
+              logId: LOG_ID,
+              period: 'today' as const,
+              periodKey,
+              channelId: CHANNEL_ID,
+              messageId: 'message-1',
+            },
+          ]
+        : [],
+  );
+  mocks.service.rekeyClubLogDigestPost.mockReset();
+  mocks.service.rekeyClubLogDigestPost.mockResolvedValue(true);
   mocks.service.readPostedClubLogDigests.mockReset();
   mocks.service.readPostedClubLogDigests.mockResolvedValue(new Set<string>());
   mocks.service.claimClubLogDigestWindows.mockReset();
@@ -188,6 +211,8 @@ beforeEach(() => {
   mocks.service.markClubLogDigestPosted.mockResolvedValue(undefined);
   mocks.digest.dueClubLogDigests.mockReset();
   mocks.digest.dueClubLogDigests.mockReturnValue(boundaries());
+  mocks.digest.currentClubLogDigestBoundary.mockReset();
+  mocks.digest.currentClubLogDigestBoundary.mockImplementation((now: Date) => liveBoundary(now));
   mocks.pageView.loadClubLogView.mockReset();
   mocks.pageView.loadClubLogView.mockResolvedValue({ kind: 'ok', value: view() });
   mocks.image.buildClubLogEventImage.mockReset();
@@ -367,6 +392,18 @@ describe('runClubLogDigests', () => {
     expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
   });
 
+  it('suppresses the completed-window post when a live current-day digest exists', async () => {
+    mocks.service.readPostedClubLogDigests.mockResolvedValue(
+      new Set([`${LOG_ID}:today:2026-11-22`]),
+    );
+
+    await runClubLogDigests(NOV_22);
+
+    expect(mocks.service.claimClubLogDigestWindows).not.toHaveBeenCalled();
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
+  });
+
   it('passes the completed season baseline and label to the season renderer', async () => {
     const seasonBoundary = {
       period: 'season' as const,
@@ -499,9 +536,22 @@ describe('runClubLogDigests', () => {
 });
 
 describe('refreshTodayClubLogDigest', () => {
-  it("edits today's posted digest in place with fresh snapshot data", async () => {
+  it('edits the digest as a live current-day view using fresh snapshots', async () => {
+    const sourcePost = {
+      logId: LOG_ID,
+      period: 'today' as const,
+      periodKey: '2026-11-21',
+      channelId: CHANNEL_ID,
+      messageId: 'message-1',
+    };
+
     await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
 
+    expect(mocks.service.loadPostedClubLogDigestPosts).toHaveBeenCalledWith(
+      GUILD_ID,
+      'today',
+      '2026-11-22',
+    );
     expect(mocks.service.loadPostedClubLogDigestPosts).toHaveBeenCalledWith(
       GUILD_ID,
       'today',
@@ -511,20 +561,28 @@ describe('refreshTodayClubLogDigest', () => {
       guildId: GUILD_ID,
       tag: 'ALPHA',
       period: 'today',
-      now: new Date('2026-11-21T23:59:59.999Z'),
+      now: NOV_22,
+      asOf: NOV_22,
     });
-    expect(mocks.image.buildClubLogDigestImage).toHaveBeenCalledWith(view(), 'Daily');
+    expect(mocks.image.buildClubLogDigestImage).toHaveBeenCalledWith(view(), 'Daily', 'live');
+    expect(mocks.service.rekeyClubLogDigestPost).toHaveBeenCalledWith(
+      GUILD_ID,
+      sourcePost,
+      '2026-11-22',
+    );
     expect(mocks.post).not.toHaveBeenCalled();
     expect(mocks.patch).toHaveBeenCalledOnce();
     const [route, request] = mocks.patch.mock.calls[0] as [string, Record<string, unknown>];
     expect(route).toBe(`channels/${CHANNEL_ID}/messages/message-1`);
     const body = request['body'] as Record<string, unknown>;
-    expect(body['content']).toBe('Alpha • Club Log / Trophy Progression / Daily — Nov 21 (UTC)');
+    expect(body['content']).toBe(
+      'Alpha • Club Log / Trophy Progression / Daily / current UTC day — Nov 22 (UTC)',
+    );
     expect(body['allowed_mentions']).toEqual({ parse: [] });
     const attachments = body['attachments'] as Array<Record<string, unknown>>;
     expect(attachments).toHaveLength(1);
     const filename = attachments[0]?.['filename'] as string;
-    expect(filename).toMatch(/^club-log-alpha-today-2026-11-21-refresh-\d+\.png$/);
+    expect(filename).toMatch(/^club-log-alpha-today-2026-11-22-live-\d+\.png$/);
     const files = request['files'] as Array<Record<string, unknown>>;
     expect(files).toEqual([
       {
@@ -537,6 +595,79 @@ describe('refreshTodayClubLogDigest', () => {
     expect(mocks.logger.warn).not.toHaveBeenCalled();
   });
 
+  it('patches an already-rekeyed message without moving the ledger row again', async () => {
+    mocks.service.loadPostedClubLogDigestPosts.mockImplementation(
+      (_guildId: string, _period: string, periodKey: string) =>
+        periodKey === '2026-11-22'
+          ? [
+              {
+                logId: LOG_ID,
+                period: 'today' as const,
+                periodKey,
+                channelId: CHANNEL_ID,
+                messageId: 'message-live',
+              },
+            ]
+          : [],
+    );
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.patch).toHaveBeenCalledOnce();
+    const [route] = mocks.patch.mock.calls[0] as [string];
+    expect(route).toBe(`channels/${CHANNEL_ID}/messages/message-live`);
+    expect(mocks.service.rekeyClubLogDigestPost).not.toHaveBeenCalled();
+  });
+
+  it('prefers the current-day row when both ledger keys exist', async () => {
+    mocks.service.loadPostedClubLogDigestPosts.mockImplementation(
+      (_guildId: string, _period: string, periodKey: string) => [
+        {
+          logId: LOG_ID,
+          period: 'today' as const,
+          periodKey,
+          channelId: CHANNEL_ID,
+          messageId: periodKey === '2026-11-22' ? 'message-live' : 'message-old',
+        },
+      ],
+    );
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.patch).toHaveBeenCalledOnce();
+    const [route] = mocks.patch.mock.calls[0] as [string];
+    expect(route).toBe(`channels/${CHANNEL_ID}/messages/message-live`);
+    expect(mocks.service.rekeyClubLogDigestPost).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when no daily digest has been posted', async () => {
+    mocks.service.loadPostedClubLogDigestPosts.mockResolvedValue([]);
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.pageView.loadClubLogView).not.toHaveBeenCalled();
+  });
+
+  it('leaves the message alone when the current-day ledger key is occupied', async () => {
+    mocks.service.rekeyClubLogDigestPost.mockResolvedValue(false);
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).toHaveBeenCalledOnce();
+  });
+
+  it('does not rekey or patch when fresh data cannot be rendered', async () => {
+    mocks.pageView.loadClubLogView.mockResolvedValue({ kind: 'unregistered', tag: 'ALPHA' });
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.service.rekeyClubLogDigestPost).not.toHaveBeenCalled();
+    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).toHaveBeenCalledOnce();
+  });
+
   it('only refreshes logs subscribed to today', async () => {
     mocks.service.loadClubLogs.mockResolvedValue([log(['week', 'season'])]);
 
@@ -546,22 +677,15 @@ describe('refreshTodayClubLogDigest', () => {
     expect(mocks.image.buildClubLogDigestImage).not.toHaveBeenCalled();
   });
 
-  it('does nothing when no digest for that day has been posted', async () => {
-    mocks.service.loadPostedClubLogDigestPosts.mockResolvedValue([]);
+  it('redacts the token when Discord rejects the refresh', async () => {
+    mocks.patch.mockRejectedValue(new Error(`rate limited with ${TOKEN}`));
 
     await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
 
-    expect(mocks.patch).not.toHaveBeenCalled();
-    expect(mocks.pageView.loadClubLogView).not.toHaveBeenCalled();
-  });
-
-  it('leaves the existing message alone when fresh data cannot be rendered', async () => {
-    mocks.pageView.loadClubLogView.mockResolvedValue({ kind: 'unregistered', tag: 'ALPHA' });
-
-    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
-
-    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.post).not.toHaveBeenCalled();
     expect(mocks.logger.warn).toHaveBeenCalledOnce();
+    const warning = mocks.logger.warn.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(JSON.stringify(warning)).not.toContain(TOKEN);
   });
 
   it('does nothing without a Discord token', async () => {
