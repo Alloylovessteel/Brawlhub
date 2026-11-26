@@ -612,7 +612,9 @@ export async function readMissingReportDeliveries(now: Date): Promise<MissingRep
   const seenCursors = new Set<string>();
   for (let page = 0; page < MAX_REPORT_PAGES; page += 1) {
     const rows = await readRpcRows(db, 'push_missing_report_deliveries', {
-      p_periods: JSON.stringify(requestedPeriods),
+      // PostgREST serialises JS values into jsonb. Passing a JSON string here
+      // would arrive as a quoted scalar and break jsonb_to_recordset.
+      p_periods: requestedPeriods,
       p_limit: REPORT_PAGE_SIZE,
       ...(cursor === null
         ? {}

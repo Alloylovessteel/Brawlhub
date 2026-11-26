@@ -882,7 +882,7 @@ describe('readMissingReportDeliveries', () => {
 
   function installDeliveryHandlers(): void {
     setRpc('push_missing_report_deliveries', (args) => {
-      const periods = JSON.parse(String(args['p_periods'])) as RequestedPeriod[];
+      const periods = args['p_periods'] as RequestedPeriod[];
       const afterGuildId = optionalString(args['p_after_guild_id']);
       const afterType = optionalString(args['p_after_report_type']);
       const afterKey = optionalString(args['p_after_period_key']);
@@ -1022,7 +1022,9 @@ describe('readMissingReportDeliveries', () => {
       'push_missing_report_deliveries',
       'push_missing_inactivity_deliveries',
     ]);
-    const requested = JSON.parse(String(rpcCalls[0]?.payload['p_periods'])) as RequestedPeriod[];
+    const requestedPayload = rpcCalls[0]?.payload['p_periods'];
+    expect(Array.isArray(requestedPayload)).toBe(true);
+    const requested = requestedPayload as RequestedPeriod[];
     expect(requested).toHaveLength(51);
     expect(requested[0]).toEqual({
       type: 'daily',
@@ -1222,7 +1224,7 @@ describe('readMissingReportDeliveries', () => {
     // Keep the fixture focused on paging: one due period per guild still
     // crosses the 1,000-row REST boundary without building 51k target objects.
     setRpc('push_missing_report_deliveries', (args) => {
-      const periods = JSON.parse(String(args['p_periods'])) as RequestedPeriod[];
+      const periods = args['p_periods'] as RequestedPeriod[];
       const daily = periods.find((period) => period.type === 'daily');
       if (daily === undefined) return { data: [] };
       const afterGuildId = optionalString(args['p_after_guild_id']);
