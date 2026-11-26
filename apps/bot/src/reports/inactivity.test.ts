@@ -467,6 +467,59 @@ describe('postInactivityReports', () => {
     ]);
   });
 
+  it('posts only the exact guild/channel/day targets returned by the RPC', async () => {
+    const ledger = fakeLedger();
+    const handlers = digestHandlers(ledger);
+    const { db, calls } = fakeDb({
+      ...handlers,
+      'guild_settings:select': () => ({
+        data: [
+          { guild_id: GUILD_ID, report_inactivity_days: 4 },
+          { guild_id: OTHER_GUILD_ID, report_inactivity_days: 7 },
+        ],
+        error: null,
+      }),
+    });
+    const post = vi.fn(async (_route: string, _options?: unknown) => ({ id: 'message-target' }));
+    const rest = { post, patch: vi.fn() } as unknown as REST;
+
+    await expect(postInactivityReports(NOW, rest, undefined, db, [
+      {
+        guildId: OTHER_GUILD_ID,
+        channelId: 'target-channel',
+        periodKey: '2026-11-20',
+      },
+    ])).resolves.toEqual({ posted: 1, failed: 0 });
+
+    expect(post).toHaveBeenCalledOnce();
+    expect(String(post.mock.calls[0]?.[0])).toContain('target-channel');
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        table: 'guild_settings',
+        operation: 'select',
+        filters: [['in', 'guild_id', [OTHER_GUILD_ID]]],
+      }),
+    );
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        table: 'guild_inactivity_report_posts',
+        operation: 'upsert',
+        payload: {
+          guild_id: OTHER_GUILD_ID,
+          period_key: '2026-11-20',
+          channel_id: 'target-channel',
+          message_id: 'message-target',
+        },
+      }),
+    );
+    expect(calls.filter((call) => call.table === 'clubs')).toHaveLength(1);
+    expect(calls.find((call) => call.table === 'clubs')?.filters).toContainEqual([
+      'eq',
+      'guild_id',
+      OTHER_GUILD_ID,
+    ]);
+  });
+
   const digestHandlers = (ledger: ReturnType<typeof fakeLedger>): Record<string, Handler> => ({
     ...ledger.handlers,
     'guild_settings:select': () => ({

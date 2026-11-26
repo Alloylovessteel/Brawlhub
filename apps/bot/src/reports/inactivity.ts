@@ -441,33 +441,102 @@ export interface InactivityReportRunResult {
   readonly failed: number;
 }
 
+/** Exact undelivered guild/channel/day pair discovered by the SQL RPC. */
+export interface InactivityDeliveryTarget {
+  readonly guildId: string;
+  readonly channelId: string;
+  readonly periodKey?: string;
+}
+
+interface InactivityWorkItem {
+  readonly guildId: string;
+  readonly channelId: string;
+  readonly periodKey: string;
+  readonly days: number;
+}
+
+async function readInactivityDaysByGuild(
+  db: SupabaseClient,
+  guildIds: readonly string[],
+  token: string | undefined,
+): Promise<Map<string, number> | null> {
+  const daysByGuild = new Map<string, number>();
+  for (const ids of chunk([...new Set(guildIds)], 1000)) {
+    const settings = await db
+      .from('guild_settings')
+      .select('guild_id, report_inactivity_days')
+      .in('guild_id', ids);
+    if (settings.error) {
+      logger.warn('Could not read inactivity report guilds', {
+        error: safeError(settings.error, token),
+      });
+      return null;
+    }
+    for (const row of settings.data ?? []) {
+      const item = record(row);
+      const guildId = asString(item?.['guild_id']);
+      const days = normalizeInactivityDays(item?.['report_inactivity_days']);
+      if (guildId !== null && days !== null) daysByGuild.set(guildId, days);
+    }
+  }
+  return daysByGuild;
+}
+
 /** Post the inactivity digest once per guild and UTC day, editing replays in place. */
 export async function postInactivityReports(
   now: Date,
   rest: REST,
   token: string | undefined,
   db: SupabaseClient = createTrustedClient(),
+  targets?: readonly InactivityDeliveryTarget[],
 ): Promise<InactivityReportRunResult> {
-  const settings = await db
-    .from('guild_settings')
-    .select('guild_id, report_inactivity_days, report_inactivity_channel_id, overview_channel_id')
-    .not('report_inactivity_days', 'is', null);
-  if (settings.error) {
-    logger.warn('Could not read inactivity report guilds', { error: safeError(settings.error, token) });
-    return { posted: 0, failed: 1 };
+  const defaultPeriodKey = now.toISOString().slice(0, 10);
+  let work: InactivityWorkItem[] = [];
+
+  if (targets !== undefined) {
+    if (targets.length === 0) return { posted: 0, failed: 0 };
+    const daysByGuild = await readInactivityDaysByGuild(
+      db,
+      targets.map((target) => target.guildId),
+      token,
+    );
+    if (daysByGuild === null) return { posted: 0, failed: 1 };
+    work = targets.flatMap((target) => {
+      const guildId = asString(target.guildId);
+      const channelId = asString(target.channelId);
+      const days = guildId === null ? null : daysByGuild.get(guildId);
+      if (guildId === null || channelId === null || days === undefined || days === null) return [];
+      return [{
+        guildId,
+        channelId,
+        periodKey: asString(target.periodKey) ?? defaultPeriodKey,
+        days,
+      }];
+    });
+  } else {
+    const settings = await db
+      .from('guild_settings')
+      .select('guild_id, report_inactivity_days, report_inactivity_channel_id, overview_channel_id')
+      .not('report_inactivity_days', 'is', null);
+    if (settings.error) {
+      logger.warn('Could not read inactivity report guilds', { error: safeError(settings.error, token) });
+      return { posted: 0, failed: 1 };
+    }
+    work = (settings.data ?? []).flatMap((row) => {
+      const item = record(row);
+      const guildId = asString(item?.['guild_id']);
+      const days = normalizeInactivityDays(item?.['report_inactivity_days']);
+      if (guildId === null || days === null) return [];
+      const channelId =
+        asString(item?.['report_inactivity_channel_id']) ?? asString(item?.['overview_channel_id']);
+      if (channelId === null) return [];
+      return [{ guildId, channelId, periodKey: defaultPeriodKey, days }];
+    });
   }
 
-  const periodKey = now.toISOString().slice(0, 10);
   let posted = 0;
   let failed = 0;
-  for (const row of settings.data ?? []) {
-    const item = record(row);
-    const guildId = asString(item?.['guild_id']);
-    const days = normalizeInactivityDays(item?.['report_inactivity_days']);
-    if (guildId === null || days === null) continue;
-    const channelId =
-      asString(item?.['report_inactivity_channel_id']) ?? asString(item?.['overview_channel_id']);
-    if (channelId === null) continue;
+  for (const { guildId, channelId, periodKey, days } of work) {
 
     const claimId = randomUUID();
     let claimMessageId = inactivityClaimMessageId(claimId, 'reserved');

@@ -243,12 +243,18 @@ async function handleVerified(
       client,
       record.guildId,
       record.discordUserId,
-      result.playerName,
+      { playerName: result.playerName, playerTag: result.playerTag },
     );
     if (nickname.kind === 'ok') {
       logger.info('Automatic verification nickname synced', {
         guildId: record.guildId,
         discordUserId: record.discordUserId,
+      });
+    } else if (nickname.kind !== 'unchanged') {
+      logger.warn('Automatic verification nickname sync was not applied', {
+        guildId: record.guildId,
+        discordUserId: record.discordUserId,
+        kind: nickname.kind,
       });
     }
   } catch (error) {

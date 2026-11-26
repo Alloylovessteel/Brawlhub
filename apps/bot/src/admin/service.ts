@@ -69,6 +69,8 @@ const AUDIT_DETAIL_KEYS = [
   'playersUpserted',
   'snapshotsWritten',
   'membershipEvents',
+  'nicknamePrefix',
+  'nicknameSyncEnabled',
 ] as const;
 
 /** Expected administration failures; raw database errors remain hidden. */
@@ -1111,6 +1113,7 @@ export async function loadSyncStatus(
     .from('sync_runs')
     .select(SYNC_RUN_COLUMNS)
     .order('period_start', { ascending: false })
+    .order('started_at', { ascending: false, nullsFirst: false })
     .limit(1);
   const scope = guildId && guildId.trim().length > 0 ? `guild:${guildId.trim()}` : null;
   if (scope !== null) {
@@ -1193,9 +1196,10 @@ export async function recordSyncRunAudit(
   }
 }
 
-function safeDetailValue(value: unknown): string | number | string[] | null {
+function safeDetailValue(value: unknown): string | number | boolean | string[] | null {
   if (typeof value === 'string') return value.slice(0, DETAIL_STRING_LIMIT);
   if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'boolean') return value;
   if (Array.isArray(value)) {
     return value
       .filter((item): item is string => typeof item === 'string')

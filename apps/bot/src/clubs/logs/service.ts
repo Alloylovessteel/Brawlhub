@@ -512,22 +512,25 @@ export async function readClubLogGuildIds(
   return [...new Set(ids)].sort((left, right) => left.localeCompare(right));
 }
 
+/** Only ask the ledger about candidate keys actually seen in an event page. */
 async function readDeliveredKeys(
   guildId: string,
   logId: string,
   period: ClubLogPeriod,
+  candidateKeys: readonly { readonly kind: ClubLogEventKind; readonly id: string }[],
   db: DatabaseClient,
 ): Promise<Set<string>> {
-  const result = await db
-    .from('guild_club_log_deliveries')
-    .select('event_kind, event_id')
-    .eq('guild_id', guildId)
-    .eq('log_id', logId)
-    .eq('period', period)
-    .in('event_kind', [...EVENT_KINDS]);
-  requireOk(result.error, 'Read club log deliveries');
   const keys = new Set<string>();
-  for (const item of result.data ?? []) {
+  if (candidateKeys.length === 0) return keys;
+  const result = await db.rpc('club_log_delivered_keys', {
+    p_guild_id: guildId,
+    p_log_id: logId,
+    p_period: period,
+    p_candidate_keys: candidateKeys.map((key) => ({ kind: key.kind, id: key.id })),
+    p_limit: EVENT_SCAN_PAGE_SIZE,
+  });
+  requireOk(result.error, 'Read club log deliveries');
+  for (const item of Array.isArray(result.data) ? result.data : []) {
     const row = record(item);
     const kind = asString(row?.['event_kind']);
     const id = eventId(row?.['event_id']);
@@ -633,13 +636,18 @@ type EventPageFetcher = (
   readonly error: { readonly message?: string } | null;
 }>;
 
+type DeliveredKeyFetcher = (
+  candidateKeys: readonly { readonly kind: ClubLogEventKind; readonly id: string }[],
+) => PromiseLike<ReadonlySet<string>>;
+
 /**
  * Scan newest-first pages until enough rows outside the delivery ledger are
- * found. A fixed 100-row window used to hide older undelivered events forever.
+ * found. Each page is checked against a bounded, candidate-key-only ledger RPC,
+ * so an old row beyond the REST cap can never masquerade as undelivered.
  */
 async function readUndeliveredEventRows(
   fetchPage: EventPageFetcher,
-  delivered: ReadonlySet<string>,
+  fetchDelivered: DeliveredKeyFetcher,
   kind: ClubLogEventKind,
 ): Promise<unknown[]> {
   const found: unknown[] = [];
@@ -648,6 +656,12 @@ async function readUndeliveredEventRows(
     const result = await fetchPage(offset, offset + EVENT_SCAN_PAGE_SIZE - 1);
     requireOk(result.error, `Read club log ${kind} events`);
     const rows = Array.isArray(result.data) ? result.data : [];
+    const candidates = new Map<string, { readonly kind: ClubLogEventKind; readonly id: string }>();
+    for (const row of rows) {
+      const id = eventId(record(row)?.['id']);
+      if (id !== null) candidates.set(`${kind}:${id}`, { kind, id });
+    }
+    const delivered = await fetchDelivered([...candidates.values()]);
     for (const row of rows) {
       const id = eventId(record(row)?.['id']);
       if (id === null || !delivered.has(`${kind}:${id}`)) found.push(row);
@@ -657,9 +671,14 @@ async function readUndeliveredEventRows(
   }
   return found
     .sort((left, right) => {
-      const leftAt = detectedAt(record(left)?.['detected_at']) ?? '';
-      const rightAt = detectedAt(record(right)?.['detected_at']) ?? '';
-      return rightAt.localeCompare(leftAt);
+      const leftRow = record(left);
+      const rightRow = record(right);
+      const leftAt = detectedAt(leftRow?.['detected_at']) ?? '';
+      const rightAt = detectedAt(rightRow?.['detected_at']) ?? '';
+      return (
+        rightAt.localeCompare(leftAt) ||
+        (eventId(rightRow?.['id']) ?? '').localeCompare(eventId(leftRow?.['id']) ?? '')
+      );
     })
     .slice(0, MAX_EVENTS_PER_LOG);
 }
@@ -671,9 +690,9 @@ async function loadEventsForLog(
   period: ClubLogPeriod,
   onlyUndelivered = true,
 ): Promise<ClubLogEvent[]> {
-  const delivered = onlyUndelivered
-    ? await readDeliveredKeys(guildId, log.id, period, db)
-    : new Set<string>();
+  const fetchDelivered: DeliveredKeyFetcher = onlyUndelivered
+    ? (candidateKeys) => readDeliveredKeys(guildId, log.id, period, candidateKeys, db)
+    : async () => new Set<string>();
 
   // No subscription-time watermark: stored history is included so a newly added log
   // can backfill past joins, leaves, transfers, role and capacity changes. The
@@ -691,7 +710,7 @@ async function loadEventsForLog(
           .order('detected_at', { ascending: false })
           .order('id', { ascending: false })
           .range(from, to),
-      delivered,
+      fetchDelivered,
       'membership',
     ),
     readUndeliveredEventRows(
@@ -705,7 +724,7 @@ async function loadEventsForLog(
           .order('detected_at', { ascending: false })
           .order('id', { ascending: false })
           .range(from, to),
-      delivered,
+      fetchDelivered,
       'role',
     ),
     readUndeliveredEventRows(
@@ -717,7 +736,7 @@ async function loadEventsForLog(
           .order('detected_at', { ascending: false })
           .order('id', { ascending: false })
           .range(from, to),
-      delivered,
+      fetchDelivered,
       'capacity',
     ),
   ]);

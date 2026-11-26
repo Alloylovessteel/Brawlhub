@@ -62,7 +62,10 @@ function readFallbackChannelId(): string | undefined {
   return raw;
 }
 
-/** A notifier that intentionally sends nothing, allowing sync to clear its claim. */
+/**
+ * A notifier that intentionally sends nothing. `undefined` means "not sent":
+ * sync must leave the event retryable rather than recording a delivery.
+ */
 const SKIP_NOTIFIER: SyncNotifier = {
   async send() {
     return undefined;
@@ -138,7 +141,7 @@ export async function createDiscordNotifier(
         logger.error('Failed to send Discord sync notification', {
           error: message.includes(token) ? message.split(token).join(REDACTED) : message,
         });
-        // Returning undefined lets sync delete its notification claim.
+        // Returning undefined means "not sent"; sync keeps the claim retryable.
         return undefined;
       }
     },

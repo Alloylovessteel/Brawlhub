@@ -5,9 +5,11 @@ import { mdBold, mdCode } from '../discord/embed-format';
 const mocks = vi.hoisted(() => ({
   listLinkedAccounts: vi.fn(),
   setMainVerification: vi.fn(),
+  refreshGuildNicknameAfterLinkChange: vi.fn(),
 }));
 
 vi.mock('../verification/index', () => mocks);
+vi.mock('../nickname-sync/service', () => mocks);
 
 import { handleAccounts, handleAccountsAutocomplete } from './accounts';
 
@@ -33,6 +35,9 @@ const accounts = [
 function interaction(options: Record<string, unknown> = {}): ChatInputCommandInteraction {
   return {
     user: { id: '983248496884875286' },
+    guild: options['guild'] ?? null,
+    guildId: options['guildId'] ?? null,
+    client: options['client'] ?? {},
     options: {
       getSubcommand: vi.fn(() => options['subcommand'] ?? 'list'),
       getString: vi.fn((name: string) => options[name] ?? null),
@@ -49,6 +54,9 @@ function editPayload(mockInteraction: ChatInputCommandInteraction): any {
 beforeEach(() => {
   mocks.listLinkedAccounts.mockReset().mockResolvedValue(accounts);
   mocks.setMainVerification.mockReset().mockResolvedValue({ kind: 'ok', tag: '2UG9UGQJY' });
+  mocks.refreshGuildNicknameAfterLinkChange
+    .mockReset()
+    .mockResolvedValue({ kind: 'unchanged' });
 });
 
 describe('/verify accounts', () => {
@@ -75,6 +83,28 @@ describe('/verify accounts', () => {
     await handleAccounts(mockInteraction);
 
     expect(mocks.setMainVerification).toHaveBeenCalledWith('983248496884875286', '2UG9UGQJY');
+    expect(editPayload(mockInteraction).content).toContain('Main account set to #2UG9UGQJY');
+  });
+
+  it('refreshes the nickname after set-main without changing the reply', async () => {
+    const client = {};
+    const guild = {};
+    const mockInteraction = interaction({
+      subcommand: 'set-main',
+      tag: '2UG9UGQJY',
+      client,
+      guild,
+      guildId: '1488531664962326571',
+    });
+
+    await handleAccounts(mockInteraction);
+
+    expect(mocks.refreshGuildNicknameAfterLinkChange).toHaveBeenCalledWith(
+      client,
+      '1488531664962326571',
+      '983248496884875286',
+      { source: 'accounts-set-main' },
+    );
     expect(editPayload(mockInteraction).content).toContain('Main account set to #2UG9UGQJY');
   });
 });

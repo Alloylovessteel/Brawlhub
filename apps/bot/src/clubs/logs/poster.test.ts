@@ -199,7 +199,7 @@ beforeEach(() => {
   mocks.service.claimClubLogDigestWindows.mockReset();
   mocks.service.claimClubLogDigestWindows.mockResolvedValue({
     claimId: 'claim-1',
-    keys: new Set([`${LOG_ID}:today:2026-11-21`]),
+    keys: new Set([`${LOG_ID}:today:2026-11-21`, `${LOG_ID}:today:2026-11-22`]),
   });
   mocks.service.advanceClubLogDigestClaim.mockReset();
   mocks.service.advanceClubLogDigestClaim.mockResolvedValue(true);
@@ -628,6 +628,77 @@ describe('refreshTodayClubLogDigest', () => {
     expect(mocks.logger.warn).not.toHaveBeenCalled();
   });
 
+  it('stages a refresh claim and only rekeys after Discord accepts the edit', async () => {
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.service.claimClubLogDigestWindows).toHaveBeenCalledWith(
+      GUILD_ID,
+      [{
+        logId: LOG_ID,
+        period: 'today',
+        periodKey: '2026-11-22',
+        channelId: CHANNEL_ID,
+      }],
+      { now: NOV_22 },
+    );
+    expect(mocks.service.advanceClubLogDigestClaim.mock.calls).toEqual([
+      [GUILD_ID, 'claim-1', `${LOG_ID}:today:2026-11-22`, 'reserved', 'loading'],
+      [GUILD_ID, 'claim-1', `${LOG_ID}:today:2026-11-22`, 'loading', 'sending'],
+    ]);
+    const patchOrder = mocks.patch.mock.invocationCallOrder[0];
+    const rekeyOrder = mocks.service.rekeyClubLogDigestPost.mock.invocationCallOrder[0];
+    expect(patchOrder).toBeDefined();
+    expect(rekeyOrder).toBeDefined();
+    expect(patchOrder).toBeLessThan(rekeyOrder as number);
+  });
+
+  it('does not rekey or repost after a definitive PATCH rejection', async () => {
+    mocks.patch.mockRejectedValue({ status: 403, code: 50001, message: 'Missing Access' });
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.service.rekeyClubLogDigestPost).not.toHaveBeenCalled();
+    expect(mocks.service.markClubLogDigestPosted).not.toHaveBeenCalled();
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(mocks.service.releaseClubLogDigestClaims).toHaveBeenCalledWith(
+      GUILD_ID,
+      'claim-1',
+      [`${LOG_ID}:today:2026-11-22`],
+    );
+  });
+
+  it('posts a replacement and records its ID when the old message is unknown', async () => {
+    mocks.patch.mockRejectedValue({ code: 10008, status: 404, message: 'Unknown Message' });
+    mocks.post.mockResolvedValue({ id: 'message-replacement' });
+
+    await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
+
+    expect(mocks.post).toHaveBeenCalledOnce();
+    const [route, request] = mocks.post.mock.calls[0] as [string, Record<string, unknown>];
+    expect(route).toBe(`channels/${CHANNEL_ID}/messages`);
+    expect((request['body'] as Record<string, unknown>)['allowed_mentions']).toEqual({ parse: [] });
+    expect(mocks.service.rekeyClubLogDigestPost).toHaveBeenCalledWith(
+      GUILD_ID,
+      {
+        logId: LOG_ID,
+        period: 'today' as const,
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+      '2026-11-22',
+    );
+    expect(mocks.service.markClubLogDigestPosted).toHaveBeenCalledWith(GUILD_ID, [
+      {
+        logId: LOG_ID,
+        period: 'today' as const,
+        periodKey: '2026-11-22',
+        channelId: CHANNEL_ID,
+        messageId: 'message-replacement',
+      },
+    ]);
+  });
+
   it('patches an already-rekeyed message without moving the ledger row again', async () => {
     mocks.service.loadPostedClubLogDigestPosts.mockImplementation(
       (_guildId: string, _period: string, periodKey: string) =>
@@ -682,13 +753,26 @@ describe('refreshTodayClubLogDigest', () => {
     expect(mocks.pageView.loadClubLogView).not.toHaveBeenCalled();
   });
 
-  it('leaves the message alone when the current-day ledger key is occupied', async () => {
+  it('keeps the edited message when the current-day ledger key is occupied', async () => {
     mocks.service.rekeyClubLogDigestPost.mockResolvedValue(false);
 
     await refreshTodayClubLogDigest(GUILD_ID, NOV_22);
 
-    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.patch).toHaveBeenCalledOnce();
+    expect(mocks.service.rekeyClubLogDigestPost).toHaveBeenCalledWith(
+      GUILD_ID,
+      {
+        logId: LOG_ID,
+        period: 'today' as const,
+        periodKey: '2026-11-21',
+        channelId: CHANNEL_ID,
+        messageId: 'message-1',
+      },
+      '2026-11-22',
+    );
     expect(mocks.logger.warn).toHaveBeenCalledOnce();
+    const warning = mocks.logger.warn.mock.calls[0]?.[0] as string;
+    expect(warning).toContain('ledger key is occupied');
   });
 
   it('does not rekey or patch when fresh data cannot be rendered', async () => {

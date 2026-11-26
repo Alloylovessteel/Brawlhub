@@ -231,48 +231,89 @@ export async function ensureClubRoles(
   return next;
 }
 
+const ROLE_PAGE_SIZE = 500;
+const ROLE_PLAYER_CHUNK = 500;
+
+export interface GuildMembershipRolesRead {
+  readonly roles: Map<string, ClubRoleRank>;
+  /** False when the RPC could not provide a complete, stable keyset read. */
+  readonly complete: boolean;
+}
+
+/**
+ * Read current club ranks for verified players in clubs registered to one guild.
+ * Guild scope, open memberships and stable keyset paging are enforced in SQL.
+ * A malformed or repeated page marks the read incomplete so callers must not
+ * use it as evidence that every eligible member has been seen.
+ */
+export async function readGuildMembershipRolesRead(
+  guildId: string,
+  playerIds: readonly string[],
+  options: ClubRoleServiceOptions = {},
+): Promise<GuildMembershipRolesRead> {
+  const parsedGuildId = requireGuildId(guildId);
+  const uniquePlayerIds = [...new Set(playerIds)].filter((id) => id.trim() !== '');
+  const roles = new Map<string, ClubRoleRank>();
+  if (uniquePlayerIds.length === 0) return { roles, complete: true };
+
+  const db = dbFor(options);
+  let complete = true;
+  const seenMemberships = new Set<string>();
+
+  for (let offset = 0; offset < uniquePlayerIds.length; offset += ROLE_PLAYER_CHUNK) {
+    const chunk = uniquePlayerIds.slice(offset, offset + ROLE_PLAYER_CHUNK);
+    let afterId: string | null = null;
+
+    for (;;) {
+      const { data, error } = await db.rpc('guild_club_member_roles', {
+        p_guild_id: parsedGuildId,
+        p_player_ids: chunk,
+        p_limit: ROLE_PAGE_SIZE,
+        p_after_id: afterId,
+      });
+      requireOk(error, 'Read club memberships for club roles');
+      const page = Array.isArray(data) ? data : [];
+      if (page.length > ROLE_PAGE_SIZE) complete = false;
+
+      let lastId: string | null = null;
+      for (const value of page) {
+        const row = record(value);
+        const membershipId = asString(row?.['membership_id']);
+        const playerId = asString(row?.['player_id']);
+        const rank = clubRoleRankFromRole(row?.['role']);
+        if (membershipId === null || playerId === null || rank === null) {
+          complete = false;
+          continue;
+        }
+        if (seenMemberships.has(membershipId)) complete = false;
+        seenMemberships.add(membershipId);
+        lastId = membershipId;
+        const current = roles.get(playerId);
+        if (current === undefined || RANK_PRECEDENCE[rank] > RANK_PRECEDENCE[current]) {
+          roles.set(playerId, rank);
+        }
+      }
+
+      if (page.length < ROLE_PAGE_SIZE) break;
+      if (lastId === null || lastId === afterId) {
+        complete = false;
+        break;
+      }
+      afterId = lastId;
+    }
+  }
+
+  return { roles, complete };
+}
+
 /** Read current club ranks for verified players in clubs registered to one guild. */
 export async function readGuildMembershipRoles(
   guildId: string,
   playerIds: readonly string[],
   options: ClubRoleServiceOptions = {},
 ): Promise<Map<string, ClubRoleRank>> {
-  const parsedGuildId = requireGuildId(guildId);
-  const uniquePlayerIds = [...new Set(playerIds)].filter((id) => id.trim() !== '');
-  const roles = new Map<string, ClubRoleRank>();
-  if (uniquePlayerIds.length === 0) return roles;
-
-  const db = dbFor(options);
-  const clubs = await db
-    .from('clubs')
-    .select('id')
-    .eq('guild_id', parsedGuildId)
-    .is('archived_at', null);
-  requireOk(clubs.error, 'Read guild clubs for club roles');
-  const clubIds = (clubs.data ?? [])
-    .map((value: unknown) => asString(record(value)?.['id']))
-    .filter((id): id is string => id !== null);
-  if (clubIds.length === 0) return roles;
-
-  const memberships = await db
-    .from('club_memberships')
-    .select('player_id, role')
-    .in('club_id', clubIds)
-    .in('player_id', uniquePlayerIds)
-    .is('valid_to', null);
-  requireOk(memberships.error, 'Read club memberships for club roles');
-
-  for (const value of memberships.data ?? []) {
-    const row = record(value);
-    const playerId = asString(row?.['player_id']);
-    const rank = clubRoleRankFromRole(row?.['role']);
-    if (playerId === null || rank === null) continue;
-    const current = roles.get(playerId);
-    if (current === undefined || RANK_PRECEDENCE[rank] > RANK_PRECEDENCE[current]) {
-      roles.set(playerId, rank);
-    }
-  }
-  return roles;
+  const result = await readGuildMembershipRolesRead(guildId, playerIds, options);
+  return result.roles;
 }
 
 /** Choose one verified main account per Discord user, deterministically. */
@@ -417,7 +458,7 @@ export async function refreshGuildClubRoles(
   }
 
   const links = await listGuildVerifiedLinks(guild.id, { db });
-  const membershipRoles = await readGuildMembershipRoles(
+  const membershipRead = await readGuildMembershipRolesRead(
     guild.id,
     links.map((link) => link.playerId),
     { db },
@@ -428,15 +469,25 @@ export async function refreshGuildClubRoles(
       playerId: link.playerId,
       isMain: link.isMain,
     })),
-    membershipRoles,
+    membershipRead.roles,
     state.mapping,
   );
   const result = await applyClubRolePlans(guild, plans);
-  const cleanedMembers = await removeStaleManagedRoles(
-    guild,
-    managedIds,
-    new Set(plans.map((plan) => plan.discordUserId)),
-  );
+  // Removing roles is destructive: only do it when every eligible membership
+  // was actually resolved. A capped, repeated or malformed page must not be
+  // treated as proof that a member is no longer eligible.
+  const cleanedMembers = membershipRead.complete
+    ? await removeStaleManagedRoles(
+        guild,
+        managedIds,
+        new Set(plans.map((plan) => plan.discordUserId)),
+      )
+    : 0;
+  if (!membershipRead.complete) {
+    logger.warn('Skipping stale club role cleanup after an incomplete eligibility read', {
+      guildId: guild.id,
+    });
+  }
 
   if (options.actor != null) {
     await recordAdminAudit(

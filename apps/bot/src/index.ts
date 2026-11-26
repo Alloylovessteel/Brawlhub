@@ -160,6 +160,9 @@ async function refreshVerifiedNicknamesSafely(): Promise<void> {
         updated: result.updated,
         unchanged: result.unchanged,
         notMembers: result.notMembers,
+        unresolved: result.unresolved,
+        restored: result.restored,
+        released: result.released,
         failures: result.failures,
       });
     }

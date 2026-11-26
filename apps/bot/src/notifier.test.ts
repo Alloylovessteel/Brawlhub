@@ -1,6 +1,35 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SyncNotificationInput } from '@brawlhub/sync';
-import { buildClubMembershipNoticeContent } from './notifier';
+
+const mocks = vi.hoisted(() => ({
+  post: vi.fn(),
+  maybeSingle: vi.fn(),
+  getBotConfig: vi.fn(),
+}));
+
+vi.mock('@brawlhub/database', () => ({
+  createTrustedClient: () => ({
+    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: mocks.maybeSingle }) }) }),
+  }),
+}));
+vi.mock('./config.js', () => ({ getBotConfig: mocks.getBotConfig }));
+vi.mock('discord.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('discord.js')>();
+  return {
+    ...actual,
+    REST: class {
+      setToken(): this {
+        return this;
+      }
+      post(...args: unknown[]): Promise<unknown> {
+        return mocks.post(...args);
+      }
+    },
+    Routes: { channelMessages: (channelId: string) => `channels/${channelId}/messages` },
+  };
+});
+
+import { buildClubMembershipNoticeContent, createDiscordNotifier } from './notifier';
 
 function input(overrides: Partial<SyncNotificationInput> = {}): SyncNotificationInput {
   return {
@@ -54,5 +83,51 @@ describe('buildClubMembershipNoticeContent', () => {
     );
 
     expect(content).toBe('#YQPQ0Q2CL joined the club');
+  });
+});
+
+describe('createDiscordNotifier', () => {
+  beforeEach(() => {
+    mocks.post.mockReset();
+    mocks.maybeSingle.mockReset();
+    mocks.getBotConfig.mockReset();
+    mocks.getBotConfig.mockReturnValue({ token: 'discord-token' });
+    delete process.env.DISCORD_NOTIFICATION_CHANNEL_ID;
+  });
+
+  it('posts mention-safe content and returns the Discord message ID', async () => {
+    mocks.maybeSingle.mockResolvedValue({ data: { announcement_channel_id: 'channel-1' }, error: null });
+    mocks.post.mockResolvedValue({ id: 'message-1' });
+
+    const notifier = await createDiscordNotifier({ guildId: 'guild-1' });
+    const messageId = await notifier.send(input());
+
+    expect(notifier.channelId).toBe('channel-1');
+    expect(messageId).toBe('message-1');
+    const [route, request] = mocks.post.mock.calls[0] as [string, { body: Record<string, unknown> }];
+    expect(route).toBe('channels/channel-1/messages');
+    expect(request.body).toMatchObject({
+      content: 'gynophobe left Kuromi Nek',
+      allowed_mentions: { parse: [] },
+    });
+  });
+
+  it('returns undefined on a send failure so sync can retry the claim', async () => {
+    mocks.maybeSingle.mockResolvedValue({ data: { announcement_channel_id: 'channel-1' }, error: null });
+    mocks.post.mockRejectedValue(new Error('rate limited'));
+
+    const notifier = await createDiscordNotifier({ guildId: 'guild-1' });
+
+    await expect(notifier.send(input())).resolves.toBeUndefined();
+  });
+
+  it('disables notifications when no channel is configured', async () => {
+    mocks.maybeSingle.mockResolvedValue({ data: null, error: null });
+
+    const notifier = await createDiscordNotifier({ guildId: 'guild-1' });
+
+    expect(notifier.channelId).toBeUndefined();
+    await expect(notifier.send(input())).resolves.toBeUndefined();
+    expect(mocks.post).not.toHaveBeenCalled();
   });
 });

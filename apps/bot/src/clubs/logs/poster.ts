@@ -167,12 +167,73 @@ function digestContent(
   return `${safeText(clubName, 60)} • Club Log / Trophy Progression / ${label}${mode} — ${boundary.label} (UTC)`;
 }
 
+function isUnknownDiscordMessage(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as { code?: unknown; status?: unknown };
+  return candidate.code === 10008 || candidate.status === 404;
+}
+
+interface RefreshClaim {
+  readonly claimId: string;
+  readonly key: string;
+}
+
+async function persistRefreshedDigest(
+  guildId: string,
+  claim: RefreshClaim | null,
+  sourcePost: ClubLogDigestPost,
+  livePeriodKey: string,
+  finalMessageId: string,
+  token: string,
+): Promise<void> {
+  const livePost: ClubLogDigestPost = {
+    ...sourcePost,
+    periodKey: livePeriodKey,
+    messageId: finalMessageId,
+  };
+  const details = { guildId, logId: sourcePost.logId, periodKey: livePeriodKey };
+  try {
+    if (claim !== null) {
+      // Take over the staged sentinel before moving the ledger row, so the
+      // rekey sees a matching target instead of an occupied one.
+      await markClubLogDigestPosted(guildId, [
+        { ...sourcePost, periodKey: livePeriodKey, messageId: sourcePost.messageId },
+      ]);
+    }
+    if (
+      sourcePost.periodKey !== livePeriodKey &&
+      !(await rekeyClubLogDigestPost(guildId, sourcePost, livePeriodKey))
+    ) {
+      logger.warn('Daily club log digest ledger key is occupied; message was already edited', details);
+      return;
+    }
+    if (claim !== null && finalMessageId !== sourcePost.messageId) {
+      await markClubLogDigestPosted(guildId, [livePost]);
+    }
+  } catch (error) {
+    logger.warn('Daily club log digest message ID could not be persisted', {
+      ...details,
+      error: safeError(error, token),
+    });
+    if (claim !== null) {
+      try {
+        await markClubLogDigestClaimDelivered(guildId, claim.claimId, [livePost]);
+      } catch (recoveryError) {
+        logger.warn('Daily club log digest recovery ID could not be persisted', {
+          ...details,
+          error: safeError(recoveryError, token),
+        });
+      }
+    }
+  }
+}
+
 /**
  * Edit the daily trophy digest in place as a live current-UTC-day view after a
  * sync. The original completed-day ledger row is advanced to the current day so
- * the same Discord message keeps being edited. The completed window is still
- * posted independently by the digest poll, preserving daily archive history.
- * Weekly and season digests are never touched.
+ * the same Discord message keeps being edited. A staged claim prevents two
+ * refreshes from racing, and the ledger is moved only after Discord accepts the
+ * edit (or a replacement post follows an unknown-message rejection).
  */
 export async function refreshTodayClubLogDigest(
   guildId: string,
@@ -221,15 +282,48 @@ export async function refreshTodayClubLogDigest(
   const rest = new REST({ version: '10' }).setToken(token);
   const logsById = new Map(logs.map((log) => [log.id, log]));
   await mapWithConcurrency(posts, POST_CONCURRENCY, async (sourcePost) => {
-    let post = sourcePost;
-    const log = logsById.get(post.logId);
+    const log = logsById.get(sourcePost.logId);
     if (log === undefined || !log.periods.includes('today')) return;
     const details = {
       guildId,
       logId: log.id,
       periodKey: liveBoundary.periodKey,
-      sourcePeriodKey: post.periodKey,
+      sourcePeriodKey: sourcePost.periodKey,
     };
+    const claimKey = digestKey(log.id, liveBoundary);
+    let claim: RefreshClaim | null = null;
+
+    if (sourcePost.periodKey !== liveBoundary.periodKey) {
+      try {
+        // Stage the live key before rendering or calling Discord. Only a
+        // pre-send failure may release it; a `sending` claim stays uncertain.
+        const acquired = await claimClubLogDigestWindows(
+          guildId,
+          [{
+            logId: log.id,
+            period: 'today',
+            periodKey: liveBoundary.periodKey,
+            channelId: sourcePost.channelId,
+          }],
+          { now },
+        );
+        if (!acquired.keys.has(claimKey)) return;
+        claim = { claimId: acquired.claimId, key: claimKey };
+        if (!(await advanceClubLogDigestClaim(guildId, claim.claimId, claimKey, 'reserved', 'loading'))) {
+          await releaseClubLogDigestClaims(guildId, claim.claimId, [claimKey]);
+          logger.warn('Daily club log digest refresh claim is no longer reserved', details);
+          return;
+        }
+      } catch (error) {
+        logger.warn('Daily club log digest refresh claim could not be acquired', {
+          ...details,
+          error: safeError(error, token),
+        });
+        return;
+      }
+    }
+
+    let image: Awaited<ReturnType<typeof buildClubLogDigestImage>>;
     try {
       const page = await loadClubLogView({
         guildId,
@@ -240,30 +334,89 @@ export async function refreshTodayClubLogDigest(
         asOf: liveBoundary.windowEnd,
       });
       if (page.kind !== 'ok') throw new Error('Club lookup failed');
-      const image = await buildClubLogDigestImage(page.value, DIGEST_LABELS.today, 'live');
-      if (
-        post.periodKey !== liveBoundary.periodKey &&
-        !(await rekeyClubLogDigestPost(guildId, post, liveBoundary.periodKey))
-      ) {
-        logger.warn('Daily club log digest ledger key is occupied; message left unchanged', details);
-        return;
-      }
-      post = { ...post, periodKey: liveBoundary.periodKey };
-      const name = filename(log.clubTag, `today-${liveBoundary.periodKey}-live`);
-      await rest.patch(Routes.channelMessage(post.channelId, post.messageId), {
-        body: {
-          content: digestContent(log.clubName, liveBoundary, true),
-          allowed_mentions: { parse: [] },
-          attachments: [{ id: '0', filename: name }],
-        },
-        files: [{ key: 'files[0]', name, data: image, contentType: 'image/png' }],
-      });
-      logger.info('Daily club log digest refreshed as a live view', details);
+      image = await buildClubLogDigestImage(page.value, DIGEST_LABELS.today, 'live');
     } catch (error) {
+      if (claim !== null) {
+        await releaseClubLogDigestClaims(guildId, claim.claimId, [claim.key]);
+      }
       logger.warn('Daily club log digest could not be refreshed', {
         ...details,
         error: safeError(error, token),
       });
+      return;
+    }
+
+    if (claim !== null && !(await advanceClubLogDigestClaim(
+      guildId,
+      claim.claimId,
+      claim.key,
+      'loading',
+      'sending',
+    ))) {
+      await releaseClubLogDigestClaims(guildId, claim.claimId, [claim.key]);
+      logger.warn('Daily club log digest refresh claim could not reach sending', details);
+      return;
+    }
+
+    const name = filename(log.clubTag, `today-${liveBoundary.periodKey}-live`);
+    const request = {
+      body: {
+        content: digestContent(log.clubName, liveBoundary, true),
+        allowed_mentions: { parse: [] },
+        attachments: [{ id: '0', filename: name }],
+      },
+      files: [{ key: 'files[0]', name, data: image, contentType: 'image/png' }],
+    };
+    try {
+      await rest.patch(Routes.channelMessage(sourcePost.channelId, sourcePost.messageId), request);
+      await persistRefreshedDigest(
+        guildId,
+        claim,
+        sourcePost,
+        liveBoundary.periodKey,
+        sourcePost.messageId,
+        token,
+      );
+      logger.info('Daily club log digest refreshed as a live view', details);
+      return;
+    } catch (error) {
+      if (!isUnknownDiscordMessage(error)) {
+        if (claim !== null && isDefinitiveDiscordRejection(error)) {
+          await releaseClubLogDigestClaims(guildId, claim.claimId, [claim.key]);
+        }
+        logger.warn('Daily club log digest could not be refreshed', {
+          ...details,
+          error: safeError(error, token),
+        });
+        return;
+      }
+
+      try {
+        const response = (await rest.post(Routes.channelMessages(sourcePost.channelId), request)) as
+          | { id?: string }
+          | undefined;
+        const messageId = response?.id;
+        if (messageId === undefined || messageId === '') {
+          throw new Error('Discord club digest replacement returned no message ID');
+        }
+        await persistRefreshedDigest(
+          guildId,
+          claim,
+          sourcePost,
+          liveBoundary.periodKey,
+          messageId,
+          token,
+        );
+        logger.info('Daily club log digest replaced after the old message disappeared', {
+          ...details,
+          messageId,
+        });
+      } catch (postError) {
+        logger.warn('Daily club log digest replacement failed', {
+          ...details,
+          error: safeError(postError, token),
+        });
+      }
     }
   });
 }

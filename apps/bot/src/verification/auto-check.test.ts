@@ -166,7 +166,10 @@ describe('runVerificationAutoCheck', () => {
       }),
     );
     expect(mocks.reconcileRoles).toHaveBeenCalledWith(GUILD_ONE, DISCORD_USER_ID, { client });
-    expect(mocks.syncNickname).toHaveBeenCalledWith(client, GUILD_ONE, DISCORD_USER_ID, 'Alpha');
+    expect(mocks.syncNickname).toHaveBeenCalledWith(client, GUILD_ONE, DISCORD_USER_ID, {
+      playerName: 'Alpha',
+      playerTag: TAG,
+    });
   });
 
   it('leaves a mismatched challenge pending without sending notices', async () => {

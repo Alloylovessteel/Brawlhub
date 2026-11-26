@@ -39,7 +39,8 @@ import type {
 type DatabaseClient = ReturnType<typeof createTrustedClient>;
 
 const STALE_AFTER_MS = 15 * 60_000;
-const MAX_ROWS = 10_000;
+/** Page size below PostgREST's max_rows (1000) for RPCs and ID lookups. */
+const PAGE_SIZE = 500;
 
 const PLAYER_COLUMNS = [
   'id',
@@ -51,9 +52,6 @@ const PLAYER_COLUMNS = [
   'last_synced_at',
 ].join(', ');
 
-const CLUB_SNAPSHOT_COLUMNS =
-  'club_id, id, sync_run_id, captured_at, trophies, member_count, raw';
-const PLAYER_SNAPSHOT_COLUMNS = 'id, player_id, sync_run_id, captured_at, trophies';
 const MEMBERSHIP_SELECT =
   'id, club_id, player_id, role, valid_from, valid_to, ' +
   'club:clubs!club_memberships_club_id_fkey(id, tag, name)';
@@ -87,18 +85,73 @@ function latestRunAt(runs: readonly SyncRunRecord[]): string | null {
   return latest;
 }
 
-async function readPlayers(db: DatabaseClient): Promise<PlayerIdentity[]> {
-  const { data, error } = await db
-    .from('players')
-    .select(PLAYER_COLUMNS)
-    .order('name', { ascending: true })
-    .limit(MAX_ROWS);
-  requireOk(error, 'Read players');
-  return deduplicatePlayers(
-    (data ?? [])
-      .map((row: unknown) => parsePlayerRow(row))
-      .filter((row): row is PlayerIdentity => row !== null),
-  );
+/** Read a table-valued RPC; PostgREST returns an array of rows. */
+async function readRpcRows(
+  db: DatabaseClient,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown[]> {
+  const { data, error } = await db.rpc(name, args);
+  requireOk(error, `Read ${name}`);
+  return Array.isArray(data) ? data : [];
+}
+
+/** A blank guild is a zero scope, never a global pass. */
+async function readLeaderboardClubs(
+  guildId: string | null | undefined,
+  db: DatabaseClient,
+): Promise<ClubRecord[]> {
+  if (guildId !== undefined && guildId !== null && guildId.trim() === '') return [];
+  return getRegisteredClubs(guildId ?? null, db);
+}
+
+/**
+ * Player eligibility is resolved in SQL from an explicit club-id scope. The
+ * RPC is a distinct-id keyset page, so neither a global player scan nor an
+ * application-side membership set can be truncated by the REST row cap.
+ */
+async function readScopedPlayerIds(clubIds: readonly string[], db: DatabaseClient): Promise<string[]> {
+  if (clubIds.length === 0) return [];
+  const ids = new Set<string>();
+  let after: string | null = null;
+  for (;;) {
+    const rows = await readRpcRows(db, 'web_scoped_player_ids', {
+      p_club_ids: [...clubIds],
+      p_current_only: false,
+      p_limit: PAGE_SIZE,
+      p_after: after,
+    });
+    const pageIds = rows
+      .map((value) => asString(record(value)?.['player_id']))
+      .filter((id): id is string => id !== null);
+    for (const id of pageIds) ids.add(id);
+    if (rows.length < PAGE_SIZE) break;
+    const last = pageIds.at(-1) ?? null;
+    if (last === null || last === after) {
+      throw new Error('Read web_scoped_player_ids: repeated keyset');
+    }
+    after = last;
+  }
+  return [...ids].sort((left, right) => left.localeCompare(right));
+}
+
+async function readPlayersByIds(
+  db: DatabaseClient,
+  playerIds: readonly string[],
+): Promise<PlayerIdentity[]> {
+  const players: PlayerIdentity[] = [];
+  for (let index = 0; index < playerIds.length; index += PAGE_SIZE) {
+    const { data, error } = await db
+      .from('players')
+      .select(PLAYER_COLUMNS)
+      .in('id', playerIds.slice(index, index + PAGE_SIZE));
+    requireOk(error, 'Read players');
+    for (const row of data ?? []) {
+      const player = parsePlayerRow(row);
+      if (player !== null) players.push(player);
+    }
+  }
+  return deduplicatePlayers(players);
 }
 
 async function readMemberships(
@@ -108,32 +161,54 @@ async function readMemberships(
 ): Promise<Map<string, PlayerMembershipRecord[]>> {
   const byId = new Map(players.map((player) => [playerKey(player), player]));
   const grouped = new Map<string, PlayerMembershipRecord[]>();
+  const playerIds = [...byId.keys()];
 
-  const { data, error } = await db
-    .from('club_memberships')
-    .select(MEMBERSHIP_SELECT)
-    .order('valid_from', { ascending: false })
-    .limit(MAX_ROWS);
-  requireOk(error, 'Read memberships');
+  for (let index = 0; index < playerIds.length; index += PAGE_SIZE) {
+    const { data, error } = await db
+      .from('club_memberships')
+      .select(MEMBERSHIP_SELECT)
+      .in('player_id', playerIds.slice(index, index + PAGE_SIZE));
+    requireOk(error, 'Read memberships');
 
-  for (const value of data ?? []) {
-    const row = record(value);
-    const playerId = asString(row?.['player_id']);
-    if (row === null || playerId === null) continue;
-    const player = byId.get(playerId);
-    const membership = parseMembershipRow(
-      row,
-      STALE_AFTER_MS,
-      now,
-      player?.lastSyncedAt ?? null,
-    );
-    if (membership === null) continue;
-    const existing = grouped.get(playerId) ?? [];
-    existing.push(membership);
-    grouped.set(playerId, existing);
+    for (const value of data ?? []) {
+      const row = record(value);
+      const playerId = asString(row?.['player_id']);
+      if (row === null || playerId === null) continue;
+      const player = byId.get(playerId);
+      const membership = parseMembershipRow(
+        row,
+        STALE_AFTER_MS,
+        now,
+        player?.lastSyncedAt ?? null,
+      );
+      if (membership === null) continue;
+      const existing = grouped.get(playerId) ?? [];
+      existing.push(membership);
+      grouped.set(playerId, existing);
+    }
   }
 
   return grouped;
+}
+
+interface PlayerLeaderboardScope {
+  readonly clubs: ClubRecord[];
+  readonly clubIds: string[];
+  readonly players: PlayerIdentity[];
+  readonly memberships: Map<string, PlayerMembershipRecord[]>;
+}
+
+/** One complete, guild-scoped eligibility read shared by all player views. */
+async function readPlayerLeaderboardScope(
+  options: LeaderboardReadOptions,
+  db: DatabaseClient,
+  now: Date,
+): Promise<PlayerLeaderboardScope> {
+  const clubs = await readLeaderboardClubs(options.guildId, db);
+  const clubIds = [...new Set(clubs.map((club) => club.id))];
+  const playerIds = await readScopedPlayerIds(clubIds, db);
+  const players = await readPlayersByIds(db, playerIds);
+  return { clubs, clubIds, players, memberships: await readMemberships(db, players, now) };
 }
 
 /**
@@ -151,17 +226,62 @@ async function completedRunIdsForSnapshots(
   );
 }
 
-/** Latest valid completed snapshot per club, keyed by club id. */
-async function readClubSnapshots(db: DatabaseClient): Promise<Map<string, ClubSnapshot>> {
-  const byClub = new Map<string, ClubSnapshot>();
-  const { data, error } = await db
-    .from('club_snapshots')
-    .select(CLUB_SNAPSHOT_COLUMNS)
-    .order('captured_at', { ascending: false });
-  requireOk(error, 'Read club snapshots');
+/** Read every newest-first page of a snapshot RPC using its stable keyset. */
+async function readPagedSnapshots(
+  db: DatabaseClient,
+  name: string,
+  baseArgs: Record<string, unknown>,
+): Promise<unknown[]> {
+  const rows: unknown[] = [];
+  let afterCapturedAt: string | null = null;
+  let afterId: string | null = null;
 
+  for (;;) {
+    const page = await readRpcRows(db, name, {
+      ...baseArgs,
+      p_limit: PAGE_SIZE,
+      p_after_captured_at: afterCapturedAt,
+      p_after_id: afterId,
+    });
+    if (page.length === 0) break;
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) break;
+
+    const last = record(page.at(-1));
+    const capturedAt = asString(last?.['captured_at']);
+    const id = asString(last?.['id']);
+    if (capturedAt === null || id === null) {
+      throw new Error(`Read ${name}: missing snapshot keyset`);
+    }
+    if (
+      afterCapturedAt !== null &&
+      afterId !== null &&
+      !(capturedAt < afterCapturedAt || (capturedAt === afterCapturedAt && id < afterId))
+    ) {
+      throw new Error(`Read ${name}: non-monotonic snapshot keyset`);
+    }
+    afterCapturedAt = capturedAt;
+    afterId = id;
+  }
+
+  return rows;
+}
+
+/** Latest valid completed snapshot per club, keyed by club id. */
+async function readClubSnapshots(
+  db: DatabaseClient,
+  clubIds: readonly string[],
+): Promise<Map<string, ClubSnapshot>> {
+  const byClub = new Map<string, ClubSnapshot>();
+  if (clubIds.length === 0) return byClub;
+
+  const rows = await readPagedSnapshots(db, 'club_snapshot_page', {
+    p_club_ids: [...clubIds],
+    p_completed_only: true,
+    p_newest_first: true,
+  });
   const parsed: { clubId: string; snapshot: ClubSnapshot }[] = [];
-  for (const value of data ?? []) {
+  for (const value of rows) {
     const row = record(value);
     const clubId = asString(row?.['club_id']);
     if (row === null || clubId === null) continue;
@@ -197,16 +317,20 @@ async function readClubSnapshots(db: DatabaseClient): Promise<Map<string, ClubSn
 }
 
 /** All valid completed snapshots grouped by player id. */
-async function readPlayerSnapshotGroups(db: DatabaseClient): Promise<Map<string, ClubSnapshot[]>> {
+async function readPlayerSnapshotGroups(
+  db: DatabaseClient,
+  clubIds: readonly string[],
+): Promise<Map<string, ClubSnapshot[]>> {
   const grouped = new Map<string, ClubSnapshot[]>();
-  const { data, error } = await db
-    .from('player_snapshots')
-    .select(PLAYER_SNAPSHOT_COLUMNS)
-    .order('captured_at', { ascending: false });
-  requireOk(error, 'Read player snapshots');
+  if (clubIds.length === 0) return grouped;
 
+  const rows = await readPagedSnapshots(db, 'player_snapshot_page', {
+    p_club_ids: [...clubIds],
+    p_completed_only: true,
+    p_newest_first: true,
+  });
   const parsed: { playerId: string; snapshot: ClubSnapshot }[] = [];
-  for (const value of data ?? []) {
+  for (const value of rows) {
     const row = record(value);
     const playerId = asString(row?.['player_id']);
     if (row === null || playerId === null) continue;
@@ -256,10 +380,11 @@ export async function loadClubLeaderboard(
   const db = options.db ?? createTrustedClient();
   const now = options.now ?? new Date();
   const [clubs, runs] = await Promise.all([
-    getRegisteredClubs(options.guildId, db),
+    readLeaderboardClubs(options.guildId, db),
     readCompletedRuns(db),
   ]);
-  const byClub = await readClubSnapshots(db);
+  const clubIds = [...new Set(clubs.map((club) => club.id))];
+  const byClub = await readClubSnapshots(db, clubIds);
 
   const ranked = rankByScore(
     clubs,
@@ -297,27 +422,10 @@ export async function loadPlayerLeaderboard(
 ): Promise<PlayerLeaderboardView> {
   const db = options.db ?? createTrustedClient();
   const now = options.now ?? new Date();
-  let players = await readPlayers(db);
-  if (options.guildId !== undefined && options.guildId !== null) {
-    const clubs = await getRegisteredClubs(options.guildId, db);
-    const clubIds = clubs.map((club) => club.id);
-    const allowedPlayerIds = new Set<string>();
-    if (clubIds.length > 0) {
-      const { data, error } = await db
-        .from('club_memberships')
-        .select('player_id')
-        .in('club_id', clubIds)
-        .limit(MAX_ROWS);
-      requireOk(error, 'Read guild player memberships');
-      for (const row of data ?? []) {
-        const id = asString(record(row)?.['player_id']);
-        if (id !== null) allowedPlayerIds.add(id);
-      }
-    }
-    players = players.filter((player) => player.id !== null && allowedPlayerIds.has(player.id));
-  }
+  const scope = await readPlayerLeaderboardScope(options, db, now);
+  const players = scope.players;
   const [runs] = await Promise.all([readCompletedRuns(db)]);
-  const memberships = await readMemberships(db, players, now);
+  const memberships = scope.memberships;
   const validPlayers = players.filter((player) => finiteNumber(player.trophies) !== null);
 
   const ranked = rankByScore(
@@ -360,28 +468,11 @@ export async function loadTrophyLeaderboard(
 ): Promise<TrophyLeaderboardView> {
   const db = options.db ?? createTrustedClient();
   const now = options.now ?? new Date();
-  let players = await readPlayers(db);
-  if (options.guildId !== undefined && options.guildId !== null) {
-    const clubs = await getRegisteredClubs(options.guildId, db);
-    const clubIds = clubs.map((club) => club.id);
-    const allowedPlayerIds = new Set<string>();
-    if (clubIds.length > 0) {
-      const { data, error } = await db
-        .from('club_memberships')
-        .select('player_id')
-        .in('club_id', clubIds)
-        .limit(MAX_ROWS);
-      requireOk(error, 'Read guild player memberships');
-      for (const row of data ?? []) {
-        const id = asString(record(row)?.['player_id']);
-        if (id !== null) allowedPlayerIds.add(id);
-      }
-    }
-    players = players.filter((player) => player.id !== null && allowedPlayerIds.has(player.id));
-  }
+  const scope = await readPlayerLeaderboardScope(options, db, now);
+  const players = scope.players;
   const [runs] = await Promise.all([readCompletedRuns(db)]);
-  const snapshotGroups = await readPlayerSnapshotGroups(db);
-  const memberships = await readMemberships(db, players, now);
+  const snapshotGroups = await readPlayerSnapshotGroups(db, scope.clubIds);
+  const memberships = scope.memberships;
 
   const sources = players.map((player) => ({
     player,
@@ -425,27 +516,10 @@ export async function loadProgressionLeaderboard(
   }
   const db = options.db ?? createTrustedClient();
   const now = input.now ?? options.now ?? new Date();
-  let players = await readPlayers(db);
-  if (options.guildId !== undefined && options.guildId !== null) {
-    const clubs = await getRegisteredClubs(options.guildId, db);
-    const clubIds = clubs.map((club) => club.id);
-    const allowedPlayerIds = new Set<string>();
-    if (clubIds.length > 0) {
-      const { data, error } = await db
-        .from('club_memberships')
-        .select('player_id')
-        .in('club_id', clubIds)
-        .limit(MAX_ROWS);
-      requireOk(error, 'Read guild player memberships');
-      for (const row of data ?? []) {
-        const id = asString(record(row)?.['player_id']);
-        if (id !== null) allowedPlayerIds.add(id);
-      }
-    }
-    players = players.filter((player) => player.id !== null && allowedPlayerIds.has(player.id));
-  }
+  const scope = await readPlayerLeaderboardScope(options, db, now);
+  const players = scope.players;
   const [runs] = await Promise.all([readCompletedRuns(db)]);
-  const snapshotGroups = await readPlayerSnapshotGroups(db);
+  const snapshotGroups = await readPlayerSnapshotGroups(db, scope.clubIds);
 
   const provisional = players
     .map((player) => ({
@@ -476,7 +550,7 @@ export async function loadProgressionLeaderboard(
           );
     return { player: entry.player, result: aligned ?? entry.result };
   });
-  const memberships = await readMemberships(db, players, now);
+  const memberships = scope.memberships;
 
   const ranked = rankByScore(
     calculated,

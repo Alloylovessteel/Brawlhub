@@ -119,7 +119,7 @@ describe('member verification guild scoping', () => {
       interaction.client,
       'guild-1',
       'user-1',
-      'Player',
+      { playerName: 'Player', playerTag: 'ABC' },
     );
   });
 

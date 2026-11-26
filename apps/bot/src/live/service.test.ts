@@ -170,27 +170,40 @@ interface LedgerRow {
   readonly delivered_at: string;
 }
 
-/** Per-subscription delivery ledger mock; upserts ignore duplicates like the real table. */
+interface LedgerUpdate {
+  readonly subscriptionId: string;
+  readonly battleKey: string;
+  readonly expectedClaim: string;
+  readonly messageId: string;
+}
+
+/** Per-subscription ledger mock, including durable pre-send claim semantics. */
 function createLedger() {
   const rows = new Map<string, LedgerRow>();
   const upserts: LedgerRow[] = [];
+  const updates: LedgerUpdate[] = [];
+  const releases: LedgerUpdate[] = [];
   let failingSubscription: string | null = null;
+
+  const filterValue = (call: ResponderCall, column: string): unknown =>
+    call.filters.find((filter) => filter.column === column)?.values[0];
 
   return {
     rows,
     upserts,
+    updates,
+    releases,
     failWritesFor(subscriptionId: string | null): void {
       failingSubscription = subscriptionId;
     },
     respond(call: ResponderCall) {
       if (call.table !== 'live_battle_deliveries') return undefined;
       if (call.op === 'select') {
-        const subscriptionId = call.filters.find((filter) => filter.column === 'subscription_id')
-          ?.values[0];
+        const subscriptionId = filterValue(call, 'subscription_id');
         return {
           data: [...rows.values()]
             .filter((row) => row.subscription_id === subscriptionId)
-            .map((row) => ({ battle_key: row.battle_key })),
+            .map((row) => ({ battle_key: row.battle_key, discord_message_id: row.discord_message_id })),
           error: null,
         };
       }
@@ -198,11 +211,37 @@ function createLedger() {
         const payload = call.payloads[0] as LedgerRow | undefined;
         if (payload === undefined) return { data: null, error: null };
         upserts.push(payload);
-        if (failingSubscription === payload.subscription_id) {
+        const key = `${payload.subscription_id}|${payload.battle_key}`;
+        if (rows.has(key)) return { data: [], error: null };
+        rows.set(key, payload);
+        return { data: [{ discord_message_id: payload.discord_message_id }], error: null };
+      }
+      if (call.op === 'update') {
+        const payload = call.payloads[0] as Partial<LedgerRow> | undefined;
+        if (payload === undefined) return { data: null, error: null };
+        const subscriptionId = String(filterValue(call, 'subscription_id'));
+        const battleKey = String(filterValue(call, 'battle_key'));
+        const expectedClaim = String(filterValue(call, 'discord_message_id'));
+        const messageId = String(payload.discord_message_id);
+        updates.push({ subscriptionId, battleKey, expectedClaim, messageId });
+        if (failingSubscription === subscriptionId) {
           return { data: null, error: { message: 'ledger write down' } };
         }
-        const key = `${payload.subscription_id}|${payload.battle_key}`;
-        if (!rows.has(key)) rows.set(key, payload);
+        const key = `${subscriptionId}|${battleKey}`;
+        const row = rows.get(key);
+        if (row === undefined || row.discord_message_id !== expectedClaim) {
+          return { data: [], error: null };
+        }
+        rows.set(key, { ...row, discord_message_id: messageId });
+        return { data: [{ battle_key: battleKey }], error: null };
+      }
+      if (call.op === 'delete') {
+        const subscriptionId = String(filterValue(call, 'subscription_id'));
+        const battleKey = String(filterValue(call, 'battle_key'));
+        const expectedClaim = String(filterValue(call, 'discord_message_id'));
+        releases.push({ subscriptionId, battleKey, expectedClaim, messageId: expectedClaim });
+        const key = `${subscriptionId}|${battleKey}`;
+        if (rows.get(key)?.discord_message_id === expectedClaim) rows.delete(key);
         return { data: null, error: null };
       }
       return undefined;
@@ -322,7 +361,15 @@ describe('runLiveBattlePoll', () => {
       ),
     ).toHaveLength(1);
     expect(calls.filter((call) => call.table === 'live_battle_polls' && call.op === 'insert')).toHaveLength(2);
-    expect(calls.filter((call) => call.table === 'live_battle_deliveries' && call.op === 'upsert')).toHaveLength(4);
+    const ledgerWrites = calls.filter(
+      (call) =>
+        call.table === 'live_battle_deliveries' &&
+        call.op === 'upsert' &&
+        String((call.args[0] as { discord_message_id?: unknown } | undefined)?.discord_message_id).startsWith(
+          'claim:',
+        ),
+    );
+    expect(ledgerWrites).toHaveLength(4);
     const deactivated = calls.find(
       (call) =>
         call.table === 'guild_live_subscriptions' &&
@@ -457,7 +504,7 @@ describe('runLiveBattlePoll', () => {
       if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
       if (table === 'player_battles' && op === 'select') return { data: [], error: null };
       if (table === 'live_battle_deliveries' && op === 'select') return { data: [], error: null };
-      if (table === 'live_battle_deliveries' && op === 'upsert' && ledgerWriteFails) {
+      if (table === 'live_battle_deliveries' && op === 'update' && ledgerWriteFails) {
         return { data: null, error: { message: 'ledger write down' } };
       }
       return { data: null, error: null };
@@ -576,9 +623,9 @@ describe('runLiveBattlePoll', () => {
       ),
     ).toBe(false);
     expect(
-      ledger.upserts.some(
-        (upsert) =>
-          upsert.subscription_id === failing.id && upsert.discord_message_id === 'reconcile-msg-a',
+      ledger.updates.some(
+        (update) =>
+          update.subscriptionId === failing.id && update.messageId === 'reconcile-msg-a',
       ),
     ).toBe(true);
   });
@@ -817,6 +864,152 @@ describe('runLiveBattlePoll', () => {
       deliveredMessages: 0,
     });
     expect(pollInserts(calls).map((poll) => poll.new_battles)).toEqual([1, 1]);
+  });
+
+  it('claims before sending and never records a missing Discord id as delivered', async () => {
+    const row = subscription('sub-claim', 'guild-claim', 'channel-claim', 'user-claim');
+    const item = battle('2026-11-22T11:51:00.000Z', 'victory');
+    const key = battleKey(item);
+    const api = { getBattleLog: vi.fn(async () => [item]) } as unknown as BrawlStarsClient;
+    const ledger = createLedger();
+    let claimAtSend: unknown;
+    const send = vi.fn(async (_payload: unknown) => {
+      claimAtSend = ledger.upserts[0]?.discord_message_id;
+      return { id: undefined };
+    });
+    const { db, calls } = createDb((call) => {
+      const ledgerResult = ledger.respond(call);
+      if (ledgerResult !== undefined) return ledgerResult;
+      const storedResult = storedBattles(call);
+      if (storedResult !== undefined) return storedResult;
+      const { table, op } = call;
+      if (table === 'guild_live_subscriptions' && op === 'select') return { data: [row], error: null };
+      if (table === 'players' && op === 'select') return { data: [PLAYER], error: null };
+      if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
+      return { data: null, error: null };
+    });
+
+    const outcome = await runLiveBattlePoll(
+      channelClient(row.channel_id, row.guild_id, send),
+      { db: db as never, api, now: NOW },
+    );
+
+    expect(String(claimAtSend)).toMatch(/^claim:.+:reserved$/);
+    expect(outcome.delivered).toBe(0);
+    expect(ledger.rows.get(`${row.id}|${key}`)).toMatchObject({
+      discord_message_id: claimAtSend,
+    });
+    expect(ledger.updates).toEqual([]);
+    expect(pollInserts(calls)[0]).toMatchObject({
+      status: 'failed',
+      last_error: expect.stringContaining('usable live battle message id'),
+    });
+  });
+
+  it('releases a claim only after an explicit Discord rejection, then can redeliver', async () => {
+    const row = subscription('sub-reject', 'guild-reject', 'channel-reject', 'user-reject');
+    const item = battle('2026-11-22T11:52:00.000Z', 'victory');
+    const api = { getBattleLog: vi.fn(async () => [item]) } as unknown as BrawlStarsClient;
+    const ledger = createLedger();
+    const send = vi.fn()
+      .mockRejectedValueOnce({ status: 403, message: 'Missing Access' })
+      .mockResolvedValueOnce({ id: 'rejected-then-sent' });
+    const { db } = createDb((call) => {
+      const ledgerResult = ledger.respond(call);
+      if (ledgerResult !== undefined) return ledgerResult;
+      const storedResult = storedBattles(call);
+      if (storedResult !== undefined) return storedResult;
+      const { table, op } = call;
+      if (table === 'guild_live_subscriptions' && op === 'select') return { data: [row], error: null };
+      if (table === 'players' && op === 'select') return { data: [PLAYER], error: null };
+      if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
+      return { data: null, error: null };
+    });
+    const client = channelClient(row.channel_id, row.guild_id, send);
+
+    const first = await runLiveBattlePoll(client, { db: db as never, api, now: NOW });
+    expect(first.delivered).toBe(0);
+    expect(ledger.rows.size).toBe(0);
+    expect(ledger.releases).toHaveLength(1);
+
+    const second = await runLiveBattlePoll(client, { db: db as never, api, now: NOW });
+    expect(second.delivered).toBe(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(ledger.rows.get(`${row.id}|${battleKey(item)}`)).toMatchObject({
+      discord_message_id: 'rejected-then-sent',
+    });
+  });
+
+  it('keeps a claim after a timeout and does not repost on the next poll', async () => {
+    const row = subscription('sub-timeout', 'guild-timeout', 'channel-timeout', 'user-timeout');
+    const item = battle('2026-11-22T11:53:00.000Z', 'victory');
+    const key = battleKey(item);
+    const api = { getBattleLog: vi.fn(async () => [item]) } as unknown as BrawlStarsClient;
+    const ledger = createLedger();
+    const send = vi.fn()
+      .mockRejectedValueOnce({ code: 'ETIMEDOUT', message: 'request timed out' })
+      .mockResolvedValueOnce({ id: 'unexpected-second-send' });
+    const { db, calls } = createDb((call) => {
+      const ledgerResult = ledger.respond(call);
+      if (ledgerResult !== undefined) return ledgerResult;
+      const storedResult = storedBattles(call);
+      if (storedResult !== undefined) return storedResult;
+      const { table, op } = call;
+      if (table === 'guild_live_subscriptions' && op === 'select') return { data: [row], error: null };
+      if (table === 'players' && op === 'select') return { data: [PLAYER], error: null };
+      if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
+      return { data: null, error: null };
+    });
+    const client = channelClient(row.channel_id, row.guild_id, send);
+
+    await runLiveBattlePoll(client, { db: db as never, api, now: NOW });
+    const claim = ledger.rows.get(`${row.id}|${key}`);
+    expect(String(claim?.discord_message_id)).toMatch(/^claim:/);
+    expect(ledger.releases).toEqual([]);
+
+    await runLiveBattlePoll(client, { db: db as never, api, now: NOW });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(ledger.updates).toEqual([]);
+    expect(ledger.rows.get(`${row.id}|${key}`)).toEqual(claim);
+    expect(pollInserts(calls)).toHaveLength(2);
+  });
+
+  it('does not repost a durable claim left behind by a restarted process', async () => {
+    const row = subscription('sub-restart', 'guild-restart', 'channel-restart', 'user-restart');
+    const item = battle('2026-11-22T11:54:00.000Z', 'victory');
+    const key = battleKey(item);
+    const api = { getBattleLog: vi.fn(async () => [item]) } as unknown as BrawlStarsClient;
+    const ledger = createLedger();
+    ledger.rows.set(`${row.id}|${key}`, {
+      guild_id: row.guild_id,
+      subscription_id: row.id,
+      player_id: PLAYER.id,
+      battle_key: key,
+      discord_message_id: 'claim:previous-process:reserved',
+      delivered_at: NOW.toISOString(),
+    });
+    const send = vi.fn(async () => ({ id: 'should-not-happen' }));
+    const { db, calls } = createDb((call) => {
+      const ledgerResult = ledger.respond(call);
+      if (ledgerResult !== undefined) return ledgerResult;
+      const storedResult = storedBattles(call);
+      if (storedResult !== undefined) return storedResult;
+      const { table, op } = call;
+      if (table === 'guild_live_subscriptions' && op === 'select') return { data: [row], error: null };
+      if (table === 'players' && op === 'select') return { data: [PLAYER], error: null };
+      if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
+      return { data: null, error: null };
+    });
+
+    const outcome = await runLiveBattlePoll(
+      channelClient(row.channel_id, row.guild_id, send),
+      { db: db as never, api, now: NOW },
+    );
+
+    expect(send).not.toHaveBeenCalled();
+    expect(outcome.delivered).toBe(0);
+    expect(ledger.upserts).toEqual([]);
+    expect(calls.filter((call) => call.table === 'live_battle_deliveries' && call.op === 'update')).toEqual([]);
   });
 });
 

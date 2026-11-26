@@ -1,7 +1,7 @@
 import { createLogger } from '@brawlhub/logging';
 import { REST } from 'discord.js';
 import { getBotConfig } from '../config.js';
-import { postInactivityReports } from './inactivity.js';
+import { postInactivityReports, type InactivityDeliveryTarget } from './inactivity.js';
 import { REPORT_TYPES, type ReportType } from './period';
 import { readMissingReportDeliveries, runScheduledReports } from './service';
 
@@ -24,11 +24,15 @@ function safeScheduleError(error: unknown): string {
 }
 
 /** Auto-post the inactivity digest only at the UTC boundary; never on startup. */
-function runInactivitySafely(now: Date, onComplete: (succeeded: boolean) => void): void {
+function runInactivitySafely(
+  now: Date,
+  targets: readonly InactivityDeliveryTarget[],
+  onComplete: (succeeded: boolean) => void,
+): void {
   const token = getBotConfig().token;
   if (token === undefined) return;
   const rest = new REST({ version: '10' }).setToken(token);
-  void postInactivityReports(now, rest, token).then(
+  void postInactivityReports(now, rest, token, undefined, targets).then(
     (result) => {
       if (result.posted > 0) {
         logger.info('Inactivity reports posted', { posted: result.posted, failed: result.failed });
@@ -75,22 +79,25 @@ export function startReportsSchedule(): () => void {
   const tick = (): void => {
     const now = new Date();
     void readMissingReportDeliveries(now).then(
-      ({ periods, inactivityPeriodKey }) => {
+      ({ periods, inactivityTargets }) => {
         const retryable = periods
           .map((period) => period.type)
           .filter((type) => !inFlight.has(type));
         if (retryable.length > 0) launchReports(now, retryable, 'durable ledger check', true);
 
         if (
-          inactivityPeriodKey !== null &&
+          inactivityTargets.length > 0 &&
           getBotConfig().token !== undefined &&
           !inactivityInFlight
         ) {
           inactivityInFlight = true;
-          runInactivitySafely(now, (succeeded) => {
+          runInactivitySafely(now, inactivityTargets, (succeeded) => {
             inactivityInFlight = false;
             if (succeeded) {
-              logger.debug('Inactivity delivery state refreshed', { periodKey: inactivityPeriodKey });
+              logger.debug('Inactivity delivery state refreshed', {
+                periodKey: inactivityTargets[0]?.periodKey,
+                targets: inactivityTargets.length,
+              });
             }
           });
         }

@@ -23,6 +23,7 @@ interface FakeDb {
   readonly rpcs: Array<{ readonly name: string; readonly args: Record<string, unknown> }>;
   rpcResult: Response;
   readonly authDeletes: string[];
+  setRpcQueue(results: readonly Response[]): void;
   setAuthDeleteResult(result: unknown): void;
   setAuthDeleteError(error: unknown): void;
 }
@@ -34,6 +35,7 @@ function fakeDb(tables: Record<string, TableResponse>): FakeDb {
   let authDeleteResult: unknown = { data: { user: {} }, error: null };
   let authDeleteError: unknown = undefined;
   const fakeDbState: { rpcResult: Response } = { rpcResult: { data: true, error: null } };
+  let rpcQueue: Response[] = [];
   const selectCursors: Record<string, number> = {};
 
   function nextSelect(table: string): Response {
@@ -117,7 +119,7 @@ function fakeDb(tables: Record<string, TableResponse>): FakeDb {
       },
       async rpc(name: string, args: Record<string, unknown>) {
         rpcs.push({ name, args });
-        return fakeDbState.rpcResult;
+        return rpcQueue.shift() ?? fakeDbState.rpcResult;
       },
       auth: {
         admin: {
@@ -136,6 +138,9 @@ function fakeDb(tables: Record<string, TableResponse>): FakeDb {
     },
     set rpcResult(result: Response) {
       fakeDbState.rpcResult = result;
+    },
+    setRpcQueue(results: readonly Response[]) {
+      rpcQueue = [...results];
     },
     authDeletes,
     setAuthDeleteResult(result: unknown) {
@@ -317,30 +322,28 @@ function staffLink(
   tag: string,
   discordUserId: string,
   isMain: boolean,
+  verifiedAt = '2026-11-19T00:00:00.000Z',
 ): Record<string, unknown> {
   return {
-    id,
+    verification_id: id,
     player_id: `player-${id}`,
     is_main: isMain,
     method: 'manual_staff',
-    verified_at: '2026-11-19T00:00:00.000Z',
-    player: { tag, name: `Player ${id}` },
-    profile: { discord_user_id: discordUserId, username: `user-${id}` },
+    verified_at: verifiedAt,
+    tag,
+    name: `Player ${id}`,
+    discord_user_id: discordUserId,
+    username: `user-${id}`,
   };
 }
 
 describe('listGuildVerifiedLinks', () => {
-  it('only returns links for players in clubs registered to the guild', async () => {
-    const db = fakeDb({
-      clubs: { select: { data: [{ id: 'club-1' }], error: null } },
-      club_memberships: { select: { data: [{ player_id: 'player-v1' }], error: null } },
-      player_verifications: {
-        select: {
-          data: [staffLink('v1', 'YQPQ0Q2CL', '983248496884875286', true)],
-          error: null,
-        },
-      },
-    });
+  it('reads guild eligibility from one bounded RPC instead of capped table scans', async () => {
+    const db = fakeDb({});
+    db.rpcResult = {
+      data: [staffLink('v1', 'YQPQ0Q2CL', '983248496884875286', true)],
+      error: null,
+    };
 
     const result = await listGuildVerifiedLinks('guild-1', { db: db.client });
 
@@ -352,14 +355,53 @@ describe('listGuildVerifiedLinks', () => {
         method: 'manual_staff',
       }),
     ]);
+    expect(db.rpcs).toEqual([
+      {
+        name: 'list_guild_verified_links',
+        args: {
+          p_guild_id: 'guild-1',
+          p_limit: 500,
+          p_after_verified_at: null,
+          p_after_id: null,
+        },
+      },
+    ]);
   });
 
-  it('returns an empty list when the guild has no registered clubs', async () => {
-    const db = fakeDb({ clubs: { select: { data: [], error: null } } });
+  it('returns an empty list when the guild scope resolves to no links', async () => {
+    const db = fakeDb({});
+    db.rpcResult = { data: [], error: null };
+
+    await expect(listGuildVerifiedLinks('guild-1', { db: db.client })).resolves.toEqual([]);
+    await expect(listGuildVerifiedLinks('   ', { db: db.client })).resolves.toEqual([]);
+    expect(db.rpcs).toHaveLength(1);
+  });
+
+  it('paginates keysets instead of truncating at the row cap', async () => {
+    const db = fakeDb({});
+    const firstPage = Array.from({ length: 500 }, (_, index) =>
+      staffLink(
+        `v-${500 - index}`,
+        'YQPQ0Q2CL',
+        '983248496884875286',
+        false,
+        new Date(Date.parse('2026-11-30T00:00:00.000Z') - index * 60_000).toISOString(),
+      ),
+    );
+    const lastPage = [
+      staffLink('v-0', 'YQPQ0Q2CL', '983248496884875286', false, '2026-11-01T00:00:00.000Z'),
+    ];
+    db.setRpcQueue([
+      { data: firstPage, error: null },
+      { data: lastPage, error: null },
+    ]);
 
     const result = await listGuildVerifiedLinks('guild-1', { db: db.client });
 
-    expect(result).toEqual([]);
+    expect(result).toHaveLength(501);
+    expect(db.rpcs).toHaveLength(2);
+    expect(db.rpcs[1]?.args['p_limit']).toBe(500);
+    expect(db.rpcs[1]?.args['p_after_id']).toBe('v-1');
   });
 });
 

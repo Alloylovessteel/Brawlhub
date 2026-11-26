@@ -744,6 +744,37 @@ describe('sync status service', () => {
     expect(status.lock.active).toBe(true);
   });
 
+  it('selects the newest attempt when a period has several sync runs', async () => {
+    setHandler('sync_runs:select', (call) => ({
+      data:
+        call.orderBy?.column === 'started_at'
+          ? {
+              id: 'run-forced',
+              status: 'failed',
+              period_start: '2026-11-18T00:00:00.000Z',
+              started_at: '2026-11-18T00:10:00.000Z',
+              finished_at: '2026-11-18T00:12:00.000Z',
+              error: 'forced attempt failed',
+              records_processed: 3,
+            }
+          : {
+              id: 'run-1',
+              status: 'completed',
+              period_start: '2026-11-18T00:00:00.000Z',
+              started_at: '2026-11-18T00:00:01.000Z',
+              finished_at: '2026-11-18T00:05:00.000Z',
+              error: null,
+              records_processed: 12,
+            },
+    }));
+    setHandler('sync_locks:select', () => ({ data: [] }));
+
+    const status = await loadSyncStatus();
+
+    expect(status.latestRun?.id).toBe('run-forced');
+    expect(status.latestRun?.status).toBe('failed');
+  });
+
   it('treats an expired lock as inactive', async () => {
     setHandler('sync_runs:select', () => ({ data: null }));
     setHandler('sync_locks:select', () => ({

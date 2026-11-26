@@ -145,7 +145,17 @@ vi.mock('@brawlhub/database', () => {
     }
   }
 
-  return { createTrustedClient: () => ({ from: (table: string) => new FakeQuery(table) }) };
+  return {
+    createTrustedClient: () => ({
+      from: (table: string) => new FakeQuery(table),
+      async rpc(name: string, args: Record<string, unknown>) {
+        fake.rpcCalls.push({ name, args });
+        const handler = fake.handlers[`rpc:${name}`];
+        const result = handler === undefined ? {} : await handler(args as unknown as Call);
+        return { data: result.data ?? [], error: result.error ?? null };
+      },
+    }),
+  };
 });
 
 vi.mock('../../admin/service', () => {
@@ -195,9 +205,15 @@ interface Call {
 
 type Handler = (call: Call) => { data?: unknown; error?: unknown } | Promise<{ data?: unknown; error?: unknown }>;
 
+interface RpcCall {
+  readonly name: string;
+  readonly args: Record<string, unknown>;
+}
+
 const fake = vi.hoisted(() => ({
   handlers: {} as Record<string, Handler | undefined>,
   calls: [] as Call[],
+  rpcCalls: [] as RpcCall[],
 }));
 
 function actor(): AdminActor {
@@ -236,9 +252,30 @@ function callsFor(table: string, operation?: Call['operation']): Call[] {
   );
 }
 
+function setDeliveredKeys(keys: readonly (readonly [kind: string, id: string])[]): void {
+  setHandler('rpc:club_log_delivered_keys', (call) => {
+    const args = call as unknown as { readonly p_candidate_keys?: unknown };
+    const candidates = Array.isArray(args.p_candidate_keys)
+      ? args.p_candidate_keys as Array<{ readonly kind?: unknown; readonly id?: unknown }>
+      : [];
+    return {
+      data: candidates
+        .filter((candidate) => {
+          const kind = typeof candidate.kind === 'string' ? candidate.kind : '';
+          const id = typeof candidate.id === 'string' ? candidate.id : '';
+          return keys.some(([expectedKind, expectedId]) =>
+            expectedKind === kind && expectedId === id,
+          );
+        })
+        .map((candidate) => ({ event_kind: candidate.kind, event_id: candidate.id })),
+    };
+  });
+}
+
 beforeEach(() => {
   fake.handlers = {};
   fake.calls = [];
+  fake.rpcCalls = [];
   mocks.recordAdminAudit.mockReset();
   mocks.recordAdminAudit.mockResolvedValue(undefined);
 });
@@ -315,17 +352,10 @@ describe('loadUndeliveredClubLogEvents', () => {
   });
 
   it('skips delivered events and maps membership, role and capacity descriptions', async () => {
-    setHandler('guild_club_log_deliveries:select', (call) => {
-      expect(call.filters['guild_id']).toBe(GUILD_ID);
-      expect(call.filters['log_id']).toBe(LOG_ID);
-      expect(call.filters['period']).toBe('today');
-      return {
-        data: [
-          { event_kind: 'membership', event_id: 'm1' },
-          { event_kind: 'role', event_id: 'r1' },
-        ],
-      };
-    });
+    setDeliveredKeys([
+      ['membership', 'm1'],
+      ['role', 'r1'],
+    ]);
     setHandler('membership_events:select', (call) => {
       expect(call.orValue).toBe(`from_club_id.eq.${CLUB_ID},to_club_id.eq.${CLUB_ID}`);
       expect(call.gteValue).toBeNull();
@@ -424,10 +454,21 @@ describe('loadUndeliveredClubLogEvents', () => {
       'capacity',
       'capacity',
     ]);
+    expect(callsFor('guild_club_log_deliveries', 'select')).toHaveLength(0);
+    const rpcCalls = fake.rpcCalls.filter((call) => call.name === 'club_log_delivered_keys');
+    expect(rpcCalls).toHaveLength(3);
+    for (const call of rpcCalls) {
+      expect(call.args['p_guild_id']).toBe(GUILD_ID);
+      expect(call.args['p_log_id']).toBe(LOG_ID);
+      expect(call.args['p_period']).toBe('today');
+      expect(call.args['p_limit']).toBe(500);
+      expect(Array.isArray(call.args['p_candidate_keys'])).toBe(true);
+      expect((call.args['p_candidate_keys'] as unknown[]).length).toBeLessThanOrEqual(500);
+    }
   });
 
   it('includes stored events that predate the subscription so a new log can backfill history', async () => {
-    setHandler('guild_club_log_deliveries:select', () => ({ data: [] }));
+    setDeliveredKeys([]);
     setHandler('membership_events:select', (call) => {
       expect(call.gteValue).toBeNull();
       return {
@@ -462,9 +503,7 @@ describe('loadUndeliveredClubLogEvents', () => {
       is_full: true,
       detected_at: new Date(Date.parse('2026-11-20T12:00:00.000Z') + index * 60_000).toISOString(),
     }));
-    setHandler('guild_club_log_deliveries:select', () => ({
-      data: rows.slice(0, 100).map((row) => ({ event_kind: 'capacity', event_id: row.id })),
-    }));
+    setDeliveredKeys(rows.slice(0, 100).map((row) => ['capacity', row.id] as const));
     setHandler('membership_events:select', () => ({ data: [] }));
     setHandler('club_role_changes:select', () => ({ data: [] }));
     setHandler('club_capacity_events:select', (call) => {
@@ -477,6 +516,28 @@ describe('loadUndeliveredClubLogEvents', () => {
     expect(groups[0]?.events.map((event) => event.id)).toEqual(['c100']);
   });
 
+  it('checks delivered keys per page instead of relying on a capped ledger read', async () => {
+    const rows = Array.from({ length: 1002 }, (_, index) => ({
+      id: `c${index}`,
+      from_count: 29,
+      to_count: 30,
+      is_full: true,
+      detected_at: new Date(Date.parse('2026-11-20T12:00:00.000Z') + index * 60_000).toISOString(),
+    }));
+    setDeliveredKeys(rows.slice(0, 1001).map((row) => ['capacity', row.id] as const));
+    setHandler('membership_events:select', () => ({ data: [] }));
+    setHandler('club_role_changes:select', () => ({ data: [] }));
+    setHandler('club_capacity_events:select', (call) => ({
+      data: rows.slice(call.range?.from ?? 0, (call.range?.to ?? 499) + 1),
+    }));
+
+    const groups = await loadUndeliveredClubLogEvents(GUILD_ID);
+
+    expect(groups[0]?.events.map((event) => event.id)).toEqual(['c1001']);
+    expect(fake.rpcCalls.filter((call) => call.name === 'club_log_delivered_keys')).toHaveLength(3);
+    expect(callsFor('guild_club_log_deliveries', 'select')).toHaveLength(0);
+  });
+
   it('loads changes once under the today key even when several trophy periods are subscribed', async () => {
     setHandler('guild_club_log_periods:select', () => ({
       data: [
@@ -485,10 +546,7 @@ describe('loadUndeliveredClubLogEvents', () => {
         { log_id: LOG_ID, period: 'season' },
       ],
     }));
-    setHandler('guild_club_log_deliveries:select', (call) => {
-      expect(call.filters['period']).toBe('today');
-      return { data: [] };
-    });
+    setDeliveredKeys([]);
     setHandler('membership_events:select', () => ({
       data: [
         {
@@ -509,11 +567,11 @@ describe('loadUndeliveredClubLogEvents', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]?.log.periods).toEqual(['today', 'week', 'season']);
     expect(groups[0]?.events.map((event) => event.id)).toEqual(['m1']);
-    expect(callsFor('guild_club_log_deliveries', 'select')).toHaveLength(1);
+    expect(fake.rpcCalls.filter((call) => call.name === 'club_log_delivered_keys')).toHaveLength(1);
   });
 
   it('caps each log at the 20 most recent events', async () => {
-    setHandler('guild_club_log_deliveries:select', () => ({ data: [] }));
+    setDeliveredKeys([]);
     setHandler('membership_events:select', () => ({ data: [] }));
     setHandler('club_role_changes:select', () => ({ data: [] }));
     setHandler('club_capacity_events:select', () => ({

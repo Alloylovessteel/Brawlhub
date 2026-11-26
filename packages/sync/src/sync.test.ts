@@ -355,6 +355,7 @@ function setupSuccessfulSync(options: {
         return { data: null };
       },
       'sync_runs:upsert': () => ({ data: [{ id: 'run-1' }] }),
+      'sync_runs:insert': () => ({ data: [{ id: 'run-forced' }] }),
       'sync_runs:update': () => ({ data: [{ id: 'run-1' }] }),
       'players:select': () => ({ data: { id: 'player-1', tag: 'G2P9', name: 'Player One' } }),
       'players:upsert': () => ({ data: [{ id: 'player-1' }] }),
@@ -564,9 +565,44 @@ describe('runSync', () => {
 
     const forced = await runSync({ now: T0, guildId: 'guild-test', force: true });
     expect(forced.status).toBe('completed');
-    expect(forced.syncRunId).toBe('run-1');
+    expect(forced.syncRunId).toBe('run-forced');
     expect(
-      callsFor('sync_runs', 'upsert').some((call) => call.payload.status === 'running'),
+      callsFor('sync_runs', 'insert').some(
+        (call) => call.payload.status === 'running' && call.payload.id === undefined,
+      ),
+    ).toBe(true);
+    expect(
+      callsFor('sync_runs', 'upsert').some(
+        (call) => call.payload.id === 'run-1' && call.payload.status === 'running',
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps the previous completed run when a forced attempt fails', async () => {
+    const state = setupSuccessfulSync();
+    state.runSelectCount = 0;
+    fake.state.handlers['sync_runs:select'] = () => ({
+      data: { id: 'run-1', status: 'completed', started_at: T0.toISOString() },
+    });
+    fake.api.current = apiClient({
+      getClub: async () => ({
+        tag: '#2C0Y',
+        name: 'Alpha',
+        trophies: 12_000,
+        memberCount: 30,
+      }),
+      getClubMembers: async () => [],
+    });
+
+    const forced = await runSync({ now: T0, guildId: 'guild-test', force: true });
+
+    expect(forced.status).toBe('failed');
+    expect(forced.syncRunId).toBe('run-forced');
+    expect(
+      callsFor('sync_runs', 'update').every((call) => call.filters['id'] !== 'run-1'),
+    ).toBe(true);
+    expect(
+      callsFor('sync_runs', 'upsert').every((call) => call.payload.id !== 'run-1'),
     ).toBe(true);
   });
 
@@ -898,6 +934,85 @@ describe('runSync', () => {
     expect(result.status).toBe('completed');
     expect(sends).toBe(0);
     expect(callsFor('rpc:claim_notification', 'select')).toHaveLength(1);
+  });
+
+  it('keeps notifications retryable when the notifier fails or returns no message ID', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([
+      unsentEvent('event-retry'),
+    ]);
+    fake.state.handlers['notifications:select'] = () => ({ data: [] });
+    fake.state.handlers['rpc:claim_notification'] = (call) => ({
+      data: `claim-${String((call.payload as { p_event_id: string }).p_event_id)}`,
+    });
+    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+
+    let sends = 0;
+    let sendMode: 'throw' | 'undefined' | 'sent' = 'throw';
+    const notifier = {
+      channelId: 'channel-1',
+      send: async () => {
+        sends += 1;
+        if (sendMode === 'throw') throw new Error('Discord is down');
+        if (sendMode === 'undefined') return undefined;
+        return 'message-retry';
+      },
+    };
+
+    const failed = await runSync({ now: T0, guildId: 'guild-test', notifier });
+    expect(failed.status).toBe('completed');
+    expect(failed.notificationsSent).toBe(0);
+    expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
+      delivery_status: 'failed',
+    });
+
+    sendMode = 'undefined';
+    const skipped = await runSync({ now: T0, guildId: 'guild-test', notifier });
+    expect(skipped.notificationsSent).toBe(0);
+    expect(callsFor('notifications', 'update').some((call) =>
+      call.payload.delivery_status === 'sent' &&
+      call.payload.discord_message_id === null,
+    )).toBe(false);
+    expect(callsFor('notifications', 'update')[1]?.payload).toMatchObject({
+      delivery_status: 'failed',
+    });
+
+    sendMode = 'sent';
+    const delivered = await runSync({ now: T0, guildId: 'guild-test', notifier });
+    expect(delivered.notificationsSent).toBe(1);
+    expect(sends).toBe(3);
+    expect(callsFor('notifications', 'update').at(-1)?.payload).toMatchObject({
+      delivery_status: 'sent',
+      discord_message_id: 'message-retry',
+    });
+  });
+
+  it('delivers a paginated backlog oldest-first', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([
+      unsentEvent('event-new', { offsetMs: 0 }),
+      unsentEvent('event-old', { offsetMs: 6_000 }),
+      unsentEvent('event-mid', { offsetMs: 3_000 }),
+    ]);
+    fake.state.handlers['notifications:select'] = () => ({ data: [] });
+    fake.state.handlers['rpc:claim_notification'] = (call) => ({
+      data: `claim-${String((call.payload as { p_event_id: string }).p_event_id)}`,
+    });
+    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+
+    const delivered: string[] = [];
+    const notifier = {
+      channelId: 'channel-1',
+      send: async (input: { eventId: string }) => {
+        delivered.push(input.eventId);
+        return `message-${input.eventId}`;
+      },
+    };
+
+    const result = await runSync({ now: T0, guildId: 'guild-test', notifier });
+
+    expect(result.notificationsSent).toBe(3);
+    expect(delivered).toEqual(['event-old', 'event-mid', 'event-new']);
   });
 
   it('renews the sync lock while a long run is in progress', async () => {

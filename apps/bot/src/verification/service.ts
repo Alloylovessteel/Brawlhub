@@ -275,77 +275,86 @@ export interface RegisteredLinkView extends LinkedAccountView {
   readonly discordUsername: string | null;
 }
 
-const STAFF_LINK_SELECT =
-  'id, player_id, is_main, method, verified_at, ' +
-  'player:players!player_verifications_player_id_fkey(tag, name), ' +
-  'profile:profiles!player_verifications_profile_id_fkey(discord_user_id, username)';
+/** Page size below PostgREST's max_rows (1000). */
+const GUILD_LINK_PAGE_SIZE = 500;
 
-/** Player IDs with an open membership in a club registered to this guild. */
-async function readGuildPlayerIds(guildId: string, db: SupabaseClient): Promise<string[]> {
-  if (guildId.trim() === '') return [];
-  const { data: clubs, error: clubsError } = await db
-    .from('clubs')
-    .select('id')
-    .eq('guild_id', guildId.trim())
-    .is('archived_at', null);
-  requireOk(clubsError, 'Read guild clubs for link lookup');
-  const clubIds = (clubs ?? [])
-    .map((row: unknown) =>
-      row !== null && typeof row === 'object' ? asString((row as Record<string, unknown>).id) : null,
-    )
-    .filter((id): id is string => id !== null);
-  if (clubIds.length === 0) return [];
-
-  const { data: memberships, error: membershipError } = await db
-    .from('club_memberships')
-    .select('player_id')
-    .in('club_id', clubIds)
-    .is('valid_to', null);
-  requireOk(membershipError, 'Read guild club memberships for link lookup');
-  return (memberships ?? [])
-    .map((row: unknown) =>
-      row !== null && typeof row === 'object'
-        ? asString((row as Record<string, unknown>).player_id)
-        : null,
-    )
-    .filter((id): id is string => id !== null);
+function parseGuildLinkRow(value: unknown): RegisteredLinkView | null {
+  if (value === null || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const verificationId = asString(row.verification_id);
+  const playerId = asString(row.player_id);
+  const discordUserId = asString(row.discord_user_id);
+  if (verificationId === null || playerId === null || discordUserId === null) return null;
+  const parsedTag = brawlTagSchema.safeParse(asString(row.tag) ?? '');
+  if (!parsedTag.success) return null;
+  return {
+    verificationId,
+    playerId,
+    discordUserId,
+    discordUsername: asString(row.username),
+    tag: parsedTag.data,
+    name: asString(row.name),
+    isMain: row.is_main === true,
+    method: asString(row.method) ?? 'api_snapshot',
+    verifiedAt: asString(row.verified_at),
+  };
 }
 
-/** List active verification links for players in clubs registered to one guild. */
+function linkCursorTime(value: string | null): number {
+  return value === null ? Number.NEGATIVE_INFINITY : Date.parse(value);
+}
+
+/**
+ * List active verification links for players in clubs registered to one guild.
+ * Guild scope, open membership eligibility and keyset paging all live in the
+ * service-role-only RPC, so a capped REST read cannot hide eligible links.
+ */
 export async function listGuildVerifiedLinks(
   guildId: string,
   options: { db?: SupabaseClient } = {},
 ): Promise<RegisteredLinkView[]> {
+  if (guildId.trim() === '') return [];
   const db = options.db ?? createTrustedClient();
-  const playerIds = await readGuildPlayerIds(guildId, db);
-  if (playerIds.length === 0) return [];
+  const links: RegisteredLinkView[] = [];
+  let afterVerifiedAt: string | null = null;
+  let afterId: string | null = null;
 
-  const { data, error } = await db
-    .from('player_verifications')
-    .select(STAFF_LINK_SELECT)
-    .eq('status', 'active')
-    .in('player_id', playerIds)
-    .order('verified_at', { ascending: false });
-  requireOk(error, 'Read guild verification links');
-  if (!Array.isArray(data)) return [];
+  for (;;) {
+    const result: { data: unknown; error: unknown } = await db.rpc('list_guild_verified_links', {
+      p_guild_id: guildId,
+      p_limit: GUILD_LINK_PAGE_SIZE,
+      p_after_verified_at: afterVerifiedAt,
+      p_after_id: afterId,
+    });
+    requireOk(result.error, 'Read guild verification links');
+    const page: unknown[] = Array.isArray(result.data) ? result.data : [];
+    for (const value of page) {
+      const link = parseGuildLinkRow(value);
+      if (link !== null) links.push(link);
+    }
+    if (page.length < GUILD_LINK_PAGE_SIZE) break;
 
-  return data.flatMap((value): RegisteredLinkView[] => {
-    const link = parseLinkRow(value);
-    if (link === null) return [];
-    const row = value as unknown as Record<string, unknown>;
-    const profile = row.profile;
-    if (profile === null || typeof profile !== 'object') return [];
-    const profileRow = profile as Record<string, unknown>;
-    const discordUserId = asString(profileRow.discord_user_id);
-    const playerId = asString(row.player_id);
-    if (discordUserId === null || playerId === null) return [];
-    return [{
-      ...link,
-      playerId,
-      discordUserId,
-      discordUsername: asString(profileRow.username),
-    }];
-  });
+    const last = page.at(-1);
+    const lastRow = last !== undefined && typeof last === 'object'
+      ? last as Record<string, unknown>
+      : null;
+    const nextId = lastRow === null ? null : asString(lastRow.verification_id);
+    const nextAt = lastRow === null ? null : asString(lastRow.verified_at);
+    if (nextId === null) throw new Error('Read guild verification links: missing keyset');
+    if (
+      afterId !== null &&
+      !(
+        linkCursorTime(nextAt) < linkCursorTime(afterVerifiedAt) ||
+        (linkCursorTime(nextAt) === linkCursorTime(afterVerifiedAt) && nextId < afterId)
+      )
+    ) {
+      throw new Error('Read guild verification links: non-monotonic keyset');
+    }
+    afterVerifiedAt = nextAt;
+    afterId = nextId;
+  }
+
+  return links;
 }
 
 export type ManualLinkResult =

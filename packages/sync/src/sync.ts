@@ -808,13 +808,23 @@ function runPayload(
   return payload;
 }
 
+async function insertRun(
+  db: SupabaseClient,
+  payload: Record<string, unknown>,
+): Promise<{ data: unknown; error: unknown }> {
+  const result = await db.from('sync_runs').insert(payload).select('id').single();
+  return { data: result.data, error: result.error };
+}
+
 async function upsertRun(
   db: SupabaseClient,
   payload: Record<string, unknown>,
 ): Promise<{ data: unknown; error: unknown }> {
+  // A retry updates one specific run row. New attempts are inserted instead,
+  // so a previous completed run is never reused as a running/failed attempt.
   const result = await db
     .from('sync_runs')
-    .upsert(payload, { onConflict: 'scope,period_start' })
+    .upsert(payload, { onConflict: 'id' })
     .select('id')
     .single();
   return { data: result.data, error: result.error };
@@ -830,11 +840,16 @@ async function acquireRun(
   clubTags: readonly string[],
   force: boolean,
 ): Promise<AcquireOutcome> {
+  // Several attempts can share one scope/period after a forced sync. Always
+  // inspect the newest attempt; a forced run creates another row and leaves
+  // the previously published completed row untouched.
   const existingResult = await db
     .from('sync_runs')
     .select('id, status, started_at')
     .eq('scope', scope)
     .eq('period_start', periodStartIso)
+    .order('started_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
   requireOk(existingResult.error, 'Read sync_runs');
   const existing = (existingResult.data ?? null) as RunRow | null;
@@ -856,16 +871,20 @@ async function acquireRun(
     log.warn('Reusing stale sync run', { syncRunId: existing.id });
   }
 
+  // Force starts a separate attempt. Reuse is reserved for failed/stale rows
+  // on the normal path, where the run id is part of the event idempotency key.
+  const reusedId = force ? undefined : existing?.id;
+  const writeRun = force ? insertRun : upsertRun;
   let affectedColumns = true;
-  let result = await upsertRun(
+  let result = await writeRun(
     db,
-    runPayload(existing?.id, scope, periodStartIso, nowIso, clubIds, clubTags, true),
+    runPayload(reusedId, scope, periodStartIso, nowIso, clubIds, clubTags, true),
   );
   if (result.error !== null && result.error !== undefined && isUndefinedColumnError(result.error)) {
     affectedColumns = false;
-    result = await upsertRun(
+    result = await writeRun(
       db,
-      runPayload(existing?.id, scope, periodStartIso, nowIso, clubIds, clubTags, false),
+      runPayload(reusedId, scope, periodStartIso, nowIso, clubIds, clubTags, false),
     );
   }
   requireOk(result.error, 'Acquire sync run');
@@ -1336,7 +1355,9 @@ async function readPendingEvents(
     beforeId = lastCursor.id;
   }
 
-  return collected;
+  // The RPC pages newest-first so keyset cursors stay stable. Deliver the
+  // backlog oldest-first so a long backlog does not starve its oldest events.
+  return collected.reverse();
 }
 
 type NotificationDeliveryStatus = 'pending' | 'sent' | 'failed';
@@ -1490,6 +1511,32 @@ async function recordCapacityEvent(db: SupabaseClient, input: CapacityEventInput
   requireOk(result.error, `Write club capacity event for ${input.clubId}`);
 }
 
+async function markNotificationClaimFailed(
+  db: SupabaseClient,
+  claimId: string,
+  ownerId: string,
+  error: unknown,
+): Promise<void> {
+  // Mark the claim as failed instead of deleting it: a later run can reuse the
+  // row, and a delivered claim is never confused with an interrupted one.
+  const failed = await db
+    .from('notifications')
+    .update({ delivery_status: 'failed' })
+    .eq('id', claimId)
+    .eq('delivery_owner', ownerId)
+    .eq('delivery_status', 'pending');
+  if (failed.error !== null && failed.error !== undefined) {
+    log.warn('Could not mark notification claim failed', {
+      eventId: claimId,
+      reason: sanitizeError(failed.error),
+    });
+  }
+  log.warn('Notification delivery failed; claim marked for retry', {
+    eventId: claimId,
+    reason: sanitizeError(error),
+  });
+}
+
 async function sendNotifications(
   db: SupabaseClient,
   notifier: SyncNotifier,
@@ -1522,40 +1569,36 @@ async function sendNotifications(
       continue; // Already delivered or leased by another live run.
     }
 
+    let messageId: string | undefined;
     try {
-      const messageId = await withTimeout(notifier.send(input), timeoutMs, 'notifier.send');
-      const update = await db
-        .from('notifications')
-        .update({
-          delivery_status: 'sent',
-          discord_message_id: messageId ?? null,
-          delivered_at: new Date().toISOString(),
-        })
-        .eq('id', claimId)
-        .eq('delivery_owner', ownerId)
-        .eq('delivery_status', 'pending');
-      requireOk(update.error, 'Update notification claim');
-      sent += 1;
+      messageId = await withTimeout(notifier.send(input), timeoutMs, 'notifier.send');
     } catch (error) {
-      // Mark the claim as failed instead of deleting it: a later run can reuse
-      // the row, and a delivered claim is never confused with an interrupted one.
-      const failed = await db
-        .from('notifications')
-        .update({ delivery_status: 'failed' })
-        .eq('id', claimId)
-        .eq('delivery_owner', ownerId)
-        .eq('delivery_status', 'pending');
-      if (failed.error !== null && failed.error !== undefined) {
-        log.warn('Could not mark notification claim failed', {
-          eventId: input.eventId,
-          reason: sanitizeError(failed.error),
-        });
-      }
-      log.warn('Notification delivery failed; claim marked for retry', {
-        eventId: input.eventId,
-        reason: sanitizeError(error),
-      });
+      await markNotificationClaimFailed(db, claimId, ownerId, error);
+      continue;
     }
+    if (typeof messageId !== 'string' || messageId.trim() === '') {
+      // A skipped or failed notifier did not send anything. `undefined` must
+      // never be persisted as a delivered notification.
+      await markNotificationClaimFailed(
+        db,
+        claimId,
+        ownerId,
+        new Error('Notifier returned no Discord message ID'),
+      );
+      continue;
+    }
+    const update = await db
+      .from('notifications')
+      .update({
+        delivery_status: 'sent',
+        discord_message_id: messageId,
+        delivered_at: new Date().toISOString(),
+      })
+      .eq('id', claimId)
+      .eq('delivery_owner', ownerId)
+      .eq('delivery_status', 'pending');
+    requireOk(update.error, 'Update notification claim');
+    sent += 1;
   }
   return sent;
 }

@@ -1,3 +1,4 @@
+import { createLogger } from '@brawlhub/logging';
 import { mdBold, mdCode, mdParagraphs } from '../discord/embed-format';
 import { EMBED_COLORS } from '../discord/embed-style';
 import {
@@ -7,10 +8,12 @@ import {
   type ChatInputCommandInteraction,
 } from 'discord.js';
 import { respondToAutocomplete } from '../discord/errors.js';
+import { refreshGuildNicknameAfterLinkChange } from '../nickname-sync/service.js';
 import { listLinkedAccounts, setMainVerification } from '../verification/index.js';
 
 const COMMAND_NAME = 'accounts';
 const EMBED_COLOR = EMBED_COLORS.player;
+const logger = createLogger('bot/accounts');
 
 export const accountsCommandData = new SlashCommandBuilder()
   .setName(COMMAND_NAME)
@@ -68,6 +71,27 @@ function accountsEmbed(
     .setFooter({ text: `${accounts.length} linked • ${mainCount} main • the rest are alts` });
 }
 
+async function syncNicknameAfterSetMain(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  if (interaction.guild == null || interaction.guildId == null) return;
+  try {
+    await refreshGuildNicknameAfterLinkChange(
+      interaction.client,
+      interaction.guildId,
+      interaction.user.id,
+      { source: 'accounts-set-main' },
+    );
+  } catch (error) {
+    // A nickname failure must never change the set-main outcome.
+    logger.warn('Nickname refresh after set-main failed', {
+      guildId: interaction.guildId,
+      discordUserId: interaction.user.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export async function handleAccounts(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: 64 });
   const accounts = await listLinkedAccounts(interaction.user.id);
@@ -98,6 +122,7 @@ export async function handleAccounts(interaction: ChatInputCommandInteraction): 
       embeds: [accountsEmbed(refreshed)],
       allowedMentions: { parse: [] },
     });
+    await syncNicknameAfterSetMain(interaction);
     return;
   }
 

@@ -1,3 +1,4 @@
+import { createLogger } from '@brawlhub/logging';
 import { mdBold, mdCode, mdList } from '../discord/embed-format';
 import { EMBED_COLORS } from '../discord/embed-style';
 import {
@@ -15,6 +16,7 @@ import {
 } from '../discord/confirmation-components.js';
 import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { getInteractionMemberRoleIds } from '../discord/permissions.js';
+import { refreshGuildNicknameAfterLinkChange } from '../nickname-sync/service.js';
 import { notifyVerificationCompleted } from '../operator-notifier.js';
 import {
   linkPlayerManually,
@@ -25,6 +27,31 @@ import {
 } from '../verification/index.js';
 
 const EMBED_COLOR = EMBED_COLORS.neutral;
+const logger = createLogger('bot/admin-identity');
+
+async function syncNicknameAfterLinkMutation(
+  interaction: ChatInputCommandInteraction | CommandComponentInteraction,
+  discordUserId: string,
+  source: string,
+): Promise<void> {
+  if (interaction.guildId == null) return;
+  try {
+    await refreshGuildNicknameAfterLinkChange(
+      interaction.client,
+      interaction.guildId,
+      discordUserId,
+      { source },
+    );
+  } catch (error) {
+    // Nickname cleanup is best-effort and never changes the staff action outcome.
+    logger.warn('Nickname refresh after link mutation failed', {
+      guildId: interaction.guildId,
+      discordUserId,
+      source,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 async function postVerificationOperatorNotice(
   interaction: ChatInputCommandInteraction,
@@ -215,6 +242,7 @@ export async function handleTag(interaction: ChatInputCommandInteraction): Promi
       playerTag: result.account.tag,
       discordUserId: user.id,
     });
+    await syncNicknameAfterLinkMutation(interaction, user.id, 'staff-link');
   } catch (error) {
     await replyAdminError(interaction, error);
   }
@@ -328,6 +356,7 @@ export async function handleUnverifyOneComponent(interaction: CommandComponentIn
       embeds: [],
       allowedMentions: { parse: [] },
     });
+    await syncNicknameAfterLinkMutation(interaction, pending.discordUserId, 'unverify-one');
   } catch (error) {
     await replyAdminError(interaction, error);
   }
@@ -395,6 +424,7 @@ export async function handleUnverifyAllComponent(interaction: CommandComponentIn
       embeds: [],
       allowedMentions: { parse: [] },
     });
+    await syncNicknameAfterLinkMutation(interaction, pending.discordUserId, 'unverify-all');
   } catch (error) {
     await replyAdminError(interaction, error);
   }

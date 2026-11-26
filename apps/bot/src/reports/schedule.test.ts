@@ -13,9 +13,20 @@ const mocks = vi.hoisted(() => ({
       channelId: string;
       period: { type: 'daily' | 'weekly' | 'monthly'; periodKey: string };
     }>,
+    inactivityTargets: [] as Array<{
+      guildId: string;
+      channelId: string;
+      periodKey: string;
+    }>,
     inactivityPeriodKey: null as string | null,
   })),
-  postInactivityReports: vi.fn(async (_now: Date, _rest?: unknown, _token?: string | undefined) => ({
+  postInactivityReports: vi.fn(async (
+    _now: Date,
+    _rest?: unknown,
+    _token?: string | undefined,
+    _db?: unknown,
+    _targets?: readonly { guildId: string; channelId: string; periodKey: string }[],
+  ) => ({
     posted: 0,
     failed: 0,
   })),
@@ -48,6 +59,14 @@ function missing(types: readonly ReportType[], inactivityPeriodKey: string | nul
       channelId: '222222222222222222',
       period: { type, periodKey: `${type}-period` },
     })),
+    inactivityTargets:
+      inactivityPeriodKey === null
+        ? []
+        : [{
+            guildId: '111111111111111111',
+            channelId: '222222222222222222',
+            periodKey: inactivityPeriodKey,
+          }],
     inactivityPeriodKey,
   };
 }
@@ -229,6 +248,13 @@ describe('inactivity report schedule', () => {
 
     expect(mocks.postInactivityReports).toHaveBeenCalledOnce();
     expect(mocks.postInactivityReports.mock.calls[0]?.[0]).toEqual(expect.any(Date));
+    expect(mocks.postInactivityReports.mock.calls[0]?.[4]).toEqual([
+      {
+        guildId: '111111111111111111',
+        channelId: '222222222222222222',
+        periodKey: '2026-11-19',
+      },
+    ]);
     stop();
   });
 

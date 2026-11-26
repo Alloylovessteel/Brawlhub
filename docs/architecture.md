@@ -60,11 +60,11 @@ An append-only, service-role-only event log that records how rosters changed:
 
 ## `sync_runs`
 
-One row per sync scope and period, used for auditing and concurrency control:
+One row per sync attempt, used for auditing and concurrency control:
 
 - Columns: `scope`, `period_start`, `status` (`running` / `completed` / `failed`), `started_at`, `finished_at`, `error`, `records_processed`.
-- **Unique constraint on `(scope, period_start)`** prevents duplicate run records for the same period.
-- **Advisory lock (sync runner design):** each sync acquires a Postgres transaction-scoped advisory lock keyed by `(scope, period_start)` before doing work, then re-checks the unique run row inside the lock. This serializes concurrent workers and makes restarts safe. The lock is applied by the sync runner, not by the initial schema.
+- **Multiple attempts per `(scope, period_start)`:** forced sync inserts a new run row instead of rewriting the last completed one. A failed forced attempt therefore cannot invalidate snapshots published by the previous completed run. Normal failed/stale retries still reuse their own run id so membership-event idempotency is preserved (migration `0055`).
+- **Advisory lock (sync runner design):** each sync acquires a Postgres transaction-scoped advisory lock keyed by `(scope, period_start)` before doing work, then re-checks the latest run row inside the lock. This serializes concurrent workers and makes restarts safe. The lock is applied by the sync runner, not by the initial schema.
 - Reported counts come from rows actually written during the run; no numbers are invented.
 
 ## Idempotency constraints across snapshots, events, and notifications

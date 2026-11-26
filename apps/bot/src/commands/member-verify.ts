@@ -98,7 +98,7 @@ async function reconcileRolesAfterVerification(
 
 async function syncNicknameAfterVerificationForInteraction(
   interaction: ChatInputCommandInteraction,
-  playerName: string,
+  hint: { readonly playerName: string; readonly playerTag: string },
 ): Promise<void> {
   if (interaction.guildId === null) return;
   try {
@@ -106,12 +106,18 @@ async function syncNicknameAfterVerificationForInteraction(
       interaction.client,
       interaction.guildId,
       interaction.user.id,
-      playerName,
+      hint,
     );
     if (result.kind === 'ok') {
       logger.info('Post-verification nickname synced', {
         guildId: interaction.guildId,
         discordUserId: interaction.user.id,
+      });
+    } else if (result.kind !== 'unchanged') {
+      logger.warn('Post-verification nickname sync was not applied', {
+        guildId: interaction.guildId,
+        discordUserId: interaction.user.id,
+        kind: result.kind,
       });
     }
   } catch (error) {
@@ -311,7 +317,10 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
   });
   await postVerificationOperatorNotice(interaction, result);
   await reconcileRolesAfterVerification(interaction);
-  await syncNicknameAfterVerificationForInteraction(interaction, result.playerName);
+  await syncNicknameAfterVerificationForInteraction(interaction, {
+    playerName: result.playerName,
+    playerTag: result.playerTag,
+  });
 }
 
 async function handleCancel(interaction: ChatInputCommandInteraction): Promise<void> {

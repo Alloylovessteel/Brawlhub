@@ -9,6 +9,7 @@ import {
   clubRoleRankFromRole,
   loadGuildClubRoleState,
   readGuildMembershipRoles,
+  readGuildMembershipRolesRead,
   refreshGuildClubRoles,
   saveGuildClubRoleMapping,
   type ClubRoleLink,
@@ -21,8 +22,14 @@ const ACTOR: AdminActor = {
   globalRole: 'admin',
 };
 
+interface MockGuildLink {
+  readonly discordUserId: string;
+  readonly playerId: string;
+  readonly isMain: boolean;
+}
+
 const mocks = vi.hoisted(() => ({
-  listGuildVerifiedLinks: vi.fn(async (_guildId: string) => []),
+  listGuildVerifiedLinks: vi.fn(async (_guildId: string): Promise<MockGuildLink[]> => []),
 }));
 
 vi.mock('../verification/service.js', () => ({
@@ -47,8 +54,18 @@ type Handler = (
   filters?: readonly Filter[],
 ) => { data: unknown; error: unknown };
 
-function fakeDb(handlers: Record<string, Handler>): { db: SupabaseClient; calls: QueryCall[] } {
+interface RpcCall {
+  readonly name: string;
+  readonly args: Record<string, unknown>;
+}
+
+function fakeDb(handlers: Record<string, Handler>): {
+  db: SupabaseClient;
+  calls: QueryCall[];
+  rpcCalls: RpcCall[];
+} {
   const calls: QueryCall[] = [];
+  const rpcCalls: RpcCall[] = [];
 
   class Query {
     private operation = 'select';
@@ -126,8 +143,14 @@ function fakeDb(handlers: Record<string, Handler>): { db: SupabaseClient; calls:
       from(table: string) {
         return new Query(table);
       },
+      async rpc(name: string, args: Record<string, unknown>) {
+        rpcCalls.push({ name, args });
+        const handler = handlers[`rpc:${name}`] ?? (() => ({ data: [], error: null }));
+        return handler();
+      },
     } as unknown as SupabaseClient,
     calls,
+    rpcCalls,
   };
 }
 
@@ -188,18 +211,14 @@ describe('buildClubRolePlans', () => {
 });
 
 describe('guild-scoped membership reads', () => {
-  it('reads only this guild’s active club memberships and chooses the highest rank', async () => {
-    const { db, calls } = fakeDb({
-      'clubs:select': () => ({
-        data: [{ id: 'club-a' }, { id: 'club-b' }, { id: 'other-guild-club' }],
-        error: null,
-      }),
-      'club_memberships:select': () => ({
+  it('reads guild ranks through one bounded RPC and chooses the highest rank', async () => {
+    const { db, calls, rpcCalls } = fakeDb({
+      'rpc:guild_club_member_roles': () => ({
         data: [
-          { player_id: 'player-1', role: 'senior' },
-          { player_id: 'player-1', role: 'president' },
-          { player_id: 'player-2', role: 'member' },
-          { player_id: 'player-2', role: 'vicePresident' },
+          { membership_id: 'm1', player_id: 'player-1', role: 'senior' },
+          { membership_id: 'm2', player_id: 'player-1', role: 'president' },
+          { membership_id: 'm3', player_id: 'player-2', role: 'member' },
+          { membership_id: 'm4', player_id: 'player-2', role: 'vicePresident' },
         ],
         error: null,
       }),
@@ -209,15 +228,58 @@ describe('guild-scoped membership reads', () => {
 
     expect(roles.get('player-1')).toBe('president');
     expect(roles.get('player-2')).toBe('vicePresident');
-    expect(calls.find((call) => call.table === 'clubs')?.filters).toEqual([
-      ['eq', 'guild_id', GUILD_ID],
-      ['is', 'archived_at', null],
+    expect(calls).toEqual([]);
+    expect(rpcCalls).toEqual([
+      {
+        name: 'guild_club_member_roles',
+        args: {
+          p_guild_id: GUILD_ID,
+          p_player_ids: ['player-1', 'player-2'],
+          p_limit: 500,
+          p_after_id: null,
+        },
+      },
     ]);
-    expect(calls.find((call) => call.table === 'club_memberships')?.filters).toEqual([
-      ['in', 'club_id', ['club-a', 'club-b', 'other-guild-club']],
-      ['in', 'player_id', ['player-1', 'player-2']],
-      ['is', 'valid_to', null],
-    ]);
+  });
+
+  it('capped player ids at 500 and paged keysets instead of one large read', async () => {
+    const playerIds = Array.from({ length: 501 }, (_, index) => `player-${index}`);
+    const { db, rpcCalls } = fakeDb({
+      'rpc:guild_club_member_roles': (_payload, _options, _filters) => ({
+        data: [],
+        error: null,
+      }),
+    });
+
+    await readGuildMembershipRoles(GUILD_ID, playerIds, { db });
+
+    expect(rpcCalls).toHaveLength(2);
+    expect(rpcCalls[0]?.args['p_player_ids']).toHaveLength(500);
+    expect(rpcCalls[1]?.args['p_player_ids']).toHaveLength(1);
+  });
+
+  it('marks the read incomplete when a page repeats a keyset', async () => {
+    let call = 0;
+    const { db } = fakeDb({
+      'rpc:guild_club_member_roles': () => {
+        call += 1;
+        return {
+          data: call === 1
+            ? Array.from({ length: 500 }, (_, index) => ({
+                membership_id: `m-${index}`,
+                player_id: 'player-1',
+                role: 'senior',
+              }))
+            : [{ membership_id: 'm-0', player_id: 'player-1', role: 'senior' }],
+          error: null,
+        };
+      },
+    });
+
+    const result = await readGuildMembershipRolesRead(GUILD_ID, ['player-1'], { db });
+
+    expect(result.complete).toBe(false);
+    expect(result.roles.get('player-1')).toBe('senior');
   });
 });
 
@@ -400,5 +462,60 @@ describe('refreshGuildClubRoles', () => {
       cleanedMembers: 0,
     });
     expect(listGuildVerifiedLinks).not.toHaveBeenCalled();
+  });
+
+  it('skips destructive stale-role cleanup when eligibility paging is unresolved', async () => {
+    mocks.listGuildVerifiedLinks.mockResolvedValue([
+      {
+        discordUserId: '983248496884875286',
+        playerId: 'player-1',
+        isMain: true,
+      },
+    ]);
+    let call = 0;
+    const { db } = fakeDb({
+      'guild_settings:select': () => ({
+        data: {
+          guild_id: GUILD_ID,
+          club_role_ids: {
+            president: '111111111111111111',
+            vicePresident: '222222222222222222',
+            senior: '333333333333333333',
+          },
+        },
+        error: null,
+      }),
+      'rpc:guild_club_member_roles': () => {
+        call += 1;
+        return {
+          data: call === 1
+            ? Array.from({ length: 500 }, (_, index) => ({
+                membership_id: `m-${index}`,
+                player_id: 'player-1',
+                role: 'senior',
+              }))
+            : [{ membership_id: 'm-0', player_id: 'player-1', role: 'senior' }],
+          error: null,
+        };
+      },
+    });
+    const fetch = vi.fn(async (id?: string) => ({
+      id: id ?? 'other-user',
+      roles: {
+        cache: {
+          has: (roleId: string) => roleId === '333333333333333333',
+          keys: () => ['333333333333333333'],
+        },
+        add: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      },
+    }));
+    const guild = { id: GUILD_ID, members: { fetch } } as unknown as Guild;
+
+    const result = await refreshGuildClubRoles(guild, { db });
+
+    expect(result).toMatchObject({ configured: true, planned: 1, cleanedMembers: 0 });
+    expect(fetch).toHaveBeenCalledWith('983248496884875286');
+    expect(fetch).not.toHaveBeenCalledWith();
   });
 });

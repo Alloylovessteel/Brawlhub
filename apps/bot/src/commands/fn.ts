@@ -16,6 +16,7 @@ import type { CommandComponentInteraction } from '../discord/interactions.js';
 import { replyExpiredComponent } from '../discord/errors.js';
 import {
   loadGuildNicknameSettings,
+  releaseManagedNicknamesAfterDisable,
   saveGuildNicknameSettings,
   syncMemberNickname,
 } from '../nickname-sync/service.js';
@@ -248,6 +249,14 @@ async function handleNicknameSubcommand(
       content: `Automatic nickname sync is now ${saved.enabled ? 'enabled' : 'disabled'} in this server.`,
       allowedMentions: { parse: [] },
     });
+    if (!saved.enabled) {
+      // Best-effort: restore/clear nicknames BrawlHub previously applied.
+      try {
+        await releaseManagedNicknamesAfterDisable(interaction.guild!);
+      } catch {
+        // Cleanup must not turn a successful disable into an error.
+      }
+    }
     return;
   }
 

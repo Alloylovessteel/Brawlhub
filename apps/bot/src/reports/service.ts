@@ -565,11 +565,20 @@ export interface MissingReportDeliveryTarget {
   readonly period: ReportPeriod;
 }
 
+export interface MissingInactivityDeliveryTarget {
+  readonly guildId: string;
+  /** Channel resolved by the SQL RPC (inactivity override or overview fallback). */
+  readonly channelId: string;
+  readonly periodKey: string;
+}
+
 export interface MissingReportDeliveries {
   /** Completed periods in the retention window with at least one missing delivery. */
   readonly periods: readonly ReportPeriod[];
   /** Exact guild/period pairs the scheduler should attempt. */
   readonly targets: readonly MissingReportDeliveryTarget[];
+  /** Exact guild/channel/day pairs still missing a durable inactivity post. */
+  readonly inactivityTargets: readonly MissingInactivityDeliveryTarget[];
   /** Current UTC inactivity day key when a configured guild is still missing a durable post. */
   readonly inactivityPeriodKey: string | null;
 }
@@ -653,25 +662,29 @@ export async function readMissingReportDeliveries(now: Date): Promise<MissingRep
     cursor = { guildId, reportType, periodKey };
   }
 
-  // The inactivity RPC only needs to prove that some guild is missing its
-  // durable post for this day, so the loop stops on the first matching page.
+  // Return the exact inactivity targets instead of a boolean so the scheduler
+  // only posts to guilds the SQL RPC still sees as undelivered. The keyset loop
+  // covers more than one REST page of missing guilds.
+  const inactivityTargets: MissingInactivityDeliveryTarget[] = [];
+  const seenInactivityGuildIds = new Set<string>();
   let inactivityCursor: string | null = null;
   const seenInactivityCursors = new Set<string>();
-  let inactivityMissing = false;
   for (let page = 0; page < MAX_REPORT_PAGES; page += 1) {
     const rows = await readRpcRows(db, 'push_missing_inactivity_deliveries', {
       p_period_key: inactivityPeriodKey,
       p_limit: REPORT_PAGE_SIZE,
       ...(inactivityCursor === null ? {} : { p_after_guild_id: inactivityCursor }),
     });
-    if (
-      rows.some((raw) => {
-        const row = asRecord(raw);
-        return row !== null && asString(row['guild_id']) !== null;
-      })
-    ) {
-      inactivityMissing = true;
-      break;
+    for (const raw of rows) {
+      const row = asRecord(raw);
+      if (row === null) continue;
+      const guildId = asString(row['guild_id']);
+      const channelId = asString(row['channel_id']);
+      const rowPeriodKey = asString(row['period_key']) ?? inactivityPeriodKey;
+      if (guildId === null || channelId === null || channelId.trim() === '') continue;
+      if (seenInactivityGuildIds.has(guildId)) continue;
+      seenInactivityGuildIds.add(guildId);
+      inactivityTargets.push({ guildId, channelId, periodKey: rowPeriodKey });
     }
     if (rows.length < REPORT_PAGE_SIZE) break;
     const lastGuildId = asString(asRecord(rows[rows.length - 1])?.['guild_id']);
@@ -683,7 +696,8 @@ export async function readMissingReportDeliveries(now: Date): Promise<MissingRep
   return {
     periods: [...periods.values()],
     targets,
-    inactivityPeriodKey: inactivityMissing ? inactivityPeriodKey : null,
+    inactivityTargets,
+    inactivityPeriodKey: inactivityTargets.length > 0 ? inactivityPeriodKey : null,
   };
 }
 

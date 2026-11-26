@@ -17,9 +17,96 @@ interface Call {
   readonly limit: number | null;
 }
 
+interface RpcCall {
+  readonly name: string;
+  readonly args: Row;
+}
+
+function text(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+function sortNewestFirst(rows: Row[]): Row[] {
+  return rows.sort((left, right) => {
+    const at = text(left['captured_at']) ?? '';
+    const bt = text(right['captured_at']) ?? '';
+    if (at !== bt) return bt.localeCompare(at);
+    return (text(right['id']) ?? '').localeCompare(text(left['id']) ?? '');
+  });
+}
+
 /** Read-only fake: no insert/update/delete methods exist on purpose. */
 function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
   const calls: Call[] = [];
+  const rpcs: RpcCall[] = [];
+
+  async function rpc(name: string, args: Row) {
+    rpcs.push({ name, args: { ...args } });
+    if (failingTables.includes(name)) {
+      return { data: null, error: { message: `${name} unavailable` } };
+    }
+    const limit = typeof args['p_limit'] === 'number' ? args['p_limit'] : 1000;
+    const clubIds = Array.isArray(args['p_club_ids'])
+      ? (args['p_club_ids'] as unknown[]).map(text).filter((id): id is string => id !== null)
+      : [];
+    const completed = new Set(
+      (tables['sync_runs'] ?? [])
+        .filter((row) => row['status'] === 'completed')
+        .map((row) => text(row['id']))
+        .filter((id): id is string => id !== null),
+    );
+
+    if (name === 'web_scoped_player_ids') {
+      if (clubIds.length === 0) return { data: [], error: null };
+      const ids = [
+        ...new Set(
+          (tables['club_memberships'] ?? [])
+            .filter((row) => clubIds.includes(text(row['club_id']) ?? ''))
+            .map((row) => text(row['player_id']))
+            .filter((id): id is string => id !== null),
+        ),
+      ].sort((left, right) => left.localeCompare(right));
+      const after = text(args['p_after']);
+      const page = (after === null ? ids : ids.filter((id) => id > after)).slice(0, limit);
+      return { data: page.map((player_id) => ({ player_id })), error: null };
+    }
+
+    if (name === 'club_snapshot_page' || name === 'player_snapshot_page') {
+      if (clubIds.length === 0) return { data: [], error: null };
+      let rows: Row[];
+      if (name === 'club_snapshot_page') {
+        rows = (tables['club_snapshots'] ?? []).filter((row) =>
+          clubIds.includes(text(row['club_id']) ?? ''),
+        );
+      } else {
+        const playerIds = new Set(
+          (tables['club_memberships'] ?? [])
+            .filter((row) => clubIds.includes(text(row['club_id']) ?? ''))
+            .map((row) => text(row['player_id']))
+            .filter((id): id is string => id !== null),
+        );
+        rows = (tables['player_snapshots'] ?? []).filter((row) =>
+          playerIds.has(text(row['player_id']) ?? ''),
+        );
+      }
+      if (args['p_completed_only'] !== false) {
+        rows = rows.filter((row) => completed.has(text(row['sync_run_id']) ?? ''));
+      }
+      rows = sortNewestFirst(rows);
+      const afterAt = text(args['p_after_captured_at']);
+      const afterId = text(args['p_after_id']);
+      if (afterAt !== null && afterId !== null) {
+        rows = rows.filter((row) => {
+          const captured = text(row['captured_at']) ?? '';
+          const id = text(row['id']) ?? '';
+          return captured < afterAt || (captured === afterAt && id < afterId);
+        });
+      }
+      return { data: rows.slice(0, limit).map((row) => ({ ...row })), error: null };
+    }
+
+    return { data: [], error: { message: `Unexpected RPC ${name}` } };
+  }
 
   function from(table: string) {
     const state = {
@@ -89,7 +176,7 @@ function createFakeDb(tables: Tables, failingTables: readonly string[] = []) {
     return builder;
   }
 
-  return { from, calls };
+  return { from, rpc, calls, rpcs };
 }
 
 const NOW = new Date('2026-11-18T12:00:00.000Z');
@@ -255,7 +342,7 @@ describe('global leaderboard services', () => {
     expect(result.rows[0]?.averageTrophies).toBe(40_000);
     expect(result.rows[0]?.snapshotAt).toBe('2026-11-17T00:00:00.000Z');
     expect(result.warning).toContain('different times');
-    expect(db.calls.some((call) => call.table === 'club_snapshots')).toBe(true);
+    expect(db.rpcs.some((call) => call.name === 'club_snapshot_page')).toBe(true);
   });
 
   it('ranks valid current trophies, deduplicates tags and prefers current memberships', async () => {
@@ -346,5 +433,84 @@ describe('global leaderboard services', () => {
     await expect(
       loadPlayerLeaderboard({ db: createFakeDb(tables(), ['players']) as never, now: NOW }),
     ).rejects.toThrow('Read players failed');
+  });
+
+  it('reads guild views through scoped, bounded RPCs instead of global capped tables', async () => {
+    const db = createFakeDb({
+      ...tables(),
+      clubs: CLUBS.map((row) => ({
+        ...row,
+        guild_id: row['id'] === 'club-c' ? 'other-guild' : 'guild-a',
+      })),
+    });
+    const options = { db: db as never, guildId: 'guild-a', now: NOW };
+
+    const clubResult = await loadClubLeaderboard(options);
+    const trophyResult = await loadTrophyLeaderboard(options);
+
+    expect(clubResult.rows.map((row) => row.club.tag)).toEqual(['2C0Y', 'Q8VR']);
+    expect(trophyResult.rows.map((row) => row.player.tag)).toEqual([
+      'G2P9', '2C0Y', 'Q8VR', 'P9Q8',
+    ]);
+    expect(db.rpcs.filter((call) => call.name === 'web_scoped_player_ids')).toHaveLength(1);
+    expect(db.rpcs.every((call) => {
+      const limit = call.args['p_limit'];
+      return typeof limit !== 'number' || limit <= 500;
+    })).toBe(true);
+    for (const call of db.rpcs.filter((entry) => entry.name === 'web_scoped_player_ids')) {
+      expect(call.args['p_club_ids']).toEqual(['club-a', 'club-b']);
+    }
+    for (const call of db.rpcs.filter((entry) =>
+      entry.name === 'club_snapshot_page' || entry.name === 'player_snapshot_page',
+    )) {
+      expect(call.args['p_club_ids']).toEqual(['club-a', 'club-b']);
+      expect(call.args['p_completed_only']).toBe(true);
+    }
+    expect(db.calls.every((call) => call.limit === null || call.limit <= 500)).toBe(true);
+  });
+
+  it('paginates scoped player ids across the row cap', async () => {
+    const tagDigits = '0289CGJLPQRUVY';
+    const manyPlayers = Array.from({ length: 501 }, (_, index) =>
+      player(
+        `many-${index}`,
+        `YQ${index.toString().padStart(3, '0').split('').map((digit) => tagDigits[Number(digit)]).join('')}`,
+        `Player ${index}`,
+        index,
+        index,
+        RECENT,
+      ),
+    );
+    const manyMemberships = manyPlayers.map((row, index) =>
+      membership(`mm-${index}`, text(row['id']) ?? '', CLUB_A, RECENT, null),
+    );
+    const db = createFakeDb({
+      ...tables(),
+      clubs: [{ ...club('club-a', '2C0Y', 'Alpha'), guild_id: 'guild-a' }],
+      players: manyPlayers,
+      club_memberships: manyMemberships,
+    });
+
+    const result = await loadPlayerLeaderboard({
+      db: db as never,
+      guildId: 'guild-a',
+      now: NOW,
+    });
+
+    expect(result.rows).toHaveLength(501);
+    const calls = db.rpcs.filter((call) => call.name === 'web_scoped_player_ids');
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.args['p_after']).toBeNull();
+    expect(text(calls[1]?.args['p_after'] ?? null)).not.toBeNull();
+  });
+
+  it('fails closed when the guild scope is blank', async () => {
+    const db = createFakeDb(tables());
+    const options = { db: db as never, guildId: '   ', now: NOW };
+
+    await expect(loadClubLeaderboard(options)).resolves.toMatchObject({ rows: [] });
+    await expect(loadTrophyLeaderboard(options)).resolves.toMatchObject({ rows: [] });
+    expect(db.rpcs).toEqual([]);
+    expect(db.calls.some((call) => call.table === 'clubs')).toBe(false);
   });
 });

@@ -1016,6 +1016,10 @@ describe('readMissingReportDeliveries', () => {
       period: expect.objectContaining({ type: 'monthly', periodKey: catchupKeys('monthly').at(-1) }),
     });
     expect(missing.inactivityPeriodKey).toBe(INACTIVITY_KEY);
+    expect(missing.inactivityTargets).toEqual([
+      { guildId: GUILD_ID, channelId: CHANNEL_ID, periodKey: INACTIVITY_KEY },
+      { guildId: OTHER_GUILD_ID, channelId: CHANNEL_ID, periodKey: INACTIVITY_KEY },
+    ]);
 
     const rpcCalls = fake.calls.filter((call) => call.operation === 'rpc');
     expect(rpcCalls.map((call) => call.table)).toEqual([
@@ -1083,6 +1087,7 @@ describe('readMissingReportDeliveries', () => {
       },
     ]);
     expect(missing.inactivityPeriodKey).toBeNull();
+    expect(missing.inactivityTargets).toEqual([]);
   });
 
   it('keeps an old period missing when only one configured guild has a ledger row', async () => {
@@ -1108,6 +1113,9 @@ describe('readMissingReportDeliveries', () => {
     const missing = await readMissingReportDeliveries(NOW);
 
     expect(missing.inactivityPeriodKey).toBe(INACTIVITY_KEY);
+    expect(missing.inactivityTargets).toEqual([
+      { guildId: OTHER_GUILD_ID, channelId: CHANNEL_ID, periodKey: INACTIVITY_KEY },
+    ]);
   });
 
   it('only considers opted-in guilds and periods that ended after reports_enabled_at', async () => {
@@ -1245,6 +1253,12 @@ describe('readMissingReportDeliveries', () => {
 
     expect(missing.targets).toHaveLength(1001);
     expect(missing.periods.map((period) => period.periodKey)).toEqual([catchupKeys('daily')[0]]);
+    expect(missing.inactivityTargets).toHaveLength(1001);
+    expect(missing.inactivityTargets[0]).toEqual({
+      guildId: 'guild-0000',
+      channelId: CHANNEL_ID,
+      periodKey: INACTIVITY_KEY,
+    });
     const deliveryCalls = fake.calls.filter(
       (call) => call.operation === 'rpc' && call.table === 'push_missing_report_deliveries',
     );
@@ -1255,6 +1269,15 @@ describe('readMissingReportDeliveries', () => {
       p_after_guild_id: 'guild-0999',
       p_after_report_type: 'daily',
       p_after_period_key: catchupKeys('daily')[0],
+    });
+    const inactivityCalls = fake.calls.filter(
+      (call) => call.operation === 'rpc' && call.table === 'push_missing_inactivity_deliveries',
+    );
+    expect(inactivityCalls).toHaveLength(2);
+    expect(inactivityCalls[1]?.payload).toMatchObject({
+      p_period_key: INACTIVITY_KEY,
+      p_limit: 1000,
+      p_after_guild_id: 'guild-0999',
     });
   });
 });
