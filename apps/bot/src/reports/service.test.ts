@@ -326,8 +326,27 @@ const TOTALS_ROW = {
   capacity_closes: 1,
 };
 
+const CAPACITY_ROWS = [
+  {
+    club_id: CLUB_A,
+    member_count: 28,
+    captured_at: '2026-11-19T12:00:00.000Z',
+  },
+  {
+    club_id: CLUB_B,
+    member_count: 30,
+    captured_at: '2026-11-19T12:30:00.000Z',
+  },
+  {
+    club_id: CLUB_OTHER_GUILD,
+    member_count: 29,
+    captured_at: '2026-11-19T13:00:00.000Z',
+  },
+];
+
 let clubFixture: Array<{ id: string; tag: string; name: string }> = [];
 let activityFixture: Array<(typeof ACTIVITY_ROWS)[number]> = [];
+let capacityFixture: Array<(typeof CAPACITY_ROWS)[number]> = [];
 
 function ledgerRow(overrides: Partial<LedgerRow> = {}): LedgerRow {
   return {
@@ -365,9 +384,14 @@ function setActivityFixture(rows: readonly (typeof ACTIVITY_ROWS)[number][]): vo
   activityFixture = rows.map((row) => ({ ...row }));
 }
 
+function setCapacityFixture(rows: readonly (typeof CAPACITY_ROWS)[number][]): void {
+  capacityFixture = rows.map((row) => ({ ...row }));
+}
+
 function installAggregationHandlers(): void {
   setClubFixture(ALL_CLUBS);
   setActivityFixture(ACTIVITY_ROWS);
+  setCapacityFixture(CAPACITY_ROWS);
 
   setRpc('push_report_clubs', (args) => {
     const afterName = optionalString(args['p_after_name']);
@@ -394,6 +418,24 @@ function installAggregationHandlers(): void {
   setRpc('push_report_activity', (args) => {
     const afterId = optionalString(args['p_after_id']);
     const rows = activityFixture
+      .filter((row) => afterId === null || row.club_id > afterId)
+      .sort((left, right) => (left.club_id < right.club_id ? -1 : 1))
+      .slice(0, pageLimit(args));
+    return { data: rows };
+  });
+  setRpc('push_report_capacity', (args) => {
+    const afterId = optionalString(args['p_after_club_id']);
+    const scopedIds = new Set(
+      clubFixture
+        .filter((club) =>
+          args['p_guild_id'] === GUILD_ID
+            ? club.id !== CLUB_OTHER_GUILD
+            : club.id === CLUB_OTHER_GUILD,
+        )
+        .map((club) => club.id),
+    );
+    const rows = capacityFixture
+      .filter((row) => scopedIds.has(row.club_id))
       .filter((row) => afterId === null || row.club_id > afterId)
       .sort((left, right) => (left.club_id < right.club_id ? -1 : 1))
       .slice(0, pageLimit(args));
@@ -428,8 +470,7 @@ describe('loadReportData', () => {
         leaves: 0,
         transfers: 1,
         roleChanges: 2,
-        capacityOpens: 1,
-        capacityCloses: 0,
+        capacity: { memberCount: 28, capturedAt: CAPACITY_ROWS[0]?.captured_at ?? null },
       },
       {
         clubId: CLUB_B,
@@ -439,8 +480,7 @@ describe('loadReportData', () => {
         leaves: 1,
         transfers: 1,
         roleChanges: 1,
-        capacityOpens: 0,
-        capacityCloses: 1,
+        capacity: { memberCount: 30, capturedAt: CAPACITY_ROWS[1]?.captured_at ?? null },
       },
     ]);
     expect(data.totals).toEqual({
@@ -449,8 +489,9 @@ describe('loadReportData', () => {
       leaves: 1,
       transfers: 1,
       roleChanges: 3,
-      capacityOpens: 1,
-      capacityCloses: 1,
+      openClubs: 1,
+      fullClubs: 1,
+      unknownClubs: 0,
     });
 
     const rpcCalls = fake.calls.filter((call) => call.operation === 'rpc');
@@ -458,6 +499,7 @@ describe('loadReportData', () => {
       'push_report_clubs',
       'push_report_activity_totals',
       'push_report_activity',
+      'push_report_capacity',
     ]);
     expect(rpcCalls[0]?.payload).toEqual({ p_guild_id: GUILD_ID, p_limit: 1000 });
     expect(rpcCalls[1]?.payload).toEqual({
@@ -471,6 +513,7 @@ describe('loadReportData', () => {
       p_end: PERIOD.end.toISOString(),
       p_limit: 1000,
     });
+    expect(rpcCalls[3]?.payload).toEqual({ p_guild_id: GUILD_ID, p_limit: 1000 });
     expect(fake.calls.some((call) => call.operation === 'select')).toBe(false);
   });
 
@@ -541,8 +584,9 @@ describe('loadReportData', () => {
       leaves: TOTALS_ROW.leaves,
       transfers: TOTALS_ROW.transfers,
       roleChanges: TOTALS_ROW.role_changes,
-      capacityOpens: TOTALS_ROW.capacity_opens,
-      capacityCloses: TOTALS_ROW.capacity_closes,
+      openClubs: 0,
+      fullClubs: 0,
+      unknownClubs: 1005,
     });
     const activityCalls = fake.calls.filter(
       (call) => call.operation === 'rpc' && call.table === 'push_report_activity',
@@ -571,6 +615,7 @@ describe('loadReportData', () => {
       ],
     }));
     setRpc('push_report_activity', () => ({ data: [] }));
+    setRpc('push_report_capacity', () => ({ data: [] }));
 
     const data = await loadReportData(GUILD_ID, PERIOD);
     expect(data.clubSummaries).toEqual([]);
@@ -580,8 +625,76 @@ describe('loadReportData', () => {
       leaves: 0,
       transfers: 0,
       roleChanges: 0,
-      capacityOpens: 0,
-      capacityCloses: 0,
+      openClubs: 0,
+      fullClubs: 0,
+      unknownClubs: 0,
+    });
+  });
+
+  it('uses current capacity state instead of full/not-full transition counts', async () => {
+    setActivityFixture([
+      { ...ACTIVITY_ROWS[0]!, capacity_opens: 9, capacity_closes: 9 },
+      { ...ACTIVITY_ROWS[1]!, capacity_opens: 9, capacity_closes: 9 },
+    ]);
+    setCapacityFixture([
+      {
+        club_id: CLUB_A,
+        member_count: 27,
+        captured_at: '2026-11-20T01:00:00.000Z',
+      },
+      {
+        club_id: CLUB_B,
+        member_count: 30,
+        captured_at: '2026-11-20T02:00:00.000Z',
+      },
+    ]);
+
+    const data = await loadReportData(GUILD_ID, PERIOD);
+
+    expect(data.clubSummaries.map((club) => club.capacity)).toEqual([
+      { memberCount: 27, capturedAt: '2026-11-20T01:00:00.000Z' },
+      { memberCount: 30, capturedAt: '2026-11-20T02:00:00.000Z' },
+    ]);
+    expect(data.clubSummaries[0]).not.toHaveProperty('capacityOpens');
+    expect(data.clubSummaries[0]).not.toHaveProperty('capacityCloses');
+    expect(data.totals).toMatchObject({ openClubs: 1, fullClubs: 1, unknownClubs: 0 });
+  });
+
+  it('counts clubs without a completed snapshot as unknown capacity', async () => {
+    setCapacityFixture([]);
+
+    const data = await loadReportData(GUILD_ID, PERIOD);
+
+    expect(data.clubSummaries.map((club) => club.capacity.memberCount)).toEqual([null, null]);
+    expect(data.totals).toMatchObject({ openClubs: 0, fullClubs: 0, unknownClubs: 2 });
+  });
+
+  it('pages capacity rows by club id past the PostgREST row cap', async () => {
+    const clubs = Array.from({ length: 1005 }, (_, index) => {
+      const suffix = String(index).padStart(4, '0');
+      return { id: `club-${suffix}`, tag: `C${suffix}`, name: `Club ${suffix}` };
+    });
+    setClubFixture(clubs);
+    setCapacityFixture(
+      clubs.map((club, index) => ({
+        club_id: club.id,
+        member_count: index % 31,
+        captured_at: '2026-11-20T03:00:00.000Z',
+      })),
+    );
+
+    const data = await loadReportData(GUILD_ID, PERIOD);
+
+    expect(data.totals.unknownClubs).toBe(0);
+    const capacityCalls = fake.calls.filter(
+      (call) => call.operation === 'rpc' && call.table === 'push_report_capacity',
+    );
+    expect(capacityCalls).toHaveLength(2);
+    expect(capacityCalls[0]?.payload).toEqual({ p_guild_id: GUILD_ID, p_limit: 1000 });
+    expect(capacityCalls[1]?.payload).toEqual({
+      p_guild_id: GUILD_ID,
+      p_limit: 1000,
+      p_after_club_id: clubs[999]?.id,
     });
   });
 });

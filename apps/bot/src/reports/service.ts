@@ -13,7 +13,7 @@ import {
   type ReportPeriod,
   type ReportType,
 } from './period';
-import type { MutableClubSummary, ReportClubSummary } from './types';
+import { CLUB_CAPACITY, type MutableClubSummary, type ReportClubSummary } from './types';
 
 const logger = createLogger('bot');
 const REDACTED = '[REDACTED]';
@@ -42,8 +42,9 @@ export interface ReportData {
     leaves: number;
     transfers: number;
     roleChanges: number;
-    capacityOpens: number;
-    capacityCloses: number;
+    openClubs: number;
+    fullClubs: number;
+    unknownClubs: number;
   };
 }
 
@@ -178,6 +179,14 @@ function asCount(value: unknown): number {
   return 0;
 }
 
+function asOptionalCount(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+  return null;
+}
+
 /**
  * Load one guild's activity from stored sync history. Clubs, guild totals and
  * per-club activity are read through keyset-paged RPCs so REST row caps cannot
@@ -210,8 +219,7 @@ export async function loadReportData(guildId: string, period: ReportPeriod): Pro
         leaves: 0,
         transfers: 0,
         roleChanges: 0,
-        capacityOpens: 0,
-        capacityCloses: 0,
+        capacity: { memberCount: null, capturedAt: null },
       };
       summaries.push(summary);
       byClub.set(clubId, summary);
@@ -239,8 +247,9 @@ export async function loadReportData(guildId: string, period: ReportPeriod): Pro
     leaves: asCount(totalsRow?.['leaves']),
     transfers: asCount(totalsRow?.['transfers']),
     roleChanges: asCount(totalsRow?.['role_changes']),
-    capacityOpens: asCount(totalsRow?.['capacity_opens']),
-    capacityCloses: asCount(totalsRow?.['capacity_closes']),
+    openClubs: 0,
+    fullClubs: 0,
+    unknownClubs: 0,
   };
 
   let activityCursor: string | null = null;
@@ -265,8 +274,6 @@ export async function loadReportData(guildId: string, period: ReportPeriod): Pro
         leaves: asCount(row['leaves']),
         transfers: asCount(row['transfers']),
         roleChanges: asCount(row['role_changes']),
-        capacityOpens: asCount(row['capacity_opens']),
-        capacityCloses: asCount(row['capacity_closes']),
       });
     }
     if (rows.length < REPORT_PAGE_SIZE) break;
@@ -274,6 +281,42 @@ export async function loadReportData(guildId: string, period: ReportPeriod): Pro
     if (lastId === null || seenActivityCursors.has(lastId)) break;
     seenActivityCursors.add(lastId);
     activityCursor = lastId;
+  }
+
+  // Capacity is a current state, not a count of full/not-full transitions.
+  // The RPC returns the newest completed snapshot per guild-owned club.
+  let capacityCursor: string | null = null;
+  const seenCapacityCursors = new Set<string>();
+  for (let page = 0; page < MAX_REPORT_PAGES; page += 1) {
+    const rows = await readRpcRows(db, 'push_report_capacity', {
+      p_guild_id: guildId,
+      p_limit: REPORT_PAGE_SIZE,
+      ...(capacityCursor === null ? {} : { p_after_club_id: capacityCursor }),
+    });
+    for (const raw of rows) {
+      const row = asRecord(raw);
+      if (row === null) continue;
+      const clubId = asString(row['club_id']);
+      if (clubId === null) continue;
+      const summary = byClub.get(clubId);
+      if (summary === undefined) continue;
+      summary.capacity = {
+        memberCount: asOptionalCount(row['member_count']),
+        capturedAt: asString(row['captured_at']),
+      };
+    }
+    if (rows.length < REPORT_PAGE_SIZE) break;
+    const lastId = asString(asRecord(rows[rows.length - 1])?.['club_id']);
+    if (lastId === null || seenCapacityCursors.has(lastId)) break;
+    seenCapacityCursors.add(lastId);
+    capacityCursor = lastId;
+  }
+
+  for (const summary of summaries) {
+    const memberCount = summary.capacity.memberCount;
+    if (memberCount === null) totals.unknownClubs += 1;
+    else if (memberCount >= CLUB_CAPACITY) totals.fullClubs += 1;
+    else totals.openClubs += 1;
   }
 
   return { period, clubSummaries: summaries, totals };

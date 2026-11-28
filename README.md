@@ -263,6 +263,7 @@ The bot reports missing configuration and exits safely when `DISCORD_TOKEN` is b
 - Icon verification challenges last 30 minutes and are checked automatically. Re-running `/verify tag` for the same player resumes the existing required icon instead of rotating it; use `/verify cancel` first to verify a different tag. Keep the exact shown icon equipped until the bot confirms it: `VERIFICATION_AUTO_CHECK_INTERVAL_SECONDS` (default `60`) controls the poll cadence and `VERIFICATION_AUTO_CHECK_BATCH_SIZE` (default `10`) caps official-API checks per poll. `/verify check` remains an immediate manual fallback, not a required step. Challenges are Supabase-backed, so a bot restart reuses live challenges until they expire.
 - Completed and failed syncs, plus successful icon or staff verification, send mention-safe embeds to the guild’s configured announcement or verification channel. These notices are best-effort and never change the command or sync result.
 - Reports remain scheduled auto-posts; `REPORTS_IMMEDIATE_ON_START` must remain `false`. The legacy `primary_club_id` setting is untouched and ignored at runtime.
+- Scheduled report PNGs show each club’s current capacity from the latest completed sync snapshot (`Open 2/30`, `Full 30/30`, or `Unknown`) instead of counting historical full/not-full transitions. Clubs without a completed snapshot are listed as `Unknown` and counted separately in the guild totals.
 
 ## Scripts
 

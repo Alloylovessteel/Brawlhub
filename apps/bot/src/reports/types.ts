@@ -1,4 +1,13 @@
+/** Official Brawl Stars club capacity; a club is full at this count. */
+export const CLUB_CAPACITY = 30;
+
 /** Shared, guild-scoped report shapes. All values originate from stored sync history. */
+export interface ReportClubCapacity {
+  /** Null when the guild has no completed snapshot for this club yet. */
+  readonly memberCount: number | null;
+  readonly capturedAt: string | null;
+}
+
 export interface ReportClubSummary {
   readonly clubId: string;
   readonly tag: string;
@@ -7,8 +16,8 @@ export interface ReportClubSummary {
   readonly leaves: number;
   readonly transfers: number;
   readonly roleChanges: number;
-  readonly capacityOpens: number;
-  readonly capacityCloses: number;
+  /** Current capacity from the latest completed snapshot, not transition events. */
+  readonly capacity: ReportClubCapacity;
 }
 
 export interface ReportPostRow {
@@ -24,6 +33,8 @@ export interface MutableClubSummary {
   leaves: number;
   transfers: number;
   roleChanges: number;
-  capacityOpens: number;
-  capacityCloses: number;
+  capacity: {
+    memberCount: number | null;
+    capturedAt: string | null;
+  };
 }
