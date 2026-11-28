@@ -91,7 +91,9 @@ npm run db:migrate
 npm run db:status
 ```
 
-`db:status` should report all migrations applied, including `0005_phase3_rls.sql`, `0006_supabase_preview_policy_fix.sql`, and `0007_phase3_rls_hardening.sql`, with zero pending. If it reports a `0051_report_delivery_bounds_and_pages` checksum mismatch, use the schema-verified one-time repair in [supabase/README.md](supabase/README.md#0051-checksum-history--one-time-repair); never use `db:baseline` as a repair.
+`db:status` should report all migrations applied, including `0005_phase3_rls.sql`, `0006_supabase_preview_policy_fix.sql`, and `0007_phase3_rls_hardening.sql`, with zero pending. If it reports a `0051_report_delivery_bounds_and_pages` checksum mismatch, run the tracked `npm run db:repair-checksum` runner (`scripts/repair-migration-checksum.mjs`). It defaults to a dry run and, after verifying the recorded checksum and expected schema objects, `npm run db:repair-checksum -- --apply` updates only the single `0051` ledger row. See [supabase/README.md](supabase/README.md#0051-checksum-history--one-time-repair); never use `db:baseline` as a repair.
+
+SQL bundles under `supabase/sql/*.sql` are local/untracked copy-paste files, not tracked migrations. Paste them into chat or the Supabase SQL editor manually when needed.
 
 ### 5. Register clubs and collect real data
 
@@ -280,6 +282,7 @@ The bot reports missing configuration and exits safely when `DISCORD_TOKEN` is b
 | `npm run test:watch` | Run Vitest in watch mode. |
 | `npm run db:migrate` | Apply pending migrations. |
 | `npm run db:status` | Show applied and pending migrations. |
+| `npm run db:repair-checksum` | Dry-run preflight for the one-time `0051` checksum repair; add `--apply` to update the single verified ledger row. |
 | `npm run clubs:register -- '#TAG'` | Register a real club tag. |
 | `npm run sync:run` | Run one sync from the root `.env`. |
 | `npm run phase2:inspect` | Print real database counts and sync history. |

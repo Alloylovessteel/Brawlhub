@@ -164,6 +164,7 @@ async function refreshVerifiedNicknamesSafely(): Promise<void> {
         restored: result.restored,
         released: result.released,
         failures: result.failures,
+        cleanupIncomplete: result.cleanupIncomplete,
       });
     }
   } catch (error) {

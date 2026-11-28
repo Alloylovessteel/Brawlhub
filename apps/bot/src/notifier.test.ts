@@ -127,7 +127,10 @@ describe('createDiscordNotifier', () => {
 
     const notifier = await createDiscordNotifier({ guildId: 'guild-1' });
 
-    await expect(notifier.send(input())).resolves.toEqual({ kind: 'failed' });
+    await expect(notifier.send(input())).resolves.toEqual({
+      kind: 'failed',
+      reason: 'Missing Access',
+    });
   });
 
   it('treats a successful response without a message id as uncertain', async () => {

@@ -223,6 +223,16 @@ function callsFor(table: string, op: Call['op']): Call[] {
   return fake.state.calls.filter((call) => call.table === table && call.op === op);
 }
 
+/**
+ * The new send path performs a `pending -> sending` update before Discord and a
+ * `sending -> terminal` update afterwards. Returning the matched id keeps both
+ * guarded updates successful in the fake client.
+ */
+function respondNotificationUpdate(call: Call): { data: Array<{ id: string }> } {
+  const id = call.filters['id'];
+  return { data: [{ id: typeof id === 'string' && id.length > 0 ? id : 'notification' }] };
+}
+
 interface UnsentEventFixture {
   id: string;
   player_id: string;
@@ -783,7 +793,7 @@ describe('runSync', () => {
       occurredAt: string | undefined;
       remainingMembers: number | undefined;
     }> = [];
-    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+    fake.state.handlers['notifications:update'] = respondNotificationUpdate;
 
     const notifier = {
       channelId: 'channel-1',
@@ -816,14 +826,24 @@ describe('runSync', () => {
       p_owner: claimedOwner,
       p_lease_seconds: 120,
     });
-    expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
-      delivery_status: 'sent',
-      discord_message_id: 'message-1',
+    const updates = callsFor('notifications', 'update');
+    expect(updates[0]?.payload).toMatchObject({
+      delivery_status: 'sending',
+      lease_until: null,
     });
-    expect(callsFor('notifications', 'update')[0]?.filters).toMatchObject({
+    expect(updates[0]?.filters).toMatchObject({
       id: 'notification-1',
       delivery_owner: claimedOwner,
       delivery_status: 'pending',
+    });
+    expect(updates[1]?.payload).toMatchObject({
+      delivery_status: 'sent',
+      discord_message_id: 'message-1',
+    });
+    expect(updates[1]?.filters).toMatchObject({
+      id: 'notification-1',
+      delivery_owner: claimedOwner,
+      delivery_status: 'sending',
     });
 
     const second = await runSync({ now: T0, guildId: 'guild-test', notifier });
@@ -850,7 +870,7 @@ describe('runSync', () => {
     fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent([orphanedEvent]);
     fake.state.handlers['notifications:select'] = () => ({ data: [] });
     fake.state.handlers['rpc:claim_notification'] = () => ({ data: 'notification-orphan' });
-    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+    fake.state.handlers['notifications:update'] = respondNotificationUpdate;
 
     const delivered: Array<{ clubName: string; fromClubName: string | undefined; toClubName: string | undefined }> = [];
     const notifier = {
@@ -893,7 +913,7 @@ describe('runSync', () => {
     fake.state.handlers['rpc:claim_notification'] = (call) => ({
       data: `claim-${String((call.payload as { p_owner: string }).p_owner).slice(0, 8)}`,
     });
-    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+    fake.state.handlers['notifications:update'] = respondNotificationUpdate;
 
     let sends = 0;
     const notifier = {
@@ -910,7 +930,9 @@ describe('runSync', () => {
     expect(result.notificationsSent).toBe(1);
     expect(sends).toBe(1);
     expect(callsFor('rpc:claim_notification', 'select')).toHaveLength(1);
-    expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
+    expect(callsFor('notifications', 'update').find((call) =>
+      call.payload.delivery_status === 'sent',
+    )?.payload).toMatchObject({
       delivery_status: 'sent',
       discord_message_id: 'message-1',
     });
@@ -942,7 +964,7 @@ describe('runSync', () => {
           : [],
     });
     fake.state.handlers['rpc:claim_notification'] = () => ({ data: 'claim-pending-old' });
-    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+    fake.state.handlers['notifications:update'] = respondNotificationUpdate;
 
     const delivered: string[] = [];
     const notifier = {
@@ -1006,7 +1028,7 @@ describe('runSync', () => {
     fake.state.handlers['rpc:claim_notification'] = (call) => ({
       data: `claim-${String((call.payload as { p_event_id: string }).p_event_id)}`,
     });
-    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+    fake.state.handlers['notifications:update'] = respondNotificationUpdate;
 
     let sends = 0;
     let sendMode: 'timeout' | 'undefined' | 'failed' | 'sent' = 'timeout';
@@ -1021,12 +1043,14 @@ describe('runSync', () => {
       },
     };
 
+    const updatesWithStatus = (status: string): Call[] => callsFor('notifications', 'update')
+      .filter((call) => call.payload.delivery_status === status);
+
     const timeout = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(timeout.status).toBe('completed');
     expect(timeout.notificationsSent).toBe(0);
-    expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
-      delivery_status: 'uncertain',
-    });
+    expect(updatesWithStatus('sending')).toHaveLength(1);
+    expect(updatesWithStatus('uncertain')).toHaveLength(1);
 
     sendMode = 'undefined';
     const noId = await runSync({ now: T0, guildId: 'guild-test', notifier });
@@ -1035,25 +1059,111 @@ describe('runSync', () => {
       call.payload.delivery_status === 'sent' &&
       call.payload.discord_message_id === null,
     )).toBe(false);
-    expect(callsFor('notifications', 'update')[1]?.payload).toMatchObject({
-      delivery_status: 'uncertain',
-    });
+    expect(updatesWithStatus('sending')).toHaveLength(2);
+    expect(updatesWithStatus('uncertain')).toHaveLength(2);
 
     sendMode = 'failed';
     const rejected = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(rejected.notificationsSent).toBe(0);
-    expect(callsFor('notifications', 'update')[2]?.payload).toMatchObject({
-      delivery_status: 'failed',
-    });
+    expect(updatesWithStatus('failed')).toHaveLength(1);
 
     sendMode = 'sent';
     const delivered = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(delivered.notificationsSent).toBe(1);
     expect(sends).toBe(4);
-    expect(callsFor('notifications', 'update').at(-1)?.payload).toMatchObject({
+    expect(updatesWithStatus('sent').at(-1)?.payload).toMatchObject({
       delivery_status: 'sent',
       discord_message_id: 'message-retry',
     });
+  });
+
+  it('never reclaims a durable sending claim on a later run', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent([
+      unsentEvent('event-sending'),
+    ]);
+    fake.state.handlers['notifications:select'] = (call) => ({
+      data:
+        call.filters['delivery_owner'] === undefined
+          ? [{
+              event_id: 'event-sending',
+              delivery_status: 'sending',
+              delivery_owner: 'other-run',
+              lease_until: null,
+            }]
+          : [],
+    });
+    fake.state.handlers['rpc:claim_notification'] = () => ({ data: null });
+    let sends = 0;
+    const notifier = {
+      channelId: 'channel-1',
+      send: async () => {
+        sends += 1;
+        return 'must-not-happen';
+      },
+    };
+
+    const result = await runSync({ now: T0, guildId: 'guild-test', notifier });
+
+    expect(result.status).toBe('completed');
+    expect(result.notificationsSent).toBe(0);
+    expect(sends).toBe(0);
+    expect(callsFor('rpc:claim_notification', 'select')).toHaveLength(0);
+    expect(callsFor('notifications', 'update')).toHaveLength(0);
+  });
+
+  it('exposes a successful profile refresh without using roster freshness as a proxy', async () => {
+    setupSuccessfulSync();
+    const original = process.env.SYNC_COLLECT_PLAYER_PROFILES;
+    delete process.env.SYNC_COLLECT_PLAYER_PROFILES;
+    const getPlayer = vi.fn(async () => ({
+      tag: '#G2P9',
+      name: 'Player One',
+      trophies: 5000,
+    }));
+    fake.api.current = apiClient({ getPlayer: getPlayer as never });
+
+    try {
+      const result = await runSync({ now: T0, guildId: 'guild-test' });
+
+      expect(result.status).toBe('completed');
+      expect(result.profileRefreshEnabled).toBe(true);
+      expect(result.memberFailures).toEqual([]);
+      expect(result.membersExpected).toBe(1);
+      expect(result.membersSucceeded).toBe(1);
+      expect(result.lastSuccessfulProfileRefreshAt).toBe(T0.toISOString());
+      expect(getPlayer).toHaveBeenCalledWith('G2P9');
+    } finally {
+      if (original === undefined) delete process.env.SYNC_COLLECT_PLAYER_PROFILES;
+      else process.env.SYNC_COLLECT_PLAYER_PROFILES = original;
+    }
+  });
+
+  it('does not call the profile endpoint when profile collection is disabled', async () => {
+    setupSuccessfulSync();
+    const original = process.env.SYNC_COLLECT_PLAYER_PROFILES;
+    process.env.SYNC_COLLECT_PLAYER_PROFILES = 'false';
+    const getPlayer = vi.fn(async () => ({
+      tag: '#G2P9',
+      name: 'Player One',
+      trophies: 5000,
+    }));
+    fake.api.current = apiClient({ getPlayer: getPlayer as never });
+
+    try {
+      const result = await runSync({ now: T0, guildId: 'guild-test' });
+
+      expect(result.status).toBe('completed');
+      expect(result.profileRefreshEnabled).toBe(false);
+      expect(result.memberFailures).toEqual([]);
+      expect(result.membersExpected).toBe(1);
+      expect(result.membersSucceeded).toBe(1);
+      expect(result.lastSuccessfulProfileRefreshAt).toBeNull();
+      expect(getPlayer).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) delete process.env.SYNC_COLLECT_PLAYER_PROFILES;
+      else process.env.SYNC_COLLECT_PLAYER_PROFILES = original;
+    }
   });
 
   it('records a notification that reaches Discord after the send timeout', async () => {
@@ -1063,7 +1173,7 @@ describe('runSync', () => {
     ]);
     fake.state.handlers['notifications:select'] = () => ({ data: [] });
     fake.state.handlers['rpc:claim_notification'] = () => ({ data: 'claim-event-late' });
-    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+    fake.state.handlers['notifications:update'] = respondNotificationUpdate;
     const originalTimeout = process.env.SYNC_NOTIFIER_TIMEOUT_MS;
     process.env.SYNC_NOTIFIER_TIMEOUT_MS = '5';
 
@@ -1077,9 +1187,12 @@ describe('runSync', () => {
 
       const result = await runSync({ now: T0, guildId: 'guild-test', notifier });
       expect(result.notificationsSent).toBe(0);
-      expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
-        delivery_status: 'uncertain',
-      });
+      expect(callsFor('notifications', 'update').some((call) =>
+        call.payload.delivery_status === 'sending',
+      )).toBe(true);
+      expect(callsFor('notifications', 'update').some((call) =>
+        call.payload.delivery_status === 'uncertain',
+      )).toBe(true);
 
       await new Promise((resolve) => setTimeout(resolve, 60));
       expect(callsFor('notifications', 'update').at(-1)?.payload).toMatchObject({
@@ -1103,7 +1216,7 @@ describe('runSync', () => {
     fake.state.handlers['rpc:claim_notification'] = (call) => ({
       data: `claim-${String((call.payload as { p_event_id: string }).p_event_id)}`,
     });
-    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+    fake.state.handlers['notifications:update'] = respondNotificationUpdate;
 
     const delivered: string[] = [];
     const notifier = {

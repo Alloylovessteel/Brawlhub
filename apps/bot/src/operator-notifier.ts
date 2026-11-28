@@ -13,6 +13,11 @@ const EMBED_COLOR = EMBED_COLORS.success;
 const SNOWFLAKE = /^\d{17,20}$/;
 const VERIFICATION_DELETION_NOTICE = 'ℹ️ Verification will be deleted after 30 minutes.';
 
+function runTimestamp(value: string | null | undefined): string {
+  const ms = Date.parse(value ?? '');
+  return Number.isFinite(ms) ? `<t:${Math.floor(ms / 1000)}:f>` : 'unknown';
+}
+
 type NoticePurpose = 'sync' | 'verification';
 type SettingsLoader = (guildId: string) => Promise<GuildSettingsView>;
 
@@ -131,7 +136,7 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
   } else {
     const lines: string[] = [];
     if (hasMemberFailures) {
-      embed.setTitle('❌ Member synchronization failed.');
+      embed.setTitle('❌ Partial profile refresh.');
       for (const failure of failures.slice(0, 8)) {
         lines.push(playerLabel(failure.name, failure.tag));
         lines.push(discordHandle(failure.name));
@@ -142,12 +147,25 @@ export function buildSyncOperatorEmbed(result: SyncResult): EmbedBuilder {
         lines.push(`+${failures.length - 8} more member(s) failed.`);
       }
       if (expected !== undefined && succeeded !== undefined) {
-        lines.push('', '✅ Sync completed.', `Successfully synced Members: ${succeeded}/${expected}.`);
+        lines.push(
+          '',
+          '✅ Sync completed.',
+          `Profiles refreshed: ${succeeded}/${expected}.`,
+          result.profileRefreshEnabled === false
+            ? 'ℹ️ Profile collection was disabled for this run.'
+            : result.lastSuccessfulProfileRefreshAt === null
+              ? 'ℹ️ No profile was refreshed successfully this run.'
+              : `ℹ️ Last successful refresh this run: ${runTimestamp(result.lastSuccessfulProfileRefreshAt)}.`,
+        );
       }
     } else {
       embed.setTitle('✅ Sync completed.');
       if (expected !== undefined && succeeded !== undefined) {
-        lines.push(`Successfully synced Members: ${succeeded}/${expected}.`);
+        lines.push(
+          result.profileRefreshEnabled === false
+            ? `ℹ️ Roster only; profiles were not refreshed (${succeeded}/${expected} roster entries).`
+            : `Profiles refreshed: ${succeeded}/${expected}.`,
+        );
       }
     }
     embed.setDescription(lines.join('\n') || '✅ Sync completed.');

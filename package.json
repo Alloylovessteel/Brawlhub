@@ -23,6 +23,7 @@
     "db:migrate": "node scripts/migrate.mjs",
     "db:baseline": "node scripts/migrate.mjs --baseline",
     "db:status": "node scripts/migrate.mjs --status",
+    "db:repair-checksum": "node scripts/repair-migration-checksum.mjs",
     "sync:run": "tsx scripts/sync.ts",
     "clubs:register": "tsx scripts/register-clubs.ts",
     "phase2:inspect": "node scripts/phase2-inspect.mjs",

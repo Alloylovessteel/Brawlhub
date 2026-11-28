@@ -71,7 +71,18 @@ export function buildClubRegisteredEmbed(preview: ClubRegistrationPreview): Embe
 }
 
 export function buildSyncResultEmbed(result: SyncResult, run: SyncRunSummary | null): EmbedBuilder {
-  const color = result.status === 'failed' ? EMBED_COLORS.danger : result.status === 'skipped' ? EMBED_COLORS.warning : EMBED_COLORS.success;
+  const failures = result.memberFailures ?? [];
+  const hasProfileFailures =
+    failures.length > 0 ||
+    (result.membersExpected !== undefined &&
+      result.membersSucceeded !== undefined &&
+      result.membersSucceeded < result.membersExpected);
+  const color =
+    result.status === 'failed'
+      ? EMBED_COLORS.danger
+      : result.status === 'skipped' || hasProfileFailures
+        ? EMBED_COLORS.warning
+        : EMBED_COLORS.success;
   const embed = new EmbedBuilder()
     .setColor(color)
     .setTitle(result.status === 'completed' ? 'Sync completed' : result.status === 'failed' ? 'Sync failed' : 'Sync skipped')
@@ -86,6 +97,21 @@ export function buildSyncResultEmbed(result: SyncResult, run: SyncRunSummary | n
       { name: 'Started', value: timestamp(run?.startedAt ?? null), inline: INLINE },
       { name: 'Finished', value: timestamp(run?.finishedAt ?? null), inline: INLINE },
     );
+
+  if (result.profileRefreshEnabled === false) {
+    embed.addFields({ name: 'Profile refresh', value: 'Roster only; profiles not refreshed', inline: INLINE });
+  } else if (result.membersExpected !== undefined && result.membersSucceeded !== undefined) {
+    embed.addFields({
+      name: 'Profile refresh',
+      value: `${text(result.membersSucceeded)}/${text(result.membersExpected)} refreshed • ${text(failures.length)} failed`,
+      inline: INLINE,
+    });
+    embed.addFields({
+      name: 'Last successful this run',
+      value: timestamp(result.lastSuccessfulProfileRefreshAt ?? null),
+      inline: INLINE,
+    });
+  }
 
   if (result.error !== undefined) {
     embed.addFields({ name: 'Error', value: mdCode(text(result.error)) });

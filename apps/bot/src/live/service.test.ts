@@ -211,6 +211,7 @@ function createLedger() {
   const releases: LedgerUpdate[] = [];
   let failingSubscription: string | null = null;
   let failingMessageId: string | null = null;
+  let failingIncludesSentinels = true;
 
   const filterValue = (call: ResponderCall, column: string): unknown =>
     call.filters.find((filter) => filter.column === column)?.values[0];
@@ -220,9 +221,14 @@ function createLedger() {
     upserts,
     updates,
     releases,
-    failWritesFor(subscriptionId: string | null, messageId: string | null = null): void {
+    failWritesFor(
+      subscriptionId: string | null,
+      messageId: string | null = null,
+      includeSentinels = true,
+    ): void {
       failingSubscription = subscriptionId;
       failingMessageId = messageId;
+      failingIncludesSentinels = includeSentinels;
     },
     respond(call: ResponderCall) {
       if (call.table !== 'live_battle_deliveries') return undefined;
@@ -256,10 +262,14 @@ function createLedger() {
         const expectedClaim = String(filterValue(call, 'discord_message_id'));
         const messageId = String(payload.discord_message_id);
         updates.push({ subscriptionId, battleKey, expectedClaim, messageId });
-        if (
+        const writeFails =
           failingSubscription === subscriptionId &&
-          (failingMessageId === null || failingMessageId === messageId)
-        ) {
+          (failingMessageId === null ||
+            failingMessageId === messageId ||
+            (failingIncludesSentinels &&
+              failingMessageId !== null &&
+              messageId.includes(failingMessageId)));
+        if (writeFails) {
           return { data: null, error: { message: 'ledger write down' } };
         }
         const key = `${subscriptionId}|${battleKey}`;
@@ -1060,6 +1070,115 @@ describe('runLiveBattlePoll', () => {
     expect(outcome.delivered).toBe(0);
     expect(ledger.upserts).toEqual([]);
     expect(calls.filter((call) => call.table === 'live_battle_deliveries' && call.op === 'update')).toEqual([]);
+  });
+
+  it('suppresses a stale sending claim that left the ledger before Discord responded', async () => {
+    const row = subscription('sub-sending', 'guild-sending', 'channel-sending', 'user-sending');
+    const item = battle('2026-11-22T11:55:00.000Z', 'victory');
+    const key = battleKey(item);
+    const api = { getBattleLog: vi.fn(async () => [item]) } as unknown as BrawlStarsClient;
+    const ledger = createLedger();
+    ledger.rows.set(`${row.id}|${key}`, {
+      guild_id: row.guild_id,
+      subscription_id: row.id,
+      player_id: PLAYER.id,
+      battle_key: key,
+      discord_message_id: 'claim:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:sending',
+      delivered_at: NOW.toISOString(),
+    });
+    const send = vi.fn(async () => ({ id: 'should-not-happen' }));
+    const { db } = createDb((call) => {
+      const ledgerResult = ledger.respond(call);
+      if (ledgerResult !== undefined) return ledgerResult;
+      const storedResult = storedBattles(call);
+      if (storedResult !== undefined) return storedResult;
+      const { table, op } = call;
+      if (table === 'guild_live_subscriptions' && op === 'select') return { data: [row], error: null };
+      if (table === 'players' && op === 'select') return { data: [PLAYER], error: null };
+      if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
+      return { data: null, error: null };
+    });
+
+    const outcome = await runLiveBattlePoll(
+      channelClient(row.channel_id, row.guild_id, send),
+      { db: db as never, api, now: NOW },
+    );
+
+    expect(outcome.delivered).toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    expect(ledger.upserts).toEqual([]);
+  });
+
+  it('treats a delivered sentinel as proof that Discord already accepted the battle', async () => {
+    const row = subscription('sub-sentinel', 'guild-sentinel', 'channel-sentinel', 'user-sentinel');
+    const item = battle('2026-11-22T11:56:00.000Z', 'victory');
+    const key = battleKey(item);
+    const api = { getBattleLog: vi.fn(async () => [item]) } as unknown as BrawlStarsClient;
+    const ledger = createLedger();
+    ledger.rows.set(`${row.id}|${key}`, {
+      guild_id: row.guild_id,
+      subscription_id: row.id,
+      player_id: PLAYER.id,
+      battle_key: key,
+      discord_message_id: 'claim-delivered:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:123456789012345678',
+      delivered_at: NOW.toISOString(),
+    });
+    const send = vi.fn(async () => ({ id: 'should-not-happen' }));
+    const { db } = createDb((call) => {
+      const ledgerResult = ledger.respond(call);
+      if (ledgerResult !== undefined) return ledgerResult;
+      const storedResult = storedBattles(call);
+      if (storedResult !== undefined) return storedResult;
+      const { table, op } = call;
+      if (table === 'guild_live_subscriptions' && op === 'select') return { data: [row], error: null };
+      if (table === 'players' && op === 'select') return { data: [PLAYER], error: null };
+      if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
+      return { data: null, error: null };
+    });
+
+    const outcome = await runLiveBattlePoll(
+      channelClient(row.channel_id, row.guild_id, send),
+      { db: db as never, api, now: NOW },
+    );
+
+    expect(outcome.delivered).toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    expect(ledger.upserts).toEqual([]);
+  });
+
+  it('persists a delivered sentinel when only the real message-id write fails', async () => {
+    const row = subscription('sub-sentinel-write', 'guild-sentinel-write', 'channel-sentinel-write', 'user-sentinel-write');
+    const item = battle('2026-11-22T11:57:00.000Z', 'victory');
+    const key = battleKey(item);
+    const api = { getBattleLog: vi.fn(async () => [item]) } as unknown as BrawlStarsClient;
+    const ledger = createLedger();
+    ledger.failWritesFor(row.id, 'sentinel-message', false);
+    const send = vi.fn(async () => ({ id: 'sentinel-message' }));
+    const { db } = createDb((call) => {
+      const ledgerResult = ledger.respond(call);
+      if (ledgerResult !== undefined) return ledgerResult;
+      const storedResult = storedBattles(call);
+      if (storedResult !== undefined) return storedResult;
+      const { table, op } = call;
+      if (table === 'guild_live_subscriptions' && op === 'select') return { data: [row], error: null };
+      if (table === 'players' && op === 'select') return { data: [PLAYER], error: null };
+      if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
+      return { data: null, error: null };
+    });
+    const client = channelClient(row.channel_id, row.guild_id, send);
+
+    const first = await runLiveBattlePoll(client, { db: db as never, api, now: NOW });
+
+    expect(first.delivered).toBe(1);
+    expect(String(ledger.rows.get(`${row.id}|${key}`)?.discord_message_id)).toMatch(
+      /^claim-delivered:.+:sentinel-message$/,
+    );
+
+    ledger.failWritesFor(null);
+    const second = await runLiveBattlePoll(client, { db: db as never, api, now: NOW });
+
+    expect(second.delivered).toBe(0);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
 

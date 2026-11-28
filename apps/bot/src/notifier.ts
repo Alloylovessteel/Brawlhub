@@ -8,6 +8,19 @@ import { isDefinitiveDiscordRejection } from './discord/errors.js';
 const logger = createLogger('bot/notifier');
 const REDACTED = '[REDACTED]';
 
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) {
+    return error.message;
+  }
+  return String(error);
+}
+
 /** Strip newlines and mention syntax so API-provided names cannot inject Discord pings. */
 function clean(value: string | undefined, maxLength: number): string {
   if (value === undefined) {
@@ -138,13 +151,14 @@ export async function createDiscordNotifier(
         }
         return { kind: 'sent', messageId: message.id };
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.error('Failed to send Discord sync notification', {
-          error: message.includes(token) ? message.split(token).join(REDACTED) : message,
-        });
+        const message = describeError(error);
+        const safeMessage = message.includes(token) ? REDACTED : message;
+        logger.error('Failed to send Discord sync notification', { error: safeMessage });
         // Only a definitive rejection proves no message exists. Timeouts and
         // network errors stay uncertain so sync never auto-reposts them.
-        return isDefinitiveDiscordRejection(error) ? { kind: 'failed' } : { kind: 'uncertain' };
+        return isDefinitiveDiscordRejection(error)
+          ? { kind: 'failed', reason: safeMessage.slice(0, 500) }
+          : { kind: 'uncertain' };
       }
     },
   };

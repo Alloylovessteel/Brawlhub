@@ -6,6 +6,7 @@ import {
   loadGuildNicknameSettings,
   normalizePrefix,
   reconcileMemberNickname,
+  refreshAllConfiguredNicknames,
   refreshGuildNicknames,
   releaseManagedNicknamesAfterDisable,
   resolveVerifiedGuildMain,
@@ -16,6 +17,7 @@ import {
 import type { RegisteredLinkView } from '../verification/service.js';
 
 const GUILD_ID = '1488531664962326571';
+const DISABLED_GUILD_ID = '1488531664962326572';
 const USER_ID = '983248496884875286';
 const OTHER_USER_ID = '983248496884875287';
 const THIRD_USER_ID = '983248496884875288';
@@ -156,19 +158,28 @@ class FakeDb {
   readonly tables: Record<string, Row[]>;
   private readonly rpcLinks: Row[];
   private readonly rpcGuildId: string;
+  private readonly rpcActiveGuilds: string[];
 
   constructor(init: {
     readonly settings?: Row | null;
+    readonly settingsRows?: Row[];
     readonly links?: Row[];
     readonly ledger?: Row[];
     readonly clubs?: Row[];
     readonly memberships?: Row[];
     readonly rpcGuildId?: string;
+    readonly rpcActiveGuilds?: string[];
   }) {
     this.rpcLinks = (init.links ?? []).map((row) => ({ ...row }));
     this.rpcGuildId = init.rpcGuildId ?? GUILD_ID;
+    this.rpcActiveGuilds = init.rpcActiveGuilds ?? [];
     this.tables = {
-      guild_settings: init.settings == null ? [] : [{ ...init.settings }],
+      guild_settings:
+        init.settingsRows !== undefined
+          ? init.settingsRows.map((row) => ({ ...row }))
+          : init.settings == null
+            ? []
+            : [{ ...init.settings }],
       clubs: (init.clubs ?? [{ id: 'club-1' }]).map((row) => ({ ...row })),
       club_memberships: (init.memberships ?? [{ player_id: PLAYER_ID }]).map((row) => ({ ...row })),
       player_verifications: (init.links ?? []).map((row) => ({ ...row })),
@@ -202,6 +213,16 @@ class FakeDb {
     if (name === 'list_guild_verified_links') {
       if (args['p_guild_id'] !== this.rpcGuildId) return { data: [], error: null };
       return { data: this.rpcLinks.map((row) => ({ ...row })), error: null };
+    }
+
+    if (name === 'guilds_with_active_managed_nicknames') {
+      const after = args['p_after_guild_id'];
+      const rows = this.rpcActiveGuilds
+        .filter((id) => after === null || after === undefined || id > String(after))
+        .sort()
+        .slice(0, Number(args['p_limit'] ?? 1000))
+        .map((guild_id) => ({ guild_id }));
+      return { data: rows, error: null };
     }
 
     if (name === 'guild_managed_nickname_page') {
@@ -253,29 +274,43 @@ class FakeDb {
 
     if (name === 'managed_nickname_mark_applied') {
       const row = findLedger();
-      if (row === undefined || row['released_at'] !== null) return { data: false, error: null };
+      if (row === undefined) return { data: false, error: null };
       const cycleMatchesPending = row['pending_cycle_id'] === args['p_cycle_id'];
+      const expectedNickname = args['p_expected_applied_nickname'];
+      if (
+        cycleMatchesPending &&
+        expectedNickname !== null &&
+        expectedNickname !== undefined &&
+        row['pending_applied_nickname'] !== expectedNickname
+      ) {
+        return { data: false, error: null };
+      }
       const cycleAlreadyActive =
-        row['cycle_id'] === args['p_cycle_id'] && row['pending_cycle_id'] === null;
+        row['released_at'] === null &&
+        row['cycle_id'] === args['p_cycle_id'] &&
+        row['pending_cycle_id'] === null;
       if (!cycleMatchesPending && !cycleAlreadyActive) return { data: false, error: null };
       Object.assign(row, {
-        cycle_id: args['p_cycle_id'],
+        cycle_id: cycleMatchesPending ? args['p_cycle_id'] : row['cycle_id'],
         confirmed_at: now,
+        released_at: cycleMatchesPending ? null : row['released_at'],
         applied_nickname: cycleMatchesPending
           ? (row['pending_applied_nickname'] ?? row['applied_nickname'])
           : row['applied_nickname'],
         previous_nickname: cycleMatchesPending
-          ? (row['pending_previous_nickname'] ?? row['previous_nickname'])
+          ? row['pending_previous_nickname']
           : row['previous_nickname'],
         pending_cycle_id: null,
         pending_applied_nickname: null,
         pending_previous_nickname: null,
-        source: args['p_source'],
-        source_id: args['p_source_id'],
-        player_id: args['p_player_id'],
-        player_tag: args['p_player_tag'],
-        player_name: args['p_player_name'],
-        prefix: args['p_prefix'],
+        // A pending cycle's metadata was written by the intent RPC; only an
+        // already-confirmed cycle may refresh metadata from this call.
+        source: cycleMatchesPending ? row['source'] : args['p_source'],
+        source_id: cycleMatchesPending ? row['source_id'] : args['p_source_id'],
+        player_id: cycleMatchesPending ? row['player_id'] : args['p_player_id'],
+        player_tag: cycleMatchesPending ? row['player_tag'] : args['p_player_tag'],
+        player_name: cycleMatchesPending ? row['player_name'] : args['p_player_name'],
+        prefix: cycleMatchesPending ? row['prefix'] : args['p_prefix'],
         updated_at: now,
         last_seen_at: now,
       });
@@ -368,6 +403,7 @@ interface MemberSpec {
 function fakeGuild(
   specs: Record<string, MemberSpec>,
   ownerId: string = OWNER_ID,
+  guildId: string = GUILD_ID,
 ): {
   readonly guild: Guild;
   readonly fetch: ReturnType<typeof vi.fn>;
@@ -395,7 +431,7 @@ function fakeGuild(
     return members[id]!;
   });
   return {
-    guild: { id: GUILD_ID, ownerId, members: { fetch } } as unknown as Guild,
+    guild: { id: guildId, ownerId, members: { fetch } } as unknown as Guild,
     fetch,
     setNicknames,
   };
@@ -657,7 +693,7 @@ describe('managed nickname ledger preservation', () => {
     });
   });
 
-  it('never reactivates a released ledger row through a new write intent', async () => {
+  it('reactivates a released row only after the new nickname write is confirmed', async () => {
     const originalRelease = '2026-11-19T00:00:00.000Z';
     const originalConfirmation = '2026-11-19T00:00:00.000Z';
     const db = new FakeDb({
@@ -668,15 +704,166 @@ describe('managed nickname ledger preservation', () => {
         confirmed_at: originalConfirmation,
       })],
     });
-    const { guild } = fakeGuild({ [USER_ID]: { nickname: 'Manual' } });
+    const { guild, setNicknames } = fakeGuild({ [USER_ID]: { nickname: 'Manual' } });
+
+    const result = await syncMemberNickname(guild, USER_ID, { db: db.client });
+
+    expect(result).toEqual({ kind: 'ok', nickname: '[ABC] Alpha' });
+    expect(setNicknames[USER_ID]).toHaveBeenCalledWith('[ABC] Alpha', REASON);
+    expect(db.tables['guild_managed_nicknames']?.[0]).toMatchObject({
+      applied_nickname: '[ABC] Alpha',
+      previous_nickname: 'Manual',
+      released_at: null,
+      pending_cycle_id: null,
+    });
+    expect(db.tables['guild_managed_nicknames']?.[0]?.['confirmed_at']).not.toBe(
+      originalConfirmation,
+    );
+
+    const second = await syncMemberNickname(guild, USER_ID, { db: db.client });
+    expect(second.kind).toBe('unchanged');
+    expect(setNicknames[USER_ID]).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a released row released when Discord rejects the reapply', async () => {
+    const originalRelease = '2026-11-19T00:00:00.000Z';
+    const db = new FakeDb({
+      settings: settingsRow(),
+      links: [linkRow()],
+      ledger: [ledgerRow({ released_at: originalRelease })],
+    });
+    const { guild } = fakeGuild({
+      [USER_ID]: {
+        nickname: 'Manual',
+        setNicknameImpl: async () => {
+          throw new Error('Missing Permissions');
+        },
+      },
+    });
 
     const result = await syncMemberNickname(guild, USER_ID, { db: db.client });
 
     expect(result.kind).toBe('failed');
-    expect(db.tables['guild_managed_nicknames']?.[0]).toMatchObject({
-      released_at: originalRelease,
-      confirmed_at: originalConfirmation,
+    expect(db.tables['guild_managed_nicknames']?.[0]?.['released_at']).toBe(originalRelease);
+    expect(db.tables['guild_managed_nicknames']?.[0]?.['pending_previous_nickname']).toBe('Manual');
+  });
+
+  it('reapplies after a release without restoring the stale previous nickname', async () => {
+    const db = new FakeDb({
+      settings: settingsRow(),
+      links: [linkRow()],
+      ledger: [ledgerRow({ released_at: '2026-11-19T00:00:00.000Z', previous_nickname: 'Stale' })],
     });
+    const { guild } = fakeGuild({ [USER_ID]: { nickname: null } });
+
+    const result = await syncMemberNickname(guild, USER_ID, { db: db.client });
+
+    expect(result.kind).toBe('ok');
+    expect(db.tables['guild_managed_nicknames']?.[0]).toMatchObject({
+      previous_nickname: null,
+      released_at: null,
+    });
+  });
+});
+
+describe('pending managed nickname reconciliation', () => {
+  const PENDING_CYCLE = '44444444-4444-4444-8444-444444444444';
+
+  function pendingRow(overrides: Partial<Row> = {}): Row {
+    return ledgerRow({
+      prefix: '[ABC]',
+      applied_nickname: '[ABC] Alpha',
+      previous_nickname: 'Original',
+      confirmed_at: null,
+      pending_cycle_id: PENDING_CYCLE,
+      pending_applied_nickname: '[ABC] Alpha',
+      pending_previous_nickname: 'Original',
+      ...overrides,
+    });
+  }
+
+  it('settles an old pending write before applying a changed prefix', async () => {
+    const db = new FakeDb({
+      settings: settingsRow({ nickname_prefix: '[XYZ]' }),
+      links: [linkRow()],
+      ledger: [pendingRow()],
+    });
+    const { guild, setNicknames } = fakeGuild({ [USER_ID]: { nickname: '[ABC] Alpha' } });
+
+    const result = await syncMemberNickname(guild, USER_ID, { db: db.client });
+
+    expect(result).toEqual({ kind: 'ok', nickname: '[XYZ] Alpha' });
+    expect(setNicknames[USER_ID]).toHaveBeenCalledWith('[XYZ] Alpha', REASON);
+    expect(db.tables['guild_managed_nicknames']?.[0]).toMatchObject({
+      applied_nickname: '[XYZ] Alpha',
+      previous_nickname: 'Original',
+      prefix: '[XYZ]',
+      pending_cycle_id: null,
+      released_at: null,
+    });
+    const confirmations = db.calls
+      .filter((call) => call.table === 'rpc:managed_nickname_mark_applied')
+      .map((call) => call.payload);
+    expect(confirmations[0]).toMatchObject({
+      p_cycle_id: PENDING_CYCLE,
+      p_expected_applied_nickname: '[ABC] Alpha',
+    });
+    expect(confirmations[0]?.['p_prefix']).toBe('[ABC]');
+  });
+
+  it('reports unchanged but still clears the pending cycle when the prefix is the same', async () => {
+    const db = new FakeDb({
+      settings: settingsRow(),
+      links: [linkRow()],
+      ledger: [pendingRow()],
+    });
+    const { guild, setNicknames } = fakeGuild({ [USER_ID]: { nickname: '[ABC] Alpha' } });
+
+    const result = await syncMemberNickname(guild, USER_ID, { db: db.client });
+
+    expect(result).toEqual({ kind: 'unchanged', nickname: '[ABC] Alpha' });
+    expect(setNicknames[USER_ID]).not.toHaveBeenCalled();
+    expect(db.tables['guild_managed_nicknames']?.[0]).toMatchObject({
+      applied_nickname: '[ABC] Alpha',
+      previous_nickname: 'Original',
+      prefix: '[ABC]',
+      pending_cycle_id: null,
+    });
+  });
+
+  it('restores the pending write baseline when a disable finds the applied nickname', async () => {
+    const db = new FakeDb({
+      settings: settingsRow({ nickname_sync_enabled: false }),
+      ledger: [pendingRow()],
+    });
+    const { guild, setNicknames } = fakeGuild({ [USER_ID]: { nickname: '[ABC] Alpha' } });
+
+    const summary = await releaseManagedNicknamesAfterDisable(guild, { db: db.client });
+
+    expect(summary).toMatchObject({
+      released: 1,
+      restored: 1,
+      failures: 0,
+      cleanupIncomplete: false,
+    });
+    expect(setNicknames[USER_ID]).toHaveBeenCalledWith('Original', RESTORE_REASON);
+    expect(db.tables['guild_managed_nicknames']?.[0]?.['released_at']).not.toBeNull();
+    expect(db.tables['guild_managed_nicknames']?.[0]?.['pending_cycle_id']).toBeNull();
+  });
+
+  it('releases a pending row without overwriting a nickname the member chose', async () => {
+    const db = new FakeDb({
+      settings: settingsRow({ nickname_sync_enabled: false }),
+      ledger: [pendingRow()],
+    });
+    const { guild, setNicknames } = fakeGuild({ [USER_ID]: { nickname: 'Manual' } });
+
+    const summary = await releaseManagedNicknamesAfterDisable(guild, { db: db.client });
+
+    expect(summary.released).toBe(1);
+    expect(summary.restored).toBe(0);
+    expect(setNicknames[USER_ID]).not.toHaveBeenCalled();
+    expect(db.tables['guild_managed_nicknames']?.[0]?.['released_at']).not.toBeNull();
   });
 });
 
@@ -911,6 +1098,7 @@ describe('refreshGuildNicknames', () => {
 
     expect(summary.failures).toBe(1);
     expect(summary.released).toBe(0);
+    expect(summary.cleanupIncomplete).toBe(true);
     expect(db.tables['guild_managed_nicknames']?.[0]?.['released_at']).toBeNull();
   });
 
@@ -948,6 +1136,58 @@ describe('refreshGuildNicknames', () => {
     expect(summary.cleanupIncomplete).toBe(true);
     expect(setNicknames[OTHER_USER_ID]).not.toHaveBeenCalled();
     expect(db.tables['guild_managed_nicknames']?.[0]?.['released_at']).toBe(originalRelease);
+  });
+});
+
+describe('refreshAllConfiguredNicknames', () => {
+  it('retries cleanup in a disabled guild that still has an active ledger row', async () => {
+    const db = new FakeDb({
+      settingsRows: [],
+      rpcActiveGuilds: [DISABLED_GUILD_ID],
+      ledger: [ledgerRow({
+        guild_id: DISABLED_GUILD_ID,
+        applied_nickname: '[ABC] Alpha',
+        previous_nickname: 'Before Sync',
+      })],
+    });
+    const { guild, setNicknames } = fakeGuild(
+      { [USER_ID]: { nickname: '[ABC] Alpha' } },
+      OWNER_ID,
+      DISABLED_GUILD_ID,
+    );
+    const { client } = fakeClient(guild);
+
+    const summary = await refreshAllConfiguredNicknames(client, { db: db.client });
+
+    expect(summary).toMatchObject({
+      guilds: 1,
+      released: 1,
+      restored: 1,
+      failures: 0,
+      cleanupIncomplete: false,
+    });
+    expect(setNicknames[USER_ID]).toHaveBeenCalledWith('Before Sync', RESTORE_REASON);
+    expect(db.tables['guild_managed_nicknames']?.[0]?.['released_at']).not.toBeNull();
+  });
+
+  it('marks cleanup incomplete when a disabled guild cannot be fetched', async () => {
+    const db = new FakeDb({
+      settingsRows: [],
+      rpcActiveGuilds: [DISABLED_GUILD_ID],
+    });
+    const client = {
+      guilds: {
+        fetch: vi.fn(async () => {
+          throw new Error('Gateway unavailable');
+        }),
+      },
+    } as unknown as Client;
+
+    const summary = await refreshAllConfiguredNicknames(client, { db: db.client });
+
+    expect(summary.failures).toBe(1);
+    expect(summary.cleanupIncomplete).toBe(true);
+    expect(summary.released).toBe(0);
   });
 });
 

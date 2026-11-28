@@ -277,7 +277,7 @@ export type SyncNotifierSendResult =
   | undefined
   | { readonly kind: 'sent'; readonly messageId: string }
   | { readonly kind: 'skipped' }
-  | { readonly kind: 'failed' }
+  | { readonly kind: 'failed'; readonly reason?: string }
   | { readonly kind: 'uncertain' };
 
 export interface SyncNotifier {
@@ -318,6 +318,10 @@ export interface SyncResult {
   membersExpected?: number;
   membersSucceeded?: number;
   memberFailures?: readonly SyncMemberFailure[];
+  /** False when this run intentionally refreshed rosters without player profiles. */
+  profileRefreshEnabled?: boolean | undefined;
+  /** Run-scoped timestamp only; not a persistent per-player profile timestamp. */
+  lastSuccessfulProfileRefreshAt?: string | null | undefined;
 }
 
 /** Input passed to a notifier; also used to derive notification claim metadata. */
@@ -1424,10 +1428,14 @@ async function readPendingEvents(
   return collected;
 }
 
-type NotificationDeliveryStatus = 'pending' | 'sent' | 'failed' | 'uncertain';
+type NotificationDeliveryStatus = 'pending' | 'sending' | 'sent' | 'failed' | 'uncertain';
 
 function deliveryStatus(value: unknown): NotificationDeliveryStatus | null {
-  return value === 'pending' || value === 'sent' || value === 'failed' || value === 'uncertain'
+  return value === 'pending' ||
+    value === 'sending' ||
+    value === 'sent' ||
+    value === 'failed' ||
+    value === 'uncertain'
     ? value
     : null;
 }
@@ -1450,7 +1458,7 @@ async function readClaimedEventIds(
       .from('notifications')
       .select('event_id, delivery_status')
       .in('event_id', eventIds)
-      .in('delivery_status', ['sent', 'uncertain']),
+      .in('delivery_status', ['sending', 'sent', 'uncertain']),
     db
       .from('notifications')
       .select('event_id, delivery_status, delivery_owner, lease_until')
@@ -1470,7 +1478,7 @@ async function readClaimedEventIds(
     const status = deliveryStatus(row?.delivery_status);
     if (
       typeof id === 'string' &&
-      (status === null || status === 'sent' || status === 'uncertain')
+      (status === null || status === 'sending' || status === 'sent' || status === 'uncertain')
     ) {
       claimed.add(id);
     }
@@ -1582,36 +1590,72 @@ async function recordCapacityEvent(db: SupabaseClient, input: CapacityEventInput
   requireOk(result.error, `Write club capacity event for ${input.clubId}`);
 }
 
+function notificationReason(value: unknown): string {
+  const text = sanitizeError(value);
+  return text.length <= 500 ? text : `${text.slice(0, 497)}...`;
+}
+
+/** Move the claim to a durable pre-send state before contacting Discord. */
+async function beginNotificationSend(
+  db: SupabaseClient,
+  claimId: string,
+  ownerId: string,
+): Promise<boolean> {
+  const result = await db
+    .from('notifications')
+    .update({ delivery_status: 'sending', lease_until: null })
+    .eq('id', claimId)
+    .eq('delivery_owner', ownerId)
+    .eq('delivery_status', 'pending')
+    .select('id');
+  requireOk(result.error, 'Mark notification claim sending');
+  const updated = Array.isArray(result.data) && result.data.length === 1;
+  if (!updated) {
+    log.warn('Notification claim was not available for sending', { eventId: claimId });
+  }
+  return updated;
+}
+
 async function markNotificationClaimFailed(
   db: SupabaseClient,
   claimId: string,
   ownerId: string,
   error: unknown,
 ): Promise<void> {
-  // Mark the claim as failed instead of deleting it: a later run can reuse the
-  // row, and a delivered claim is never confused with an interrupted one.
+  // A definitive rejection proves no message exists, so the row becomes
+  // retryable after the lease check. `sending` rows are never reclaimed.
+  const reason = notificationReason(error);
   const failed = await db
     .from('notifications')
-    .update({ delivery_status: 'failed' })
+    .update({
+      delivery_status: 'failed',
+      delivery_reason: reason,
+      delivery_owner: null,
+      claimed_at: null,
+      lease_until: null,
+    })
     .eq('id', claimId)
     .eq('delivery_owner', ownerId)
-    .eq('delivery_status', 'pending');
+    .eq('delivery_status', 'sending')
+    .select('id');
   if (failed.error !== null && failed.error !== undefined) {
     log.warn('Could not mark notification claim failed', {
       eventId: claimId,
       reason: sanitizeError(failed.error),
     });
+  } else if (!Array.isArray(failed.data) || failed.data.length !== 1) {
+    log.warn('Notification claim was not active while marking failure', { eventId: claimId });
   }
   log.warn('Notification delivery failed; claim marked for retry', {
     eventId: claimId,
-    reason: sanitizeError(error),
+    reason,
   });
 }
 
 type NormalizedNotifierSend =
   | { readonly kind: 'sent'; readonly messageId: string }
   | { readonly kind: 'skipped' }
-  | { readonly kind: 'failed' }
+  | { readonly kind: 'failed'; readonly reason?: string }
   | { readonly kind: 'uncertain' };
 
 function normalizeNotifierSend(value: SyncNotifierSendResult): NormalizedNotifierSend {
@@ -1633,21 +1677,25 @@ async function markNotificationClaimUncertain(
   ownerId: string,
   error: unknown,
 ): Promise<void> {
+  const reason = notificationReason(error);
   const update = await db
     .from('notifications')
-    .update({ delivery_status: 'uncertain' })
+    .update({ delivery_status: 'uncertain', delivery_reason: reason, lease_until: null })
     .eq('id', claimId)
     .eq('delivery_owner', ownerId)
-    .eq('delivery_status', 'pending');
+    .eq('delivery_status', 'sending')
+    .select('id');
   if (update.error !== null && update.error !== undefined) {
     log.warn('Could not mark notification claim uncertain', {
       eventId: claimId,
       reason: sanitizeError(update.error),
     });
+  } else if (!Array.isArray(update.data) || update.data.length !== 1) {
+    log.warn('Notification claim was not active while marking uncertain', { eventId: claimId });
   }
   log.warn('Notification delivery outcome is uncertain; claim will not be auto-reposted', {
     eventId: claimId,
-    reason: sanitizeError(error),
+    reason,
   });
 }
 
@@ -1663,15 +1711,20 @@ async function recordLateNotificationDelivery(
       delivery_status: 'sent',
       discord_message_id: messageId,
       delivered_at: new Date().toISOString(),
+      delivery_reason: 'late Discord success',
+      lease_until: null,
     })
     .eq('id', claimId)
     .eq('delivery_owner', ownerId)
-    .eq('delivery_status', 'uncertain');
+    .in('delivery_status', ['sending', 'uncertain'])
+    .select('id');
   if (update.error !== null && update.error !== undefined) {
     log.warn('Could not record late notification delivery', {
       eventId: claimId,
       reason: sanitizeError(update.error),
     });
+  } else if (!Array.isArray(update.data) || update.data.length !== 1) {
+    log.warn('Notification claim was not available for late delivery', { eventId: claimId });
   }
 }
 
@@ -1726,6 +1779,12 @@ async function sendNotifications(
       continue; // Already delivered or leased by another live run.
     }
 
+    // Persist the pre-send state before Discord sees the request. If the result
+    // write later fails, the row stays `sending` and cannot be reclaimed.
+    if (!(await beginNotificationSend(db, claimId, ownerId))) {
+      continue;
+    }
+
     let sendPromise: Promise<SyncNotifierSendResult> | null = null;
     let outcome: NormalizedNotifierSend;
     try {
@@ -1752,7 +1811,7 @@ async function sendNotifications(
         db,
         claimId,
         ownerId,
-        new Error(`Notifier reported ${outcome.kind}`),
+        new Error(('reason' in outcome ? outcome.reason : undefined) ?? `Notifier reported ${outcome.kind}`),
       );
       continue;
     }
@@ -1762,11 +1821,17 @@ async function sendNotifications(
         delivery_status: 'sent',
         discord_message_id: outcome.messageId,
         delivered_at: new Date().toISOString(),
+        delivery_reason: null,
+        lease_until: null,
       })
       .eq('id', claimId)
       .eq('delivery_owner', ownerId)
-      .eq('delivery_status', 'pending');
+      .eq('delivery_status', 'sending')
+      .select('id');
     requireOk(update.error, 'Update notification claim');
+    if (!Array.isArray(update.data) || update.data.length !== 1) {
+      throw new Error('Notification claim was lost before recording delivery');
+    }
     sent += 1;
   }
   return sent;
@@ -1896,6 +1961,14 @@ async function runSyncWithoutGuild(options: RunSyncOptions): Promise<SyncResult>
     membersExpected: sum((result) => result.membersExpected ?? 0),
     membersSucceeded: sum((result) => result.membersSucceeded ?? 0),
     memberFailures: results.flatMap((result) => result.memberFailures ?? []),
+    profileRefreshEnabled: results.some((result) => result.profileRefreshEnabled === true),
+    lastSuccessfulProfileRefreshAt: (() => {
+      const times = results
+        .map((result) => result.lastSuccessfulProfileRefreshAt)
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .sort();
+      return times.length > 0 ? times[times.length - 1] : null;
+    })(),
   };
 }
 
@@ -1990,6 +2063,8 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     membersSucceeded: number;
     memberFailures: readonly SyncMemberFailure[];
   } = { membersExpected: 0, membersSucceeded: 0, memberFailures: [] };
+  let profileRefreshEnabled = true;
+  let lastSuccessfulProfileRefreshAt: string | null = null;
   const lockToken = randomUUID();
   const notificationOwnerId = options.notificationOwnerId ?? randomUUID();
   let lockHeld = false;
@@ -2073,6 +2148,7 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     // notifications; roster identity still comes from the official club API.
     // Profile reads and idempotent player upserts are independent per player.
     const collectPlayerProfiles = readBooleanEnv('SYNC_COLLECT_PLAYER_PROFILES', true);
+    profileRefreshEnabled = collectPlayerProfiles;
     const rosterEntries = [...roster.values()];
     const profileResults = await mapWithConcurrency(
       rosterEntries,
@@ -2118,6 +2194,19 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       membersSucceeded: Math.max(0, roster.size - memberFailures.length),
       memberFailures,
     };
+    lastSuccessfulProfileRefreshAt =
+      collectPlayerProfiles && memberCounts.membersSucceeded > 0 ? nowIso : null;
+    log.info('Player profile refresh summary', {
+      syncRunId: runId,
+      guildId: requestedGuildId ?? null,
+      phase: 'profile-refresh-summary',
+      profileRefreshEnabled: collectPlayerProfiles,
+      profilesExpected: memberCounts.membersExpected,
+      profilesSucceeded: memberCounts.membersSucceeded,
+      profileFailureCount: memberFailures.length,
+      failedTags: memberFailures.slice(0, 20).map((failure) => failure.tag),
+      lastSuccessfulProfileRefreshAt,
+    });
     const presentPlayerIds = new Set(states.map((state) => state.playerId));
 
     // 3. Joins, transfers and same-club role changes, computed against the
@@ -2373,6 +2462,8 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       affectedClubIds: clubIds,
       ...guildContext(requestedGuildId),
       ...memberCounts,
+      profileRefreshEnabled,
+      lastSuccessfulProfileRefreshAt,
     };
   } catch (error) {
     const message = sanitizeError(error);
@@ -2395,6 +2486,8 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
       affectedClubIds: clubIds,
       ...guildContext(requestedGuildId),
       ...memberCounts,
+      profileRefreshEnabled,
+      lastSuccessfulProfileRefreshAt,
     };
   } finally {
     if (lockRenewal !== undefined) {

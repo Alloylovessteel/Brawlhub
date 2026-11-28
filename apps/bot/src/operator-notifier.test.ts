@@ -95,14 +95,14 @@ describe('operator embeds', () => {
   it('reports partial member synchronization with BrawlTools-style detail lines', () => {
     const json = buildSyncOperatorEmbed(result()).toJSON();
 
-    expect(json.title).toBe('❌ Member synchronization failed.');
+    expect(json.title).toBe('❌ Partial profile refresh.');
     expect(json.color).toBe(EMBED_COLORS.warning);
     expect(json.description).toContain('🏷️ Broken (`#BAD1`)');
     expect(json.description).toContain('👥 @Broken');
     expect(json.description).toContain('📝 API unavailable.');
     expect(json.description).toContain('ℹ️ Verification will be deleted after 30 minutes.');
     expect(json.description).toContain('✅ Sync completed.');
-    expect(json.description).toContain('Successfully synced Members: 601/603.');
+    expect(json.description).toContain('Profiles refreshed: 601/603.');
     expect(json.fields?.map((field) => field.name)).not.toContain('Failed members');
   });
 
@@ -121,8 +121,25 @@ describe('operator embeds', () => {
 
     expect(json.title).toBe('✅ Sync completed.');
     expect(json.color).toBe(EMBED_COLORS.success);
-    expect(json.description).toContain('Successfully synced Members: 603/603.');
+    expect(json.description).toContain('Profiles refreshed: 603/603.');
     expect(json.description).not.toContain('Verification will be deleted');
+  });
+
+  it('states when profiles were not refreshed instead of claiming profile freshness', () => {
+    const json = buildSyncOperatorEmbed(
+      result({
+        memberFailures: [],
+        membersSucceeded: 603,
+        profileRefreshEnabled: false,
+        lastSuccessfulProfileRefreshAt: null,
+      }),
+    ).toJSON();
+
+    expect(json.title).toBe('✅ Sync completed.');
+    expect(json.description).toContain(
+      'ℹ️ Roster only; profiles were not refreshed (603/603 roster entries).',
+    );
+    expect(json.description).not.toContain('Profiles refreshed:');
   });
 
   it('redacts and truncates sync errors', () => {

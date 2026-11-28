@@ -33,18 +33,25 @@ const MAX_ID_LENGTH = 64;
 const LEDGER_WRITE_ATTEMPTS = 2;
 const UNCONFIRMED_LEDGER_TTL_MS = MAX_SESSION_MS;
 const LIVE_CLAIM_PREFIX = 'claim:';
+const LIVE_DELIVERED_SENTINEL_PREFIX = 'claim-delivered:';
 const LIVE_CLAIM_STALE_MS = 2 * 60_000;
 const LIVE_CLAIM_PATTERN = /^claim:[0-9a-f-]+:(reserved|sending)$/i;
+const LIVE_DELIVERED_CLAIM_PATTERN = /^claim-delivered:([0-9a-f-]+):(\d{17,20})$/i;
 
-type LiveClaimStage = 'reserved' | 'sending';
+type LiveClaimStage = 'reserved' | 'sending' | 'delivered';
 
 interface ParsedLiveClaim {
   readonly claimId: string;
   readonly stage: LiveClaimStage;
+  readonly messageId?: string;
 }
 
 function parseLiveClaim(value: unknown): ParsedLiveClaim | null {
   if (typeof value !== 'string') return null;
+  const delivered = LIVE_DELIVERED_CLAIM_PATTERN.exec(value);
+  if (delivered !== null) {
+    return { claimId: delivered[1]!, stage: 'delivered', messageId: delivered[2]! };
+  }
   const match = LIVE_CLAIM_PATTERN.exec(value);
   if (match === null) return null;
   const stage = match[1];
@@ -488,7 +495,9 @@ async function readDeliveredKeys(
       const messageId = item?.discord_message_id;
       if (typeof key !== 'string' || typeof messageId !== 'string') continue;
       const claim = parseLiveClaim(messageId);
-      if (claim === null) {
+      if (claim === null || claim.stage === 'delivered') {
+        // A delivered sentinel proves Discord accepted the message even if the
+        // final real-message-id write could not complete.
         delivered.add(key);
         continue;
       }
@@ -712,6 +721,48 @@ async function confirmDelivery(
   return lastError ?? 'Unknown delivery ledger error';
 }
 
+function deliveredSentinel(claimMessageId: string, messageId: string): string {
+  return `${LIVE_DELIVERED_SENTINEL_PREFIX}${claimMessageId}:${messageId}`;
+}
+
+/**
+ * Persist proof of a Discord acceptance when the real message-id write failed.
+ * The bot treats this sentinel as delivered; an operator can resolve it to the
+ * real id with `resolve_live_delivery_claim` after review.
+ */
+async function persistDeliveredSentinel(
+  db: Db,
+  row: SubscriptionRow,
+  playerId: string,
+  battle: ParsedBattle,
+  claimMessageId: string,
+  messageId: string,
+  nowIso: string,
+): Promise<string | null> {
+  const sentinel = deliveredSentinel(claimMessageId, messageId);
+  let lastError: string | null = null;
+  for (let attempt = 0; attempt < LEDGER_WRITE_ATTEMPTS; attempt += 1) {
+    const { data, error } = await db
+      .from('live_battle_deliveries')
+      .update({ discord_message_id: sentinel, delivered_at: nowIso })
+      .eq('guild_id', row.guild_id)
+      .eq('subscription_id', row.id)
+      .eq('player_id', playerId)
+      .eq('battle_key', battle.key)
+      .eq('discord_message_id', claimMessageId)
+      .select('battle_key');
+    if (error) {
+      lastError = error.message;
+      continue;
+    }
+    if (Array.isArray(data) && data.length === 0) {
+      return 'Live delivery claim was lost before recording delivered sentinel';
+    }
+    return null;
+  }
+  return lastError ?? 'Unknown delivered sentinel ledger error';
+}
+
 /** Release a claim only when Discord proved that no message was created. */
 async function releaseDelivery(
   db: Db,
@@ -897,8 +948,24 @@ async function deliverBattles(
       deliveredKeys.add(battle.key);
       continue;
     }
-    // Suppress this exact battle in-process. The durable claim remains in the
-    // ledger, and a later poll reconciles the already-sent message.
+    // Prefer a durable delivered sentinel so a restart does not lose proof of
+    // this Discord acceptance. If that write also fails, keep the in-process
+    // reconciliation entry and leave the exact claim suppressed.
+    const sentinelError = await persistDeliveredSentinel(
+      db,
+      row,
+      playerId,
+      battle,
+      claimMessageId,
+      messageId,
+      nowIso,
+    );
+    if (sentinelError === null) {
+      delivered += 1;
+      deliveredKeys.add(battle.key);
+      unconfirmedDeliveries.delete(deliveryKey(row, playerId, battle.key));
+      continue;
+    }
     unconfirmedDeliveries.set(deliveryKey(row, playerId, battle.key), {
       battleKey: battle.key,
       claimMessageId,

@@ -1,3 +1,4 @@
+import { createLogger } from '@brawlhub/logging';
 import { mdCode, mdLabelLines } from '../discord/embed-format';
 import { EMBED_COLORS } from '../discord/embed-style';
 import {
@@ -28,6 +29,7 @@ import {
   type RankedTier,
 } from '../ranked-roles/service.js';
 
+const logger = createLogger('bot/fn');
 const EMBED_COLOR = EMBED_COLORS.neutral;
 const SUCCESS_COLOR = EMBED_COLORS.success;
 
@@ -260,8 +262,18 @@ async function handleNicknameSubcommand(
             allowedMentions: { parse: [] },
           });
         }
-      } catch {
-        // Cleanup must not turn a successful disable into an error.
+      } catch (error) {
+        // Cleanup must not turn a successful disable into an error, but the
+        // administrator still needs to know that nicknames may remain.
+        logger.warn('Managed nickname cleanup after disable threw', {
+          guildId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await interaction.followUp({
+          content: 'ℹ️ Nickname cleanup could not finish. Some BrawlHub nicknames may remain; an administrator can restore them manually.',
+          flags: MessageFlags.Ephemeral,
+          allowedMentions: { parse: [] },
+        });
       }
     }
     return;
