@@ -41,14 +41,17 @@ const CLUB_CAPACITY = 30;
 const DEFAULT_API_TIMEOUT_MS = 30_000;
 const DEFAULT_NOTIFIER_TIMEOUT_MS = 10_000;
 const MAX_ERROR_LENGTH = 1000;
-/** Recover announcements for events committed by a run that failed before delivery. */
-const NOTIFICATION_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+/** Explicit retention window for recovering announcements after an outage. */
+const NOTIFICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_NOTIFICATIONS_PER_SYNC = 20;
 /** Live claims are owned for this long before another run may take them over. */
 const NOTIFICATION_LEASE_SECONDS = 120;
 /** Page size for the unsent-event RPC; pagination stops at 20 collected events. */
 const UNSENT_EVENT_PAGE_SIZE = 25;
 const MAX_UNSENT_EVENT_PAGES = 100;
+/** Open memberships are paged by id so the REST max_rows cap cannot hide departures. */
+const OPEN_MEMBERSHIP_PAGE_SIZE = 500;
+const MAX_OPEN_MEMBERSHIP_PAGES = 100;
 /** Bounded fan-out for independent API reads and idempotent DB writes. */
 const SYNC_FETCH_CONCURRENCY = 6;
 const SYNC_WRITE_CONCURRENCY = 6;
@@ -264,6 +267,19 @@ export async function collectBattleLogs(
 // Public contract
 // ---------------------------------------------------------------------------
 
+/**
+ * Legacy notifiers return a message id or undefined. Structured outcomes let a
+ * notifier prove a definite rejection without turning a timeout into a retry
+ * that could duplicate a message Discord actually accepted.
+ */
+export type SyncNotifierSendResult =
+  | string
+  | undefined
+  | { readonly kind: 'sent'; readonly messageId: string }
+  | { readonly kind: 'skipped' }
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'uncertain' };
+
 export interface SyncNotifier {
   send(input: {
     eventId: string;
@@ -277,7 +293,7 @@ export interface SyncNotifier {
     occurredAt?: string;
     /** Latest official member count for the club involved in the event. */
     remainingMembers?: number;
-  }): Promise<string | undefined>;
+  }): Promise<SyncNotifierSendResult>;
 }
 
 export interface SyncMemberFailure {
@@ -1272,13 +1288,43 @@ async function readOpenMembershipsForClubs(
   clubIds: readonly string[],
 ): Promise<OpenMembershipRow[]> {
   if (clubIds.length === 0) return [];
-  const result = await db
-    .from('club_memberships')
-    .select('id, club_id, player_id, role')
-    .in('club_id', [...clubIds])
-    .is('valid_to', null);
-  requireOk(result.error, 'Read open memberships');
-  return (result.data ?? []) as OpenMembershipRow[];
+  const collected: OpenMembershipRow[] = [];
+  const seen = new Set<string>();
+  let afterId: string | null = null;
+
+  for (let page = 0; page < MAX_OPEN_MEMBERSHIP_PAGES; page += 1) {
+    const result = await db.rpc('list_open_club_memberships', {
+      p_club_ids: [...clubIds],
+      p_limit: OPEN_MEMBERSHIP_PAGE_SIZE,
+      p_after_id: afterId,
+    });
+    requireOk(result.error, 'Read open memberships');
+    const rows = (Array.isArray(result.data) ? result.data : []) as OpenMembershipRow[];
+    if (rows.length === 0) return collected;
+
+    let lastId: string | null = null;
+    for (const row of rows) {
+      if (
+        typeof row.id !== 'string' ||
+        typeof row.club_id !== 'string' ||
+        typeof row.player_id !== 'string' ||
+        (row.role !== null && typeof row.role !== 'string')
+      ) {
+        throw new Error('Read open memberships: malformed row');
+      }
+      if (seen.has(row.id) || (afterId !== null && row.id <= afterId)) {
+        throw new Error('Read open memberships: non-monotonic keyset');
+      }
+      seen.add(row.id);
+      collected.push(row);
+      lastId = row.id;
+    }
+    if (rows.length < OPEN_MEMBERSHIP_PAGE_SIZE) return collected;
+    if (lastId === null) throw new Error('Read open memberships: missing keyset');
+    afterId = lastId;
+  }
+
+  throw new Error('Read open memberships: page limit exceeded');
 }
 
 function toPendingEvent(row: UnsentEventRow): PendingEventRow | null {
@@ -1309,61 +1355,81 @@ function toPendingEvent(row: UnsentEventRow): PendingEventRow | null {
 }
 
 /**
- * Reads recent unsent membership events involving this guild's clubs. The RPC
- * filters delivered claims in SQL and is keyset-paginated, so a crowded recent
- * page can never hide older unsent events behind a PostgREST row cap.
+ * Reads the oldest unsent membership events involving this guild's clubs. The
+ * guild-scoped RPC filters delivered and uncertain claims in SQL and pages
+ * oldest-first, so a steady stream of newer events cannot starve the backlog.
  */
 async function readPendingEvents(
   db: SupabaseClient,
+  guildId: string,
   clubIds: readonly string[],
   nowIso: string,
+  ownerId: string,
 ): Promise<PendingEventRow[]> {
   if (clubIds.length === 0) return [];
-  const sinceIso = new Date(Date.parse(nowIso) - NOTIFICATION_LOOKBACK_MS).toISOString();
+  const sinceIso = new Date(Date.parse(nowIso) - NOTIFICATION_RETENTION_MS).toISOString();
   const collected: PendingEventRow[] = [];
   const seen = new Set<string>();
-  let beforeDetectedAt: string | null = null;
-  let beforeId: string | null = null;
+  let afterDetectedAt: string | null = null;
+  let afterId: string | null = null;
 
   for (let page = 0; page < MAX_UNSENT_EVENT_PAGES && collected.length < MAX_NOTIFICATIONS_PER_SYNC; page += 1) {
-    const result = await db.rpc('list_unsent_membership_events', {
+    const result = await db.rpc('list_oldest_unsent_membership_events', {
+      p_guild_id: guildId,
       p_club_ids: [...clubIds],
       p_since: sinceIso,
       p_limit: UNSENT_EVENT_PAGE_SIZE,
-      p_before_detected_at: beforeDetectedAt,
-      p_before_id: beforeId,
+      p_after_detected_at: afterDetectedAt,
+      p_after_id: afterId,
     });
     requireOk(result.error, 'List unsent membership events');
 
     const rows = (Array.isArray(result.data) ? result.data : []) as UnsentEventRow[];
     if (rows.length === 0) break;
     let lastCursor: { detectedAt: string; id: string } | null = null;
+    const normalizedRows: PendingEventRow[] = [];
     for (const item of rows) {
-      const normalized = toPendingEvent(item);
-      if (normalized !== null && !seen.has(normalized.id)) {
-        seen.add(normalized.id);
-        collected.push(normalized);
+      if (
+        afterId !== null &&
+        typeof item.detected_at === 'string' &&
+        typeof item.id === 'string' &&
+        item.detected_at === afterDetectedAt &&
+        item.id <= afterId
+      ) {
+        throw new Error('List unsent membership events: non-monotonic keyset');
       }
+      const normalized = toPendingEvent(item);
+      if (normalized !== null && !seen.has(normalized.id)) normalizedRows.push(normalized);
       if (typeof item.detected_at === 'string' && typeof item.id === 'string') {
         lastCursor = { detectedAt: item.detected_at, id: item.id };
       }
+    }
+
+    // Claims are checked before an event counts toward the announcement limit.
+    // Otherwise a page full of already-announced events would stop the scan and
+    // starve older undelivered events behind them.
+    const claimed = await readClaimedEventIds(db, normalizedRows, ownerId, nowIso);
+    for (const normalized of normalizedRows) {
+      if (claimed.has(normalized.id)) continue;
+      seen.add(normalized.id);
+      collected.push(normalized);
       if (collected.length >= MAX_NOTIFICATIONS_PER_SYNC) break;
     }
     if (lastCursor === null) break;
-    if (lastCursor.detectedAt === beforeDetectedAt && lastCursor.id === beforeId) break;
-    beforeDetectedAt = lastCursor.detectedAt;
-    beforeId = lastCursor.id;
+    if (lastCursor.detectedAt === afterDetectedAt && lastCursor.id === afterId) break;
+    afterDetectedAt = lastCursor.detectedAt;
+    afterId = lastCursor.id;
   }
 
-  // The RPC pages newest-first so keyset cursors stay stable. Deliver the
-  // backlog oldest-first so a long backlog does not starve its oldest events.
-  return collected.reverse();
+  return collected;
 }
 
-type NotificationDeliveryStatus = 'pending' | 'sent' | 'failed';
+type NotificationDeliveryStatus = 'pending' | 'sent' | 'failed' | 'uncertain';
 
 function deliveryStatus(value: unknown): NotificationDeliveryStatus | null {
-  return value === 'pending' || value === 'sent' || value === 'failed' ? value : null;
+  return value === 'pending' || value === 'sent' || value === 'failed' || value === 'uncertain'
+    ? value
+    : null;
 }
 
 /**
@@ -1384,7 +1450,7 @@ async function readClaimedEventIds(
       .from('notifications')
       .select('event_id, delivery_status')
       .in('event_id', eventIds)
-      .eq('delivery_status', 'sent'),
+      .in('delivery_status', ['sent', 'uncertain']),
     db
       .from('notifications')
       .select('event_id, delivery_status, delivery_owner, lease_until')
@@ -1402,7 +1468,12 @@ async function readClaimedEventIds(
     const id = row?.event_id;
     // Legacy rows predate the status column and were only created for delivery.
     const status = deliveryStatus(row?.delivery_status);
-    if (typeof id === 'string' && (status === null || status === 'sent')) claimed.add(id);
+    if (
+      typeof id === 'string' &&
+      (status === null || status === 'sent' || status === 'uncertain')
+    ) {
+      claimed.add(id);
+    }
   }
   for (const item of sameRun.data ?? []) {
     const id = (item as { event_id?: unknown } | null)?.event_id;
@@ -1537,6 +1608,92 @@ async function markNotificationClaimFailed(
   });
 }
 
+type NormalizedNotifierSend =
+  | { readonly kind: 'sent'; readonly messageId: string }
+  | { readonly kind: 'skipped' }
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'uncertain' };
+
+function normalizeNotifierSend(value: SyncNotifierSendResult): NormalizedNotifierSend {
+  if (typeof value === 'string') {
+    return value.trim() === '' ? { kind: 'uncertain' } : { kind: 'sent', messageId: value };
+  }
+  if (value === undefined) return { kind: 'uncertain' };
+  if (value.kind === 'sent') {
+    return value.messageId.trim() === ''
+      ? { kind: 'uncertain' }
+      : { kind: 'sent', messageId: value.messageId };
+  }
+  return value;
+}
+
+async function markNotificationClaimUncertain(
+  db: SupabaseClient,
+  claimId: string,
+  ownerId: string,
+  error: unknown,
+): Promise<void> {
+  const update = await db
+    .from('notifications')
+    .update({ delivery_status: 'uncertain' })
+    .eq('id', claimId)
+    .eq('delivery_owner', ownerId)
+    .eq('delivery_status', 'pending');
+  if (update.error !== null && update.error !== undefined) {
+    log.warn('Could not mark notification claim uncertain', {
+      eventId: claimId,
+      reason: sanitizeError(update.error),
+    });
+  }
+  log.warn('Notification delivery outcome is uncertain; claim will not be auto-reposted', {
+    eventId: claimId,
+    reason: sanitizeError(error),
+  });
+}
+
+async function recordLateNotificationDelivery(
+  db: SupabaseClient,
+  claimId: string,
+  ownerId: string,
+  messageId: string,
+): Promise<void> {
+  const update = await db
+    .from('notifications')
+    .update({
+      delivery_status: 'sent',
+      discord_message_id: messageId,
+      delivered_at: new Date().toISOString(),
+    })
+    .eq('id', claimId)
+    .eq('delivery_owner', ownerId)
+    .eq('delivery_status', 'uncertain');
+  if (update.error !== null && update.error !== undefined) {
+    log.warn('Could not record late notification delivery', {
+      eventId: claimId,
+      reason: sanitizeError(update.error),
+    });
+  }
+}
+
+/** withTimeout does not cancel Discord; record a message that arrives after it. */
+function observeLateNotificationSuccess(
+  db: SupabaseClient,
+  sendPromise: Promise<SyncNotifierSendResult>,
+  claimId: string,
+  ownerId: string,
+): void {
+  void sendPromise
+    .then((value) => {
+      const outcome = normalizeNotifierSend(value);
+      if (outcome.kind === 'sent') {
+        void recordLateNotificationDelivery(db, claimId, ownerId, outcome.messageId);
+      }
+    })
+    .catch(() => {
+      // A late rejection still proves nothing; the uncertain claim stays put.
+    });
+}
+
 async function sendNotifications(
   db: SupabaseClient,
   notifier: SyncNotifier,
@@ -1569,21 +1726,33 @@ async function sendNotifications(
       continue; // Already delivered or leased by another live run.
     }
 
-    let messageId: string | undefined;
+    let sendPromise: Promise<SyncNotifierSendResult> | null = null;
+    let outcome: NormalizedNotifierSend;
     try {
-      messageId = await withTimeout(notifier.send(input), timeoutMs, 'notifier.send');
+      sendPromise = notifier.send(input);
+      outcome = normalizeNotifierSend(await withTimeout(sendPromise, timeoutMs, 'notifier.send'));
     } catch (error) {
-      await markNotificationClaimFailed(db, claimId, ownerId, error);
+      if (sendPromise !== null) observeLateNotificationSuccess(db, sendPromise, claimId, ownerId);
+      await markNotificationClaimUncertain(db, claimId, ownerId, error);
       continue;
     }
-    if (typeof messageId !== 'string' || messageId.trim() === '') {
-      // A skipped or failed notifier did not send anything. `undefined` must
-      // never be persisted as a delivered notification.
+
+    if (outcome.kind === 'uncertain') {
+      await markNotificationClaimUncertain(
+        db,
+        claimId,
+        ownerId,
+        new Error('Discord delivery result could not be confirmed'),
+      );
+      continue;
+    }
+    if (outcome.kind === 'skipped' || outcome.kind === 'failed') {
+      // These outcomes prove no message exists, so a later run may retry.
       await markNotificationClaimFailed(
         db,
         claimId,
         ownerId,
-        new Error('Notifier returned no Discord message ID'),
+        new Error(`Notifier reported ${outcome.kind}`),
       );
       continue;
     }
@@ -1591,7 +1760,7 @@ async function sendNotifications(
       .from('notifications')
       .update({
         delivery_status: 'sent',
-        discord_message_id: messageId,
+        discord_message_id: outcome.messageId,
         delivered_at: new Date().toISOString(),
       })
       .eq('id', claimId)
@@ -2040,10 +2209,14 @@ export async function runSync(options: RunSyncOptions = {}): Promise<SyncResult>
     // later failed is still announced by a later sync unless it was already
     // claimed in the notifications ledger.
     await assertOwnership('notification discovery');
-    const recentEvents = await readPendingEvents(db, clubIds, nowIso);
-    const claimedEventIds = await readClaimedEventIds(db, recentEvents, notificationOwnerId, nowIso);
+    const recentEvents = await readPendingEvents(
+      db,
+      requestedGuildId ?? '',
+      clubIds,
+      nowIso,
+      notificationOwnerId,
+    );
     const pendingNotifications: SyncNotificationInput[] = recentEvents
-      .filter((event) => !claimedEventIds.has(event.id))
       .map((event) => {
         const fromClubId = event.from_club_id ?? undefined;
         const toClubId = event.to_club_id ?? undefined;

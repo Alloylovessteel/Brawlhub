@@ -23,6 +23,7 @@ export type {
   RunSyncOptions,
   SyncNotificationInput,
   SyncNotifier,
+  SyncNotifierSendResult,
   SyncNotifierWithChannel,
   SyncResult,
   SyncMemberFailure,

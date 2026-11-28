@@ -280,14 +280,18 @@ export async function readGuildMembershipRolesRead(
         const row = record(value);
         const membershipId = asString(row?.['membership_id']);
         const playerId = asString(row?.['player_id']);
-        const rank = clubRoleRankFromRole(row?.['role']);
-        if (membershipId === null || playerId === null || rank === null) {
+        const parsedRole = clubMemberRoleSchema.safeParse(row?.['role']);
+        if (membershipId === null || playerId === null || !parsedRole.success) {
           complete = false;
           continue;
         }
         if (seenMemberships.has(membershipId)) complete = false;
         seenMemberships.add(membershipId);
+        // Every schema-valid membership advances the keyset, including ranks
+        // that do not map to a managed Discord role (member, rookie, notMember).
         lastId = membershipId;
+        const rank = clubRoleRankFromRole(parsedRole.data);
+        if (rank === null) continue;
         const current = roles.get(playerId);
         if (current === undefined || RANK_PRECEDENCE[rank] > RANK_PRECEDENCE[current]) {
           roles.set(playerId, rank);

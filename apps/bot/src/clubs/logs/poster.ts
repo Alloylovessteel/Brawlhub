@@ -24,6 +24,7 @@ import {
   readPostedClubLogDigests,
   rekeyClubLogDigestPost,
   releaseClubLogDigestClaims,
+  releaseClubLogDigestSendingClaimAfterRejectedReplacement,
   type ClubLogDigestClaimInput,
   type ClubLogDigestPost,
 } from './service';
@@ -412,6 +413,15 @@ export async function refreshTodayClubLogDigest(
           messageId,
         });
       } catch (postError) {
+        // The old message is proven gone (PATCH said unknown) and this POST was
+        // definitively rejected, so no message can exist for this claim.
+        if (claim !== null && isDefinitiveDiscordRejection(postError)) {
+          await releaseClubLogDigestSendingClaimAfterRejectedReplacement(
+            guildId,
+            claim.claimId,
+            claim.key,
+          );
+        }
         logger.warn('Daily club log digest replacement failed', {
           ...details,
           error: safeError(postError, token),

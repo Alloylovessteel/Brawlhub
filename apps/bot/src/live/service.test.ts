@@ -39,6 +39,26 @@ interface ResponderCall extends RecordedCall {
   }>;
 }
 
+/** Supabase-shaped success responses for ledger writes not modeled by a test. */
+function defaultLedgerWrite(call: ResponderCall, result: unknown): unknown {
+  if (call.table !== 'live_battle_deliveries' || call.op === 'select') return result;
+  if (result !== null && typeof result === 'object') {
+    const response = result as { data?: unknown; error?: unknown };
+    if (response.error != null || response.data !== null) return result;
+  }
+  if (call.op === 'upsert') {
+    const payload = call.payloads[0] as { discord_message_id?: unknown } | undefined;
+    return { data: [{ discord_message_id: payload?.discord_message_id }], error: null };
+  }
+  if (call.op === 'update') {
+    const battleKey = String(
+      call.filters.find((filter) => filter.column === 'battle_key')?.values[0] ?? '',
+    );
+    return { data: [{ battle_key: battleKey }], error: null };
+  }
+  return result;
+}
+
 function createDb(responder: (call: ResponderCall) => unknown) {
   const calls: RecordedCall[] = [];
   const from = vi.fn((table: string) => {
@@ -58,10 +78,16 @@ function createDb(responder: (call: ResponderCall) => unknown) {
         return builder;
       };
     }
-    builder.then = (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) =>
-      Promise.resolve(
-        responder({ table, op, args: [], payloads: [...payloads], filters: [...filters] }),
-      ).then(resolve, reject);
+    builder.then = (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => {
+      const call: ResponderCall = {
+        table,
+        op,
+        args: [],
+        payloads: [...payloads],
+        filters: [...filters],
+      };
+      Promise.resolve(defaultLedgerWrite(call, responder(call))).then(resolve, reject);
+    };
     return builder;
   });
   return { db: { from }, calls };
@@ -184,6 +210,7 @@ function createLedger() {
   const updates: LedgerUpdate[] = [];
   const releases: LedgerUpdate[] = [];
   let failingSubscription: string | null = null;
+  let failingMessageId: string | null = null;
 
   const filterValue = (call: ResponderCall, column: string): unknown =>
     call.filters.find((filter) => filter.column === column)?.values[0];
@@ -193,8 +220,9 @@ function createLedger() {
     upserts,
     updates,
     releases,
-    failWritesFor(subscriptionId: string | null): void {
+    failWritesFor(subscriptionId: string | null, messageId: string | null = null): void {
       failingSubscription = subscriptionId;
+      failingMessageId = messageId;
     },
     respond(call: ResponderCall) {
       if (call.table !== 'live_battle_deliveries') return undefined;
@@ -203,7 +231,11 @@ function createLedger() {
         return {
           data: [...rows.values()]
             .filter((row) => row.subscription_id === subscriptionId)
-            .map((row) => ({ battle_key: row.battle_key, discord_message_id: row.discord_message_id })),
+            .map((row) => ({
+              battle_key: row.battle_key,
+              discord_message_id: row.discord_message_id,
+              delivered_at: row.delivered_at,
+            })),
           error: null,
         };
       }
@@ -224,7 +256,10 @@ function createLedger() {
         const expectedClaim = String(filterValue(call, 'discord_message_id'));
         const messageId = String(payload.discord_message_id);
         updates.push({ subscriptionId, battleKey, expectedClaim, messageId });
-        if (failingSubscription === subscriptionId) {
+        if (
+          failingSubscription === subscriptionId &&
+          (failingMessageId === null || failingMessageId === messageId)
+        ) {
           return { data: null, error: { message: 'ledger write down' } };
         }
         const key = `${subscriptionId}|${battleKey}`;
@@ -401,7 +436,11 @@ describe('runLiveBattlePoll', () => {
       if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
       if (table === 'live_battle_deliveries' && op === 'select') {
         return {
-          data: [{ battle_key: battleKey(battle('2026-11-22T11:45:00.000Z', 'victory')) }],
+          data: [{
+            battle_key: battleKey(battle('2026-11-22T11:45:00.000Z', 'victory')),
+            discord_message_id: 'message-1',
+            delivered_at: NOW.toISOString(),
+          }],
           error: null,
         };
       }
@@ -497,16 +536,18 @@ describe('runLiveBattlePoll', () => {
     const api = {
       getBattleLog: vi.fn(async () => [battle('2026-11-22T11:47:00.000Z', 'victory')]),
     } as unknown as BrawlStarsClient;
-    let ledgerWriteFails = true;
-    const { db, calls } = createDb(({ table, op }) => {
+    const ledger = createLedger();
+    ledger.failWritesFor(row.id, 'ledger-write-message-1');
+    const { db, calls } = createDb((call) => {
+      const ledgerResult = ledger.respond(call);
+      if (ledgerResult !== undefined) return ledgerResult;
+      const storedResult = storedBattles(call);
+      if (storedResult !== undefined) return storedResult;
+      const { table, op } = call;
       if (table === 'guild_live_subscriptions' && op === 'select') return { data: [row], error: null };
       if (table === 'players' && op === 'select') return { data: [PLAYER], error: null };
       if (table === 'players' && op === 'maybeSingle') return { data: PLAYER, error: null };
       if (table === 'player_battles' && op === 'select') return { data: [], error: null };
-      if (table === 'live_battle_deliveries' && op === 'select') return { data: [], error: null };
-      if (table === 'live_battle_deliveries' && op === 'update' && ledgerWriteFails) {
-        return { data: null, error: { message: 'ledger write down' } };
-      }
       return { data: null, error: null };
     });
     const client = channelClient('channel-ledger-write', 'guild-ledger-write', send);
@@ -520,11 +561,13 @@ describe('runLiveBattlePoll', () => {
     });
     expect(refreshedIdle(calls)).toBe(false);
 
-    ledgerWriteFails = false;
+    ledger.failWritesFor(null);
     const second = await runLiveBattlePoll(client, { db: db as never, api, now: NOW });
 
     expect(second.delivered).toBe(0);
     expect(send).toHaveBeenCalledTimes(1);
+    expect(ledger.rows.get(`${row.id}|${battleKey(battle('2026-11-22T11:47:00.000Z', 'victory'))}`))
+      .toMatchObject({ discord_message_id: 'ledger-write-message-1' });
     expect(pollInserts(calls)[1]?.status).toBe('completed');
   });
 
@@ -574,7 +617,7 @@ describe('runLiveBattlePoll', () => {
     } as unknown as Client;
     const api = { getBattleLog: vi.fn(async () => [item]) } as unknown as BrawlStarsClient;
     const ledger = createLedger();
-    ledger.failWritesFor(failing.id);
+    ledger.failWritesFor(failing.id, 'reconcile-msg-a');
     const { db } = createDb((call) => {
       const ledgerResult = ledger.respond(call);
       if (ledgerResult !== undefined) return ledgerResult;
@@ -874,7 +917,7 @@ describe('runLiveBattlePoll', () => {
     const ledger = createLedger();
     let claimAtSend: unknown;
     const send = vi.fn(async (_payload: unknown) => {
-      claimAtSend = ledger.upserts[0]?.discord_message_id;
+      claimAtSend = ledger.updates[0]?.messageId;
       return { id: undefined };
     });
     const { db, calls } = createDb((call) => {
@@ -894,12 +937,18 @@ describe('runLiveBattlePoll', () => {
       { db: db as never, api, now: NOW },
     );
 
-    expect(String(claimAtSend)).toMatch(/^claim:.+:reserved$/);
+    expect(String(claimAtSend)).toMatch(/^claim:.+:sending$/);
     expect(outcome.delivered).toBe(0);
     expect(ledger.rows.get(`${row.id}|${key}`)).toMatchObject({
       discord_message_id: claimAtSend,
     });
-    expect(ledger.updates).toEqual([]);
+    expect(ledger.updates).toMatchObject([
+      {
+        subscriptionId: row.id,
+        battleKey: key,
+        messageId: claimAtSend,
+      },
+    ]);
     expect(pollInserts(calls)[0]).toMatchObject({
       status: 'failed',
       last_error: expect.stringContaining('usable live battle message id'),
@@ -966,10 +1015,11 @@ describe('runLiveBattlePoll', () => {
     const claim = ledger.rows.get(`${row.id}|${key}`);
     expect(String(claim?.discord_message_id)).toMatch(/^claim:/);
     expect(ledger.releases).toEqual([]);
+    const updatesAfterFirstPoll = ledger.updates.length;
 
     await runLiveBattlePoll(client, { db: db as never, api, now: NOW });
     expect(send).toHaveBeenCalledTimes(1);
-    expect(ledger.updates).toEqual([]);
+    expect(ledger.updates).toHaveLength(updatesAfterFirstPoll);
     expect(ledger.rows.get(`${row.id}|${key}`)).toEqual(claim);
     expect(pollInserts(calls)).toHaveLength(2);
   });

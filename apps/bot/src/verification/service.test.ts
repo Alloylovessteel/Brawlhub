@@ -403,6 +403,35 @@ describe('listGuildVerifiedLinks', () => {
     expect(db.rpcs[1]?.args['p_limit']).toBe(500);
     expect(db.rpcs[1]?.args['p_after_id']).toBe('v-1');
   });
+
+  it('compares exact timestamp text when a page advances inside one millisecond', async () => {
+    const db = fakeDb({});
+    const microsecondTime = (microseconds: number) =>
+      `2026-11-30T00:00:00.${String(microseconds).padStart(6, '0')}Z`;
+    const firstPage = Array.from({ length: 500 }, (_, index) =>
+      staffLink(
+        `v-${500 - index}`,
+        'YQPQ0Q2CL',
+        '983248496884875286',
+        false,
+        microsecondTime(999_999 - index),
+      ),
+    );
+    const lastPage = [
+      staffLink('v-9', 'YQPQ0Q2CL', '983248496884875286', false, microsecondTime(999_498)),
+    ];
+    db.setRpcQueue([
+      { data: firstPage, error: null },
+      { data: lastPage, error: null },
+    ]);
+
+    const result = await listGuildVerifiedLinks('guild-1', { db: db.client });
+
+    expect(result).toHaveLength(501);
+    expect(db.rpcs).toHaveLength(2);
+    expect(db.rpcs[1]?.args['p_after_verified_at']).toBe(microsecondTime(999_500));
+    expect(db.rpcs[1]?.args['p_after_id']).toBe('v-1');
+  });
 });
 
 describe('deleteUserDataForDiscordUser', () => {

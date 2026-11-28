@@ -1161,6 +1161,27 @@ export async function releaseClubLogDigestClaims(
   requireOk(released.error, 'Release club log digest claims');
 }
 
+/**
+ * Release one exact `sending` claim only after Discord definitively rejected a
+ * replacement for a deleted digest message. Other stages, legacy claims and
+ * uncertain outcomes are never removed automatically.
+ */
+export async function releaseClubLogDigestSendingClaimAfterRejectedReplacement(
+  guildId: string,
+  claimId: string,
+  key: string,
+  options: ClubLogServiceOptions = {},
+): Promise<void> {
+  const parsedGuildId = requireGuildId(guildId);
+  if (claimId === '' || key === '') return;
+  const released = await dbFor(options)
+    .from('guild_club_log_digest_posts')
+    .delete()
+    .eq('guild_id', parsedGuildId)
+    .eq('message_id', digestClaimMessageId(claimId, key, 'sending'));
+  requireOk(released.error, 'Release rejected club log digest replacement claim');
+}
+
 /** Read which completed windows this guild already posted, for restart-safe polling. */
 export async function readPostedClubLogDigests(
   guildId: string,

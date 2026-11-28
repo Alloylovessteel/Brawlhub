@@ -33,6 +33,29 @@ For Supabase local development you can also use `supabase start` / `supabase db 
 which applies the same SQL files. The CLI owns `auth.users`; the migration only
 references it.
 
+### 0051 checksum history / one-time repair
+
+Migration `0051_report_delivery_bounds_and_pages` was briefly published in an edited
+form from commit `9e26703`. Commit `00de64f` restored the original body and added the
+additive correction in `0054`, but a database that already recorded the edited body
+has a different checksum and stops `db:migrate` at `0051`.
+
+The two known checksums are:
+
+- published/current: `1e5161bd9517a0964ea8be005f41d662e3ce5b32800e08a12e6eefd80d0729eb`
+- edited `9e26703` history: `6980376f866ef9664c7845de912ba97bc1b1b6b3902e50e8be3a50dec3ec2e92`
+
+Before changing bookkeeping, back up the database and run the read-only preflight
+queries. The guarded repair updates only the `0051` row when the edited checksum is
+present and the expected `0051` tables, column, trigger and functions exist. It is a
+verified no-op for the published checksum and refuses unknown checksums or schemas.
+The repair SQL is provided in chat and kept in the local untracked
+`supabase/sql/0051-checksum-repair.sql`; it is intentionally not committed to GitHub.
+
+Never use `npm run db:baseline` as a repair: it rewrites every recorded checksum
+without verifying schema state. After a repair, run `npm run db:status`, then
+`npm run db:migrate`, then `npm run db:status` again.
+
 ## Security model
 
 - **RLS is enabled on every table.** There are no `INSERT`, `UPDATE` or `DELETE`

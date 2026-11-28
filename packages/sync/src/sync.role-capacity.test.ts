@@ -250,7 +250,11 @@ function setup(options: SetupOptions = {}): void {
       data: (call.payload as { p_token: string }).p_token,
     }),
     'rpc:assert_sync_lock_ownership': () => ({ data: true }),
-    'rpc:list_unsent_membership_events': () => ({ data: [] }),
+    'rpc:list_oldest_unsent_membership_events': () => ({ data: [] }),
+    'rpc:list_open_club_memberships': (call) => {
+      const clubIds = (call.payload as { p_club_ids: string[] }).p_club_ids;
+      return { data: openRow !== null && clubIds.includes(openRow.club_id) ? [openRow] : [] };
+    },
     'rpc:claim_notification': () => ({ data: null }),
     'rpc:apply_membership_transition': () => ({ data: 'event-rpc-1' }),
     'rpc:apply_club_role_change': () => ({ data: 'role-change-1' }),

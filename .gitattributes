@@ -1,0 +1,2 @@
+# Migration checksums are SHA-256 over the exact file bytes, so keep them LF on every checkout.
+supabase/migrations/*.sql text eol=lf

@@ -103,7 +103,7 @@ describe('createDiscordNotifier', () => {
     const messageId = await notifier.send(input());
 
     expect(notifier.channelId).toBe('channel-1');
-    expect(messageId).toBe('message-1');
+    expect(messageId).toEqual({ kind: 'sent', messageId: 'message-1' });
     const [route, request] = mocks.post.mock.calls[0] as [string, { body: Record<string, unknown> }];
     expect(route).toBe('channels/channel-1/messages');
     expect(request.body).toMatchObject({
@@ -112,13 +112,31 @@ describe('createDiscordNotifier', () => {
     });
   });
 
-  it('returns undefined on a send failure so sync can retry the claim', async () => {
+  it('classifies a rate-limit failure as uncertain instead of retryable', async () => {
     mocks.maybeSingle.mockResolvedValue({ data: { announcement_channel_id: 'channel-1' }, error: null });
     mocks.post.mockRejectedValue(new Error('rate limited'));
 
     const notifier = await createDiscordNotifier({ guildId: 'guild-1' });
 
-    await expect(notifier.send(input())).resolves.toBeUndefined();
+    await expect(notifier.send(input())).resolves.toEqual({ kind: 'uncertain' });
+  });
+
+  it('classifies a definite Discord rejection as failed so sync can retry', async () => {
+    mocks.maybeSingle.mockResolvedValue({ data: { announcement_channel_id: 'channel-1' }, error: null });
+    mocks.post.mockRejectedValue({ status: 403, message: 'Missing Access' });
+
+    const notifier = await createDiscordNotifier({ guildId: 'guild-1' });
+
+    await expect(notifier.send(input())).resolves.toEqual({ kind: 'failed' });
+  });
+
+  it('treats a successful response without a message id as uncertain', async () => {
+    mocks.maybeSingle.mockResolvedValue({ data: { announcement_channel_id: 'channel-1' }, error: null });
+    mocks.post.mockResolvedValue({});
+
+    const notifier = await createDiscordNotifier({ guildId: 'guild-1' });
+
+    await expect(notifier.send(input())).resolves.toEqual({ kind: 'uncertain' });
   });
 
   it('disables notifications when no channel is configured', async () => {
@@ -127,7 +145,7 @@ describe('createDiscordNotifier', () => {
     const notifier = await createDiscordNotifier({ guildId: 'guild-1' });
 
     expect(notifier.channelId).toBeUndefined();
-    await expect(notifier.send(input())).resolves.toBeUndefined();
+    await expect(notifier.send(input())).resolves.toEqual({ kind: 'skipped' });
     expect(mocks.post).not.toHaveBeenCalled();
   });
 });

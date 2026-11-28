@@ -300,8 +300,16 @@ function parseGuildLinkRow(value: unknown): RegisteredLinkView | null {
   };
 }
 
-function linkCursorTime(value: string | null): number {
-  return value === null ? Number.NEGATIVE_INFINITY : Date.parse(value);
+/**
+ * Compare the exact timestamp text returned by the database. PostgreSQL has
+ * microsecond precision while JavaScript Date only has milliseconds, so
+ * parsing the cursor can turn two distinct, correctly ordered keysets into an
+ * apparent tie and falsely reject the next page.
+ */
+function linkCursorLess(left: string | null, right: string | null): boolean {
+  const normalize = (value: string | null): string =>
+    value === null || value === '-infinity' ? '-infinity' : value;
+  return normalize(left) < normalize(right);
 }
 
 /**
@@ -344,8 +352,8 @@ export async function listGuildVerifiedLinks(
     if (
       afterId !== null &&
       !(
-        linkCursorTime(nextAt) < linkCursorTime(afterVerifiedAt) ||
-        (linkCursorTime(nextAt) === linkCursorTime(afterVerifiedAt) && nextId < afterId)
+        linkCursorLess(nextAt, afterVerifiedAt) ||
+        (nextAt === afterVerifiedAt && nextId < afterId)
       )
     ) {
       throw new Error('Read guild verification links: non-monotonic keyset');

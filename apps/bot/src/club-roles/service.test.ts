@@ -258,6 +258,36 @@ describe('guild-scoped membership reads', () => {
     expect(rpcCalls[1]?.args['p_player_ids']).toHaveLength(1);
   });
 
+  it('keeps the read complete when full pages contain valid member and rookie rows', async () => {
+    let call = 0;
+    const { db, rpcCalls } = fakeDb({
+      'rpc:guild_club_member_roles': () => {
+        call += 1;
+        return {
+          data: call === 1
+            ? Array.from({ length: 500 }, (_, index) => ({
+                membership_id: `m-${String(index).padStart(4, '0')}`,
+                player_id: 'player-1',
+                role: index % 2 === 0 ? 'member' : 'rookie',
+              }))
+            : [{
+                membership_id: 'm-500',
+                player_id: 'player-1',
+                role: 'senior',
+              }],
+          error: null,
+        };
+      },
+    });
+
+    const result = await readGuildMembershipRolesRead(GUILD_ID, ['player-1'], { db });
+
+    expect(result.complete).toBe(true);
+    expect(result.roles.get('player-1')).toBe('senior');
+    expect(rpcCalls).toHaveLength(2);
+    expect(rpcCalls[1]?.args['p_after_id']).toBe('m-0499');
+  });
+
   it('marks the read incomplete when a page repeats a keyset', async () => {
     let call = 0;
     const { db } = fakeDb({

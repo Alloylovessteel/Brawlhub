@@ -272,6 +272,20 @@ async function postOverviewWithClaim(input: PostOverviewInput): Promise<{
     expectedMessageId = input.claimMessageId ?? null;
   }
 
+  // Build the whole payload before staging any claim. A failed database read or
+  // embed build has not called Discord, so it must never leave a posting claim.
+  let body;
+  try {
+    body = await buildOverviewRequest(input);
+  } catch (error: unknown) {
+    logger.error('Failed to build club overview payload', {
+      guildId: input.guildId,
+      channelId: input.channelId,
+      error: safeError(error, input.token),
+    });
+    return { posted: false, messageId: null };
+  }
+
   const reserved = overviewClaimMessageId(claimId, 'reserved', nowMs, input.messageId);
   if (!(await compareAndSetOverviewMessageId(input.guildId, expectedMessageId, reserved))) {
     logger.warn('Club overview was changed by another writer; refresh skipped', {
@@ -287,7 +301,6 @@ async function postOverviewWithClaim(input: PostOverviewInput): Promise<{
   }
 
   try {
-    const body = await buildOverviewRequest(input);
     const messageId = await sendOverviewRequest(input, body);
     if (messageId === null) throw new Error('Club overview post returned no message ID');
     if (!(await compareAndSetOverviewMessageId(input.guildId, posting, messageId))) {

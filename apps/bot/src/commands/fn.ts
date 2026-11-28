@@ -252,7 +252,14 @@ async function handleNicknameSubcommand(
     if (!saved.enabled) {
       // Best-effort: restore/clear nicknames BrawlHub previously applied.
       try {
-        await releaseManagedNicknamesAfterDisable(interaction.guild!);
+        const cleanup = await releaseManagedNicknamesAfterDisable(interaction.guild!);
+        if (cleanup.cleanupIncomplete) {
+          await interaction.followUp({
+            content: 'ℹ️ Nickname cleanup could not read every managed nickname. Some BrawlHub nicknames may remain; an administrator can restore them manually.',
+            flags: MessageFlags.Ephemeral,
+            allowedMentions: { parse: [] },
+          });
+        }
       } catch {
         // Cleanup must not turn a successful disable into an error.
       }

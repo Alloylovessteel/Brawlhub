@@ -33,6 +33,24 @@ const MAX_ID_LENGTH = 64;
 const LEDGER_WRITE_ATTEMPTS = 2;
 const UNCONFIRMED_LEDGER_TTL_MS = MAX_SESSION_MS;
 const LIVE_CLAIM_PREFIX = 'claim:';
+const LIVE_CLAIM_STALE_MS = 2 * 60_000;
+const LIVE_CLAIM_PATTERN = /^claim:[0-9a-f-]+:(reserved|sending)$/i;
+
+type LiveClaimStage = 'reserved' | 'sending';
+
+interface ParsedLiveClaim {
+  readonly claimId: string;
+  readonly stage: LiveClaimStage;
+}
+
+function parseLiveClaim(value: unknown): ParsedLiveClaim | null {
+  if (typeof value !== 'string') return null;
+  const match = LIVE_CLAIM_PATTERN.exec(value);
+  if (match === null) return null;
+  const stage = match[1];
+  if (stage !== 'reserved' && stage !== 'sending') return null;
+  return { claimId: value.slice('claim:'.length, -stage.length - 1), stage };
+}
 
 type Db = ReturnType<typeof createTrustedClient>;
 
@@ -427,18 +445,27 @@ async function insertPoll(
   }
 }
 
+interface LiveDeliveryLedgerView {
+  /** Battles that must not be posted again, including uncertain claims. */
+  readonly delivered: Set<string>;
+  /** Stale pre-send claims this process may take over after a restart. */
+  readonly recoverable: Map<string, string>;
+}
+
 async function readDeliveredKeys(
   db: Db,
   row: SubscriptionRow,
   playerId: string,
   keys: readonly string[],
-): Promise<Set<string>> {
+  nowMs: number,
+): Promise<LiveDeliveryLedgerView> {
   const delivered = new Set<string>();
+  const recoverable = new Map<string, string>();
   for (let index = 0; index < keys.length; index += PLAYER_CHUNK_SIZE) {
     const chunk = [...keys.slice(index, index + PLAYER_CHUNK_SIZE)];
     const { data, error } = await db
       .from('live_battle_deliveries')
-      .select('battle_key, discord_message_id')
+      .select('battle_key, discord_message_id, delivered_at')
       .eq('guild_id', row.guild_id)
       .eq('subscription_id', row.id)
       .eq('player_id', playerId)
@@ -452,11 +479,32 @@ async function readDeliveredKeys(
       throw new Error(`Delivery ledger read failed: ${error.message}`);
     }
     for (const value of data ?? []) {
-      const key = (value as { battle_key?: unknown } | null)?.battle_key;
-      if (typeof key === 'string') delivered.add(key);
+      const item = value as {
+        battle_key?: unknown;
+        discord_message_id?: unknown;
+        delivered_at?: unknown;
+      } | null;
+      const key = item?.battle_key;
+      const messageId = item?.discord_message_id;
+      if (typeof key !== 'string' || typeof messageId !== 'string') continue;
+      const claim = parseLiveClaim(messageId);
+      if (claim === null) {
+        delivered.add(key);
+        continue;
+      }
+      const claimedAt = Date.parse(typeof item?.delivered_at === 'string' ? item.delivered_at : '');
+      const isStaleReserved =
+        claim.stage === 'reserved' &&
+        Number.isFinite(claimedAt) &&
+        nowMs - claimedAt > LIVE_CLAIM_STALE_MS;
+      if (isStaleReserved) recoverable.set(key, messageId);
+      // `sending`, legacy and fresh reserved claims stay suppressed. A stale
+      // reserved claim is not delivered, but claiming it again must use the
+      // exact stored id so two workers cannot both send.
+      else delivered.add(key);
     }
   }
-  return delivered;
+  return { delivered, recoverable };
 }
 
 function buildBattleEmbed(battle: ParsedBattle, tag: string): EmbedBuilder {
@@ -532,8 +580,8 @@ function battlesInSession(
   });
 }
 
-function liveClaimId(): string {
-  return `${LIVE_CLAIM_PREFIX}${randomUUID()}:reserved`;
+function liveClaimId(stage: LiveClaimStage = 'reserved'): string {
+  return `${LIVE_CLAIM_PREFIX}${randomUUID()}:${stage}`;
 }
 
 interface DeliveryClaimResult {
@@ -543,9 +591,9 @@ interface DeliveryClaimResult {
 }
 
 /**
- * Insert a durable claim before contacting Discord. A crash or restart leaves
- * the row in place, so the next poll treats the battle as already delivered
- * instead of posting a duplicate message.
+ * Insert a durable pre-send claim before contacting Discord. A crash or restart
+ * leaves a `reserved` row that a later poll can take over; once advanced to
+ * `sending`, the outcome is uncertain and is never auto-reposted.
  */
 async function claimDelivery(
   db: Db,
@@ -583,6 +631,52 @@ async function claimDelivery(
     return { owned: true, error: null };
   }
   return { owned: false, error: lastError ?? 'Unknown delivery ledger error' };
+}
+
+/** Take over a stale pre-send claim left by a process that stopped before Discord. */
+async function takeOverLiveDeliveryClaim(
+  db: Db,
+  row: SubscriptionRow,
+  playerId: string,
+  battle: ParsedBattle,
+  oldClaimId: string,
+  newClaimId: string,
+  nowIso: string,
+): Promise<boolean> {
+  const { data, error } = await db
+    .from('live_battle_deliveries')
+    .update({ discord_message_id: newClaimId, delivered_at: nowIso })
+    .eq('guild_id', row.guild_id)
+    .eq('subscription_id', row.id)
+    .eq('player_id', playerId)
+    .eq('battle_key', battle.key)
+    .eq('discord_message_id', oldClaimId)
+    .select('battle_key');
+  if (error !== null) return false;
+  return Array.isArray(data) && data.length > 0;
+}
+
+/** CAS a reserved claim to the uncertain sending stage immediately before Discord. */
+async function advanceLiveDeliveryClaim(
+  db: Db,
+  row: SubscriptionRow,
+  playerId: string,
+  battle: ParsedBattle,
+  reservedClaimId: string,
+  sendingClaimId: string,
+  nowIso: string,
+): Promise<boolean> {
+  const { data, error } = await db
+    .from('live_battle_deliveries')
+    .update({ discord_message_id: sendingClaimId, delivered_at: nowIso })
+    .eq('guild_id', row.guild_id)
+    .eq('subscription_id', row.id)
+    .eq('player_id', playerId)
+    .eq('battle_key', battle.key)
+    .eq('discord_message_id', reservedClaimId)
+    .select('battle_key');
+  if (error !== null) return false;
+  return Array.isArray(data) && data.length > 0;
 }
 
 /** Replace a claim with the real message id only while our claim is intact. */
@@ -648,17 +742,20 @@ async function deliverBattles(
 ): Promise<DeliveryResult> {
   if (battles.length === 0) return { delivered: 0, error: null };
 
-  let deliveredKeys: Set<string>;
+  const nowMs = Date.now();
+  let ledger: LiveDeliveryLedgerView;
   try {
-    deliveredKeys = await readDeliveredKeys(
+    ledger = await readDeliveredKeys(
       db,
       row,
       playerId,
       battles.map((battle) => battle.key),
+      nowMs,
     );
   } catch (error) {
     return { delivered: 0, error: safeError(error) };
   }
+  const deliveredKeys = ledger.delivered;
 
   const battlesByKey = new Map(battles.map((battle) => [battle.key, battle]));
   const errors: string[] = [];
@@ -668,7 +765,6 @@ async function deliverBattles(
 
   // Reconcile a send whose ledger write failed on an earlier poll before
   // deciding that the battle still needs a fresh Discord message.
-  const nowMs = Date.now();
   for (const [key, unconfirmed] of unconfirmedDeliveries) {
     if (nowMs - unconfirmed.at > UNCONFIRMED_LEDGER_TTL_MS) {
       unconfirmedDeliveries.delete(key);
@@ -713,13 +809,43 @@ async function deliverBattles(
 
   let delivered = 0;
   for (const battle of pending) {
-    const claimMessageId = liveClaimId();
-    const claim = await claimDelivery(db, row, playerId, battle, claimMessageId, nowIso);
-    if (claim.error !== null) {
-      addError(`Could not claim a live battle delivery: ${claim.error}`);
+    const reservedClaimId = liveClaimId();
+    const staleClaimId = ledger.recoverable.get(battle.key);
+    let owned = false;
+    if (staleClaimId !== undefined) {
+      owned = await takeOverLiveDeliveryClaim(
+        db,
+        row,
+        playerId,
+        battle,
+        staleClaimId,
+        reservedClaimId,
+        nowIso,
+      );
+      if (!owned) addError('Could not take over a stale live delivery claim');
+    } else {
+      const claim = await claimDelivery(db, row, playerId, battle, reservedClaimId, nowIso);
+      if (claim.error !== null) {
+        addError(`Could not claim a live battle delivery: ${claim.error}`);
+        continue;
+      }
+      owned = claim.owned;
+    }
+    if (!owned) continue;
+
+    const claimMessageId = liveClaimId('sending');
+    if (!(await advanceLiveDeliveryClaim(
+      db,
+      row,
+      playerId,
+      battle,
+      reservedClaimId,
+      claimMessageId,
+      nowIso,
+    ))) {
+      addError('Live delivery claim was lost before sending');
       continue;
     }
-    if (!claim.owned) continue;
 
     let messageId: string | null;
     let sendError: unknown;
@@ -741,8 +867,9 @@ async function deliverBattles(
         const releaseError = await releaseDelivery(db, row, playerId, battle, claimMessageId);
         if (releaseError !== null) addError(`Could not release a live delivery claim: ${releaseError}`);
       }
-      // Timeouts, rate limits and missing ids leave the durable claim in
-      // place: the send may have reached Discord even though we cannot tell.
+      // Timeouts, rate limits and missing ids leave the durable `sending`
+      // claim in place: the send may have reached Discord even though we
+      // cannot tell, so it must never be auto-reposted.
       if (sendError !== undefined) {
         logger.warn('Could not post a live battle embed', {
           guildId: row.guild_id,

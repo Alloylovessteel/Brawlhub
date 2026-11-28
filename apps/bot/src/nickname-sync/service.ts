@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createTrustedClient } from '@brawlhub/database';
 import { createLogger } from '@brawlhub/logging';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -17,7 +18,10 @@ const NICKNAME_RELEASE_REASON = 'Restore previous nickname after BrawlHub manage
 const LEDGER_TABLE = 'guild_managed_nicknames';
 const LEDGER_COLUMNS =
   'guild_id, discord_user_id, applied_nickname, previous_nickname, source, source_id, ' +
-  'player_id, player_tag, player_name, prefix, applied_at, updated_at, last_seen_at, released_at';
+  'player_id, player_tag, player_name, prefix, applied_at, updated_at, last_seen_at, released_at, ' +
+  'cycle_id, confirmed_at, pending_cycle_id, pending_applied_nickname, pending_previous_nickname';
+const NICKNAME_PAGE_SIZE = 1000;
+const MAX_NICKNAME_PAGES = 100;
 
 export interface NicknameServiceOptions {
   readonly db?: SupabaseClient;
@@ -96,6 +100,8 @@ export interface GuildNicknameSyncSummary {
   /** Managed ledger rows released. */
   readonly released: number;
   readonly failures: number;
+  /** True when not every active ledger row could be read and restored. */
+  readonly cleanupIncomplete: boolean;
 }
 
 interface ManagedNicknameRow {
@@ -113,6 +119,11 @@ interface ManagedNicknameRow {
   readonly updatedAt: string | null;
   readonly lastSeenAt: string | null;
   readonly releasedAt: string | null;
+  readonly cycleId: string;
+  readonly confirmedAt: string | null;
+  readonly pendingCycleId: string | null;
+  readonly pendingAppliedNickname: string | null;
+  readonly pendingPreviousNickname: string | null;
 }
 
 interface MemberLookup {
@@ -120,7 +131,9 @@ interface MemberLookup {
   readonly kind: 'ok' | 'not-member' | 'unresolved';
 }
 
-type MutableSummary = { -readonly [K in keyof GuildNicknameSyncSummary]: number };
+type MutableSummary = {
+  -readonly [K in keyof GuildNicknameSyncSummary]: GuildNicknameSyncSummary[K];
+};
 
 function emptySummary(guilds = 0): MutableSummary {
   return {
@@ -133,6 +146,7 @@ function emptySummary(guilds = 0): MutableSummary {
     restored: 0,
     released: 0,
     failures: 0,
+    cleanupIncomplete: false,
   };
 }
 
@@ -361,6 +375,11 @@ function parseManagedRow(value: unknown): ManagedNicknameRow | null {
     updatedAt: asString(row['updated_at']),
     lastSeenAt: asString(row['last_seen_at']),
     releasedAt: asString(row['released_at']),
+    cycleId: asString(row['cycle_id']) ?? '',
+    confirmedAt: asString(row['confirmed_at']),
+    pendingCycleId: asString(row['pending_cycle_id']),
+    pendingAppliedNickname: asString(row['pending_applied_nickname']),
+    pendingPreviousNickname: asString(row['pending_previous_nickname']),
   };
 }
 
@@ -383,70 +402,109 @@ async function readActiveManagedRows(
   guildId: string,
   db: SupabaseClient,
 ): Promise<ManagedNicknameRow[]> {
-  const result = await db
-    .from(LEDGER_TABLE)
-    .select(LEDGER_COLUMNS)
-    .eq('guild_id', guildId)
-    .is('released_at', null);
-  requireOk(result.error, 'Read active managed nicknames');
-  if (!Array.isArray(result.data)) return [];
-  return result.data.map(parseManagedRow).filter((row): row is ManagedNicknameRow => row !== null);
+  const rows: ManagedNicknameRow[] = [];
+  const seen = new Set<string>();
+  let afterDiscordUserId: string | null = null;
+
+  for (let page = 0; page < MAX_NICKNAME_PAGES; page += 1) {
+    const result: { data: unknown; error: { message?: string } | null } = await db.rpc('guild_managed_nickname_page', {
+      p_guild_id: guildId,
+      p_limit: NICKNAME_PAGE_SIZE,
+      p_after_discord_user_id: afterDiscordUserId,
+    });
+    requireOk(result.error, 'Read active managed nicknames');
+    const pageRows = (Array.isArray(result.data) ? result.data : [])
+      .map(parseManagedRow)
+      .filter((row): row is ManagedNicknameRow => row !== null);
+    if (pageRows.length === 0) return rows;
+
+    let lastId: string | null = null;
+    for (const row of pageRows) {
+      if (
+        seen.has(row.discordUserId) ||
+        (afterDiscordUserId !== null && row.discordUserId <= afterDiscordUserId)
+      ) {
+        throw new Error('Read active managed nicknames: non-monotonic keyset');
+      }
+      seen.add(row.discordUserId);
+      rows.push(row);
+      lastId = row.discordUserId;
+    }
+    if (pageRows.length < NICKNAME_PAGE_SIZE) return rows;
+    if (lastId === null) throw new Error('Read active managed nicknames: missing keyset');
+    afterDiscordUserId = lastId;
+  }
+  throw new Error('Read active managed nicknames: page limit exceeded');
 }
 
 interface ManagedNicknameWrite {
   readonly guildId: string;
   readonly discordUserId: string;
   readonly appliedNickname: string;
-  readonly fallbackPreviousNickname: string | null;
   readonly source: NicknameSource;
   readonly main: RegisteredLinkView;
   readonly prefix: string | null;
 }
 
-/**
- * Upsert the applied nickname. The first previous nickname is kept on unchanged
- * sightings and reapplication, so cleanup always restores the original value.
- */
-async function writeManagedNickname(
+/** Persist a recoverable intent before Discord is asked to change a nickname. */
+async function persistNicknameIntent(
   input: ManagedNicknameWrite,
+  cycleId: string,
+  previousNickname: string | null,
   db: SupabaseClient,
-  options: { readonly onlyIfExists?: boolean } = {},
-): Promise<boolean> {
-  const existing = await readManagedRow(input.guildId, input.discordUserId, db);
-  if (existing === null && options.onlyIfExists === true) return false;
-  const timestamp = new Date().toISOString();
-  const saved = await db.from(LEDGER_TABLE).upsert(
-    {
-      guild_id: input.guildId,
-      discord_user_id: input.discordUserId,
-      applied_nickname: input.appliedNickname,
-      previous_nickname:
-        existing === null ? input.fallbackPreviousNickname : existing.previousNickname,
-      source: input.source.source,
-      source_id: input.source.sourceId ?? null,
-      player_id: input.main.playerId,
-      player_tag: input.main.tag,
-      player_name: input.main.name,
-      prefix: input.prefix,
-      updated_at: timestamp,
-      last_seen_at: timestamp,
-      released_at: null,
-    },
-    { onConflict: 'guild_id,discord_user_id' },
-  );
-  requireOk(saved.error, 'Record managed nickname');
-  return true;
+): Promise<void> {
+  const result = await db.rpc('managed_nickname_intent', {
+    p_guild_id: input.guildId,
+    p_discord_user_id: input.discordUserId,
+    p_cycle_id: cycleId,
+    p_applied_nickname: input.appliedNickname,
+    p_previous_nickname: previousNickname,
+    p_source: input.source.source,
+    p_source_id: input.source.sourceId ?? null,
+    p_player_id: input.main.playerId,
+    p_player_tag: input.main.tag,
+    p_player_name: input.main.name,
+    p_prefix: input.prefix,
+  });
+  requireOk(result.error, 'Record managed nickname intent');
 }
 
-async function markManagedNicknameReleased(row: ManagedNicknameRow, db: SupabaseClient): Promise<void> {
-  const timestamp = new Date().toISOString();
-  const released = await db
-    .from(LEDGER_TABLE)
-    .update({ released_at: timestamp, updated_at: timestamp })
-    .eq('guild_id', row.guildId)
-    .eq('discord_user_id', row.discordUserId)
-    .is('released_at', null);
-  requireOk(released.error, 'Release managed nickname');
+/** Confirm that Discord accepted the write for exactly one management cycle. */
+async function confirmNicknameApplied(
+  input: ManagedNicknameWrite,
+  cycleId: string,
+  db: SupabaseClient,
+): Promise<boolean> {
+  const result = await db.rpc('managed_nickname_mark_applied', {
+    p_guild_id: input.guildId,
+    p_discord_user_id: input.discordUserId,
+    p_cycle_id: cycleId,
+    p_source: input.source.source,
+    p_source_id: input.source.sourceId ?? null,
+    p_player_id: input.main.playerId,
+    p_player_tag: input.main.tag,
+    p_player_name: input.main.name,
+    p_prefix: input.prefix,
+  });
+  requireOk(result.error, 'Confirm managed nickname');
+  return result.data === true;
+}
+
+/** Release only the exact current or pending cycle of one managed nickname. */
+async function releaseNicknameCycle(
+  guildId: string,
+  discordUserId: string,
+  cycleId: string,
+  db: SupabaseClient,
+): Promise<boolean> {
+  if (cycleId === '') return false;
+  const result = await db.rpc('managed_nickname_release', {
+    p_guild_id: guildId,
+    p_discord_user_id: discordUserId,
+    p_cycle_id: cycleId,
+  });
+  requireOk(result.error, 'Release managed nickname');
+  return result.data === true;
 }
 
 async function releaseLedgerOnly(
@@ -456,18 +514,21 @@ async function releaseLedgerOnly(
 ): Promise<boolean> {
   try {
     const row = await readManagedRow(guildId, discordUserId, db);
-    if (row !== null && row.releasedAt === null) {
-      await markManagedNicknameReleased(row, db);
-      return true;
-    }
+    if (row === null || row.releasedAt !== null) return false;
+    return await releaseNicknameCycle(
+      guildId,
+      discordUserId,
+      row.pendingCycleId ?? row.cycleId,
+      db,
+    );
   } catch (error) {
     logger.warn('Could not release a managed nickname ledger row', {
       guildId,
       discordUserId,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
-  return false;
 }
 
 /** Discord's "member not found" is final; other failures are transient. */
@@ -525,24 +586,66 @@ async function applyNicknameForMain(
     guildId: guild.id,
     discordUserId,
     appliedNickname: desired,
-    fallbackPreviousNickname: lookup.member.nickname ?? null,
     source,
     main,
     prefix: settings.prefix,
   };
 
-  if (lookup.member.nickname === desired) {
+  let row: ManagedNicknameRow | null;
+  try {
+    row = await readManagedRow(guild.id, discordUserId, db);
+  } catch (error) {
+    logger.warn('Could not read the managed nickname ledger before applying', {
+      guildId: guild.id,
+      discordUserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { kind: 'failed', nickname: desired };
+  }
+
+  // A prior Discord write whose confirmation failed can be recognized by the
+  // exact pending nickname without sending a second request.
+  if (
+    row?.pendingCycleId !== null && row?.pendingCycleId !== undefined &&
+    row.pendingAppliedNickname !== null &&
+    lookup.member.nickname === row.pendingAppliedNickname
+  ) {
     try {
-      await writeManagedNickname(write, db, { onlyIfExists: true });
+      if (await confirmNicknameApplied(write, row.pendingCycleId, db)) {
+        return { kind: 'unchanged', nickname: desired };
+      }
     } catch (error) {
-      logger.warn('Could not refresh a managed nickname ledger row', {
+      logger.warn('Could not reconcile a pending managed nickname', {
         guildId: guild.id,
         discordUserId,
         error: error instanceof Error ? error.message : String(error),
       });
       return { kind: 'failed', nickname: desired };
     }
-    return { kind: 'unchanged', nickname: desired };
+    row = await readManagedRow(guild.id, discordUserId, db);
+  }
+
+  // The desired nickname is already present. Only a confirmed active cycle can
+  // claim it; a released row or an unrelated member choice stays untouched.
+  if (lookup.member.nickname === desired) return { kind: 'unchanged', nickname: desired };
+
+  const hasPendingIntent = row?.pendingCycleId !== null && row?.pendingCycleId !== undefined;
+  const cycleId = hasPendingIntent ? row!.pendingCycleId! : randomUUID();
+  const previousNickname = hasPendingIntent
+    ? (row!.pendingPreviousNickname ?? lookup.member.nickname ?? null)
+    : row !== null && row.releasedAt === null && row.confirmedAt !== null
+      ? row.previousNickname
+      : (lookup.member.nickname ?? null);
+
+  try {
+    await persistNicknameIntent(write, cycleId, previousNickname, db);
+  } catch (error) {
+    logger.warn('Could not persist a managed nickname intent', {
+      guildId: guild.id,
+      discordUserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { kind: 'failed', nickname: desired };
   }
 
   try {
@@ -557,9 +660,15 @@ async function applyNicknameForMain(
   }
 
   try {
-    await writeManagedNickname(write, db);
+    if (!(await confirmNicknameApplied(write, cycleId, db))) {
+      logger.warn('Managed nickname cycle was superseded before confirmation', {
+        guildId: guild.id,
+        discordUserId,
+      });
+      return { kind: 'failed', nickname: desired };
+    }
   } catch (error) {
-    logger.warn('Nickname changed but its ledger row could not be recorded', {
+    logger.warn('Nickname changed but its ledger confirmation failed', {
       guildId: guild.id,
       discordUserId,
       error: error instanceof Error ? error.message : String(error),
@@ -651,27 +760,47 @@ export async function releaseManagedNicknameForMember(
   const row = options.row ?? (await readManagedRow(guild.id, parsedUserId, db));
   if (row === null || row.releasedAt !== null) return { kind: 'no-ledger' };
 
+  const releaseCycle = row.pendingCycleId ?? row.cycleId;
+  if (releaseCycle === '') return { kind: 'failed' };
+
   const lookup = await fetchMemberForNickname(guild, parsedUserId);
   if (lookup.kind === 'unresolved') return { kind: 'unresolved' };
 
   if (lookup.kind === 'not-member') {
-    await markManagedNicknameReleased(row, db);
+    if (!(await releaseNicknameCycle(guild.id, parsedUserId, releaseCycle, db))) {
+      return { kind: 'unchanged' };
+    }
     return { kind: 'released', released: true, notMember: true };
+  }
+
+  // A pending intent is not proof that BrawlHub changed the nickname. Do not
+  // restore another nickname based only on an unconfirmed write.
+  if (row.confirmedAt === null || row.pendingCycleId !== null) {
+    if (!(await releaseNicknameCycle(guild.id, parsedUserId, releaseCycle, db))) {
+      return { kind: 'unchanged' };
+    }
+    return { kind: 'released', released: true };
   }
 
   // Never mutate the owner or a bot; just stop tracking the nickname.
   if (guild.ownerId === parsedUserId) {
-    await markManagedNicknameReleased(row, db);
+    if (!(await releaseNicknameCycle(guild.id, parsedUserId, releaseCycle, db))) {
+      return { kind: 'unchanged' };
+    }
     return { kind: 'skipped-owner', released: true };
   }
   if (lookup.member === null || lookup.member.user.bot) {
-    await markManagedNicknameReleased(row, db);
+    if (!(await releaseNicknameCycle(guild.id, parsedUserId, releaseCycle, db))) {
+      return { kind: 'unchanged' };
+    }
     return { kind: 'skipped-bot', released: true };
   }
 
   // A nickname changed by the member after our write is theirs; do not overwrite it.
   if (lookup.member.nickname !== row.appliedNickname) {
-    await markManagedNicknameReleased(row, db);
+    if (!(await releaseNicknameCycle(guild.id, parsedUserId, releaseCycle, db))) {
+      return { kind: 'unchanged' };
+    }
     return { kind: 'unchanged', released: true };
   }
 
@@ -685,7 +814,9 @@ export async function releaseManagedNicknameForMember(
     });
     return { kind: 'failed' };
   }
-  await markManagedNicknameReleased(row, db);
+  if (!(await releaseNicknameCycle(guild.id, parsedUserId, releaseCycle, db))) {
+    return { kind: 'failed' };
+  }
   return { kind: 'released', released: true, restored: true };
 }
 
@@ -770,6 +901,7 @@ export async function releaseManagedNicknamesInGuild(
     rows = await readActiveManagedRows(guild.id, db);
   } catch (error) {
     summary.failures += 1;
+    summary.cleanupIncomplete = true;
     logger.warn('Could not read managed nicknames for cleanup', {
       guildId: guild.id,
       error: error instanceof Error ? error.message : String(error),
@@ -836,14 +968,23 @@ export async function refreshGuildNicknames(
   }
 
   let links: RegisteredLinkView[] = [];
+  let linksReadOk = true;
   try {
     links = await listGuildVerifiedLinks(guild.id, { db });
   } catch (error) {
+    linksReadOk = false;
     summary.failures += 1;
     logger.warn('Could not read guild verified links for nickname refresh', {
       guildId: guild.id,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+
+  // An unreadable link list makes `eligibleUserIds` untrustworthy. Cleanup must
+  // not run in that case or it would release every managed nickname as stale.
+  if (!linksReadOk) {
+    summary.cleanupIncomplete = true;
+    return summary;
   }
 
   const mains = settings.enabled ? selectEligibleGuildMains(links) : [];
@@ -882,6 +1023,7 @@ export async function refreshGuildNicknames(
     summary.restored += cleanup.restored;
     summary.released += cleanup.released;
     summary.failures += cleanup.failures;
+    summary.cleanupIncomplete = summary.cleanupIncomplete || cleanup.cleanupIncomplete;
   } catch (error) {
     summary.failures += 1;
     logger.warn('Managed nickname cleanup failed', {
@@ -923,6 +1065,7 @@ export async function refreshAllConfiguredNicknames(
       summary.restored += guildSummary.restored;
       summary.released += guildSummary.released;
       summary.failures += guildSummary.failures;
+      summary.cleanupIncomplete = summary.cleanupIncomplete || guildSummary.cleanupIncomplete;
     } catch (error) {
       summary.failures += 1;
       logger.warn('Could not refresh configured guild nicknames', {

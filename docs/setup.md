@@ -80,7 +80,7 @@ npm run db:migrate
 npm run db:status
 ```
 
-`npm run db:migrate` runs `node scripts/migrate.mjs` against `DATABASE_URL`, applying `supabase/migrations`. `npm run db:status` runs `node scripts/migrate.mjs --status`.
+`npm run db:migrate` runs `node scripts/migrate.mjs` against `DATABASE_URL`, applying `supabase/migrations`. `npm run db:status` runs `node scripts/migrate.mjs --status`. If `db:status` reports a `0051_report_delivery_bounds_and_pages` checksum mismatch, follow the guarded, schema-verified one-time repair described in [supabase/README.md](../supabase/README.md#0051-checksum-history--one-time-repair) before re-running migrations. Do not use `db:baseline` as a repair.
 
 ## Running the apps
 
@@ -204,6 +204,7 @@ The response is JSON containing `status` (`ok` when all checks pass, otherwise `
 | --- | --- | --- |
 | `Node version` / engine warnings | Node older than 20.11 | Install Node >= 20.11 and re-run `npm install`. |
 | Migration fails to connect | Wrong `DATABASE_URL` | Check the direct Postgres connection string and network access; re-run `npm run db:migrate`. |
+| `Checksum mismatch for 0051_report_delivery_bounds_and_pages` | Database recorded the temporarily edited `0051` from commit `9e26703` | Back up, run the guarded preflight and repair from [supabase/README.md](../supabase/README.md#0051-checksum-history--one-time-repair), then run `db:status` and `db:migrate`. Never use `db:baseline`. |
 | Supabase reads return empty or 401 | Wrong anon key, or RLS blocking rows | Verify `SUPABASE_URL`/`SUPABASE_ANON_KEY` and the user's club mapping/RLS policies. Do not "fix" by using the service-role key in the browser. |
 | Discord login rejected / redirect mismatch | Callback URL not allowed | Add the exact `DISCORD_CALLBACK_URL` to Discord OAuth2 Redirects and Supabase allowed redirect URLs. |
 | Bot fails to connect or times out | Bad `DISCORD_TOKEN` or missing intents | Reset the token in the developer portal, update `DISCORD_TOKEN`, and enable required privileged intents. |

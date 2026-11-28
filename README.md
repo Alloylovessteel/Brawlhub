@@ -91,7 +91,7 @@ npm run db:migrate
 npm run db:status
 ```
 
-`db:status` should report all migrations applied, including `0005_phase3_rls.sql`, `0006_supabase_preview_policy_fix.sql`, and `0007_phase3_rls_hardening.sql`, with zero pending.
+`db:status` should report all migrations applied, including `0005_phase3_rls.sql`, `0006_supabase_preview_policy_fix.sql`, and `0007_phase3_rls_hardening.sql`, with zero pending. If it reports a `0051_report_delivery_bounds_and_pages` checksum mismatch, use the schema-verified one-time repair in [supabase/README.md](supabase/README.md#0051-checksum-history--one-time-repair); never use `db:baseline` as a repair.
 
 ### 5. Register clubs and collect real data
 

@@ -3,6 +3,7 @@ import { createLogger } from '@brawlhub/logging';
 import type { SyncNotificationInput, SyncNotifier, SyncNotifierWithChannel } from '@brawlhub/sync';
 import { REST, Routes } from 'discord.js';
 import { getBotConfig } from './config.js';
+import { isDefinitiveDiscordRejection } from './discord/errors.js';
 
 const logger = createLogger('bot/notifier');
 const REDACTED = '[REDACTED]';
@@ -62,13 +63,10 @@ function readFallbackChannelId(): string | undefined {
   return raw;
 }
 
-/**
- * A notifier that intentionally sends nothing. `undefined` means "not sent":
- * sync must leave the event retryable rather than recording a delivery.
- */
+/** A notifier that intentionally sends nothing; the claim can be retried later. */
 const SKIP_NOTIFIER: SyncNotifier = {
   async send() {
-    return undefined;
+    return { kind: 'skipped' };
   },
 };
 
@@ -135,14 +133,18 @@ export async function createDiscordNotifier(
             allowed_mentions: { parse: [] },
           },
         })) as { id?: string } | undefined;
-        return message?.id;
+        if (typeof message?.id !== 'string' || message.id.trim() === '') {
+          return { kind: 'uncertain' };
+        }
+        return { kind: 'sent', messageId: message.id };
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         logger.error('Failed to send Discord sync notification', {
           error: message.includes(token) ? message.split(token).join(REDACTED) : message,
         });
-        // Returning undefined means "not sent"; sync keeps the claim retryable.
-        return undefined;
+        // Only a definitive rejection proves no message exists. Timeouts and
+        // network errors stay uncertain so sync never auto-reposts them.
+        return isDefinitiveDiscordRejection(error) ? { kind: 'failed' } : { kind: 'uncertain' };
       }
     },
   };

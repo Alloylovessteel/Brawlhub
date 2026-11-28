@@ -185,15 +185,123 @@ class FakeDb {
 
   rpc(name: string, args: Row): { data: unknown; error: unknown } {
     this.calls.push({ table: `rpc:${name}`, operation: 'select', filters: [], payload: args });
-    if (name !== 'list_guild_verified_links' || args['p_guild_id'] !== this.rpcGuildId) {
-      return { data: [], error: null };
-    }
     const injected = this.errors.get(`${name}:rpc`);
     if (injected !== undefined) {
       this.errors.delete(`${name}:rpc`);
       return { data: null, error: { message: injected } };
     }
-    return { data: this.rpcLinks.map((row) => ({ ...row })), error: null };
+
+    const ledger = this.tables['guild_managed_nicknames'] ?? [];
+    const findLedger = () => ledger.find(
+      (row) =>
+        row['guild_id'] === args['p_guild_id'] &&
+        row['discord_user_id'] === args['p_discord_user_id'],
+    );
+    const now = '2026-11-20T01:00:00.000Z';
+
+    if (name === 'list_guild_verified_links') {
+      if (args['p_guild_id'] !== this.rpcGuildId) return { data: [], error: null };
+      return { data: this.rpcLinks.map((row) => ({ ...row })), error: null };
+    }
+
+    if (name === 'guild_managed_nickname_page') {
+      const rows = ledger
+        .filter(
+          (row) =>
+            row['guild_id'] === args['p_guild_id'] &&
+            row['released_at'] === null &&
+            (args['p_after_discord_user_id'] === null ||
+              String(row['discord_user_id']) > String(args['p_after_discord_user_id'])),
+        )
+        .sort((a, b) => String(a['discord_user_id']).localeCompare(String(b['discord_user_id'])))
+        .slice(0, Number(args['p_limit'] ?? 1000));
+      return { data: rows.map((row) => ({ ...row })), error: null };
+    }
+
+    if (name === 'managed_nickname_intent') {
+      const existing = findLedger();
+      const pending = {
+        pending_cycle_id: args['p_cycle_id'],
+        pending_applied_nickname: args['p_applied_nickname'],
+        pending_previous_nickname: args['p_previous_nickname'],
+        source: args['p_source'],
+        source_id: args['p_source_id'],
+        player_id: args['p_player_id'],
+        player_tag: args['p_player_tag'],
+        player_name: args['p_player_name'],
+        prefix: args['p_prefix'],
+        updated_at: now,
+        last_seen_at: now,
+      };
+      if (existing === undefined) {
+        ledger.push({
+          guild_id: args['p_guild_id'],
+          discord_user_id: args['p_discord_user_id'],
+          applied_nickname: args['p_applied_nickname'],
+          previous_nickname: args['p_previous_nickname'],
+          cycle_id: args['p_cycle_id'],
+          confirmed_at: null,
+          released_at: null,
+          applied_at: now,
+          ...pending,
+        });
+      } else {
+        Object.assign(existing, pending);
+      }
+      return { data: null, error: null };
+    }
+
+    if (name === 'managed_nickname_mark_applied') {
+      const row = findLedger();
+      if (row === undefined || row['released_at'] !== null) return { data: false, error: null };
+      const cycleMatchesPending = row['pending_cycle_id'] === args['p_cycle_id'];
+      const cycleAlreadyActive =
+        row['cycle_id'] === args['p_cycle_id'] && row['pending_cycle_id'] === null;
+      if (!cycleMatchesPending && !cycleAlreadyActive) return { data: false, error: null };
+      Object.assign(row, {
+        cycle_id: args['p_cycle_id'],
+        confirmed_at: now,
+        applied_nickname: cycleMatchesPending
+          ? (row['pending_applied_nickname'] ?? row['applied_nickname'])
+          : row['applied_nickname'],
+        previous_nickname: cycleMatchesPending
+          ? (row['pending_previous_nickname'] ?? row['previous_nickname'])
+          : row['previous_nickname'],
+        pending_cycle_id: null,
+        pending_applied_nickname: null,
+        pending_previous_nickname: null,
+        source: args['p_source'],
+        source_id: args['p_source_id'],
+        player_id: args['p_player_id'],
+        player_tag: args['p_player_tag'],
+        player_name: args['p_player_name'],
+        prefix: args['p_prefix'],
+        updated_at: now,
+        last_seen_at: now,
+      });
+      return { data: true, error: null };
+    }
+
+    if (name === 'managed_nickname_release') {
+      const row = findLedger();
+      if (
+        row === undefined ||
+        row['released_at'] !== null ||
+        (row['cycle_id'] !== args['p_cycle_id'] && row['pending_cycle_id'] !== args['p_cycle_id'])
+      ) {
+        return { data: false, error: null };
+      }
+      Object.assign(row, {
+        released_at: now,
+        updated_at: now,
+        pending_cycle_id: null,
+        pending_applied_nickname: null,
+        pending_previous_nickname: null,
+      });
+      return { data: true, error: null };
+    }
+
+    return { data: [], error: null };
   }
 
   failOnce(table: string, operation: string): void {
@@ -241,6 +349,11 @@ function ledgerRow(overrides: Partial<Row> = {}): Row {
     updated_at: '2026-11-20T00:00:00.000Z',
     last_seen_at: '2026-11-20T00:00:00.000Z',
     released_at: null,
+    cycle_id: '33333333-3333-4333-8333-333333333333',
+    confirmed_at: '2026-11-20T00:00:00.000Z',
+    pending_cycle_id: null,
+    pending_applied_nickname: null,
+    pending_previous_nickname: null,
     ...overrides,
   };
 }
@@ -478,7 +591,7 @@ describe('syncMemberNickname failures', () => {
     expect(botDb.tables['guild_managed_nicknames']?.[0]?.['released_at']).not.toBeNull();
   });
 
-  it('does not write a ledger row when Discord rejects the nickname change', async () => {
+  it('keeps only an unconfirmed intent when Discord rejects the nickname change', async () => {
     const db = new FakeDb({ settings: settingsRow(), links: [linkRow()] });
     const { guild, setNicknames } = fakeGuild({
       [USER_ID]: {
@@ -493,7 +606,14 @@ describe('syncMemberNickname failures', () => {
 
     expect(result.kind).toBe('failed');
     expect(setNicknames[USER_ID]).toHaveBeenCalledOnce();
-    expect(db.tables['guild_managed_nicknames']).toHaveLength(0);
+    expect(db.tables['guild_managed_nicknames']).toHaveLength(1);
+    expect(db.tables['guild_managed_nicknames']?.[0]).toMatchObject({
+      applied_nickname: '[ABC] Alpha',
+      previous_nickname: 'Old',
+      confirmed_at: null,
+      released_at: null,
+    });
+    expect(db.tables['guild_managed_nicknames']?.[0]?.['pending_cycle_id']).not.toBeNull();
   });
 });
 
@@ -534,6 +654,28 @@ describe('managed nickname ledger preservation', () => {
       applied_nickname: '[XYZ] Alpha',
       prefix: '[XYZ]',
       released_at: null,
+    });
+  });
+
+  it('never reactivates a released ledger row through a new write intent', async () => {
+    const originalRelease = '2026-11-19T00:00:00.000Z';
+    const originalConfirmation = '2026-11-19T00:00:00.000Z';
+    const db = new FakeDb({
+      settings: settingsRow(),
+      links: [linkRow()],
+      ledger: [ledgerRow({
+        released_at: originalRelease,
+        confirmed_at: originalConfirmation,
+      })],
+    });
+    const { guild } = fakeGuild({ [USER_ID]: { nickname: 'Manual' } });
+
+    const result = await syncMemberNickname(guild, USER_ID, { db: db.client });
+
+    expect(result.kind).toBe('failed');
+    expect(db.tables['guild_managed_nicknames']?.[0]).toMatchObject({
+      released_at: originalRelease,
+      confirmed_at: originalConfirmation,
     });
   });
 });
@@ -577,6 +719,7 @@ describe('refreshGuildNicknames', () => {
       restored: 0,
       released: 0,
       failures: 0,
+      cleanupIncomplete: false,
     });
     expect(setNicknames[USER_ID]).toHaveBeenCalledWith('[ABC] Alpha', REASON);
   });
@@ -776,7 +919,7 @@ describe('refreshGuildNicknames', () => {
       settings: settingsRow(),
       ledger: [ledgerRow({ discord_user_id: OTHER_USER_ID, applied_nickname: '[ABC] Ghost' })],
     });
-    db.failOnce('guild_managed_nicknames', 'select');
+    db.failOnce('guild_managed_nickname_page', 'rpc');
     const { guild } = fakeGuild({ [OTHER_USER_ID]: { nickname: '[ABC] Ghost' } });
 
     const summary = await refreshGuildNicknames(guild, { db: db.client });
@@ -784,6 +927,27 @@ describe('refreshGuildNicknames', () => {
     expect(summary.failures).toBe(1);
     expect(summary.released).toBe(0);
     expect(db.tables['guild_managed_nicknames']?.[0]?.['released_at']).toBeNull();
+  });
+
+  it('skips destructive cleanup when verified links cannot be read', async () => {
+    const originalRelease = '2026-11-19T00:00:00.000Z';
+    const db = new FakeDb({
+      settings: settingsRow(),
+      ledger: [ledgerRow({
+        discord_user_id: OTHER_USER_ID,
+        applied_nickname: '[ABC] Ghost',
+        released_at: originalRelease,
+      })],
+    });
+    const { guild, setNicknames } = fakeGuild({ [OTHER_USER_ID]: { nickname: '[ABC] Ghost' } });
+    db.failOnce('list_guild_verified_links', 'rpc');
+
+    const summary = await refreshGuildNicknames(guild, { db: db.client });
+
+    expect(summary).toMatchObject({ members: 0, failures: 1, released: 0 });
+    expect(summary.cleanupIncomplete).toBe(true);
+    expect(setNicknames[OTHER_USER_ID]).not.toHaveBeenCalled();
+    expect(db.tables['guild_managed_nicknames']?.[0]?.['released_at']).toBe(originalRelease);
   });
 });
 

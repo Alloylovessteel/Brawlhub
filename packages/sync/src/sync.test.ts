@@ -212,7 +212,8 @@ function withInfrastructureHandlers(handlers: Record<string, Handler>): Record<s
     'rpc:assert_sync_lock_ownership': () => ({ data: true }),
     'rpc:apply_membership_transition': () => ({ data: 'event-rpc-1' }),
     'rpc:apply_club_role_change': () => ({ data: 'role-change-1' }),
-    'rpc:list_unsent_membership_events': () => ({ data: [] }),
+    'rpc:list_oldest_unsent_membership_events': () => ({ data: [] }),
+    'rpc:list_open_club_memberships': () => ({ data: [] }),
     'rpc:claim_notification': () => ({ data: null }),
     ...handlers,
   };
@@ -256,20 +257,20 @@ function unsentEvent(
 /** Mimics the SQL keyset cursor so pagination regressions are observable. */
 function respondUnsent(rows: readonly UnsentEventFixture[]): Handler {
   return (call) => {
-    const { p_before_detected_at: beforeAt, p_before_id: beforeId, p_limit: limit } = call.payload as {
-      p_before_detected_at: string | null;
-      p_before_id: string | null;
+    const { p_after_detected_at: afterAt, p_after_id: afterId, p_limit: limit } = call.payload as {
+      p_after_detected_at: string | null;
+      p_after_id: string | null;
       p_limit: number;
     };
     const sorted = [...rows].sort(
-      (a, b) => b.detected_at.localeCompare(a.detected_at) || b.id.localeCompare(a.id),
+      (a, b) => a.detected_at.localeCompare(b.detected_at) || a.id.localeCompare(b.id),
     );
     const page = sorted
       .filter(
         (row) =>
-          beforeAt === null ||
-          row.detected_at < beforeAt ||
-          (row.detected_at === beforeAt && beforeId !== null && row.id < beforeId),
+          afterAt === null ||
+          row.detected_at > afterAt ||
+          (row.detected_at === afterAt && afterId !== null && row.id > afterId),
       )
       .slice(0, limit);
     return { data: page };
@@ -376,6 +377,20 @@ function setupSuccessfulSync(options: {
           return { data: openRow && inFilter.includes(openRow.club_id) ? [openRow] : [] };
         }
         return { data: openRow ? [openRow] : [] };
+      },
+      'rpc:list_open_club_memberships': (call) => {
+        const openRow = state.membershipOpen
+          ? {
+              id: state.membershipClubId === 'club-old' ? 'membership-old' : 'membership-1',
+              club_id: state.membershipClubId ?? 'club-1',
+              player_id: 'player-1',
+              role: 'member',
+            }
+          : null;
+        const payload = call.payload as { p_club_ids: string[]; p_after_id: string | null };
+        if (openRow === null || !payload.p_club_ids.includes(openRow.club_id)) return { data: [] };
+        if (payload.p_after_id !== null && openRow.id <= payload.p_after_id) return { data: [] };
+        return { data: [openRow] };
       },
       'club_memberships:insert': () => {
         state.membershipOpen = true;
@@ -695,11 +710,57 @@ describe('runSync', () => {
     expect(callsFor('rpc:release_sync_lock', 'select')).toHaveLength(2);
   });
 
+  it('closes departed memberships beyond the first RPC page', async () => {
+    setupSuccessfulSync({ forceOldMembership: true });
+    const departed = Array.from({ length: 500 }, (_, index) => ({
+      id: `membership-${String(index).padStart(4, '0')}`,
+      club_id: 'club-old',
+      player_id: `player-departed-${index}`,
+      role: 'member',
+    }));
+    const closed = new Set<string>();
+    // State lives in the closure so the second read sees the leaves committed
+    // by the first pass, just like a real database would.
+    let membershipOpen = true;
+    fake.state.handlers['rpc:list_open_club_memberships'] = (call) => {
+      const payload = call.payload as { p_club_ids: string[]; p_after_id: string | null; p_limit: number };
+      const rows = [
+        ...departed.filter((row) => !closed.has(row.id)),
+        ...(membershipOpen ? [{
+          id: 'membership-old',
+          club_id: 'club-old',
+          player_id: 'player-1',
+          role: 'member',
+        }] : []),
+      ].filter((row) => payload.p_club_ids.includes(row.club_id));
+      const after = payload.p_after_id;
+      return { data: (after === null ? rows : rows.filter((row) => row.id > after)).slice(0, payload.p_limit) };
+    };
+    fake.state.handlers['rpc:apply_membership_transition'] = (call) => {
+      const payload = call.payload as { p_close_membership_id: string | null; p_to_club_id: string | null };
+      if (payload.p_close_membership_id !== null) closed.add(payload.p_close_membership_id);
+      if (payload.p_to_club_id !== null) membershipOpen = true;
+      return { data: 'event-rpc-1' };
+    };
+
+    const result = await runSync({ now: T0, guildId: 'guild-test' });
+    expect(result.status).toBe('completed');
+    expect(callsFor('rpc:list_open_club_memberships', 'select').length).toBeGreaterThanOrEqual(4);
+    const leaves = callsFor('rpc:apply_membership_transition', 'select').filter((call) => {
+      const payload = call.payload as { p_event_type: string };
+      return payload.p_event_type === 'leave';
+    });
+    expect(leaves).toHaveLength(500);
+    // The 500 departed memberships plus the old membership closed by player-1's
+    // transfer. Every one must be committed exactly once across RPC pages.
+    expect(closed.size).toBe(501);
+  });
+
   it('does not resend a Discord notification when a retried event is already claimed', async () => {
     setupSuccessfulSync({ earlierRunFailed: true, forceOldMembership: true });
     const event = unsentEvent('event-1', { fromClubId: 'club-old', toClubId: 'club-1' });
     event.event_type = 'transfer';
-    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([event]);
+    fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent([event]);
 
     let claimAttempts = 0;
     let claimedOwner: string | undefined;
@@ -786,7 +847,7 @@ describe('runSync', () => {
       toClubId: 'club-1',
     });
     orphanedEvent.event_type = 'transfer';
-    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([orphanedEvent]);
+    fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent([orphanedEvent]);
     fake.state.handlers['notifications:select'] = () => ({ data: [] });
     fake.state.handlers['rpc:claim_notification'] = () => ({ data: 'notification-orphan' });
     fake.state.handlers['notifications:update'] = () => ({ data: [] });
@@ -819,7 +880,7 @@ describe('runSync', () => {
 
   it('retries an interrupted claim instead of treating it as delivered', async () => {
     setupSuccessfulSync();
-    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([
+    fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent([
       unsentEvent('event-interrupted'),
     ]);
     // An expired pending claim from a crashed run is not delivered.
@@ -859,14 +920,14 @@ describe('runSync', () => {
     setupSuccessfulSync();
     const ownerId = 'owner-test';
     const rows = [
-      ...Array.from({ length: 12 }, (_, index) => {
+      ...Array.from({ length: 26 }, (_, index) => {
         const row = unsentEvent(`live-${index}`, { offsetMs: index });
         row.player_id = 'player-live';
         return row;
       }),
       unsentEvent('pending-old', { offsetMs: 60 * 60 * 1000 }),
     ];
-    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent(rows);
+    fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent(rows);
     fake.state.handlers['notifications:select'] = (call) => ({
       data:
         call.filters['delivery_owner'] === ownerId
@@ -902,18 +963,18 @@ describe('runSync', () => {
     expect(result.status).toBe('completed');
     expect(result.notificationsSent).toBe(1);
     expect(delivered).toEqual(['pending-old']);
-    const pages = callsFor('rpc:list_unsent_membership_events', 'select');
+    const pages = callsFor('rpc:list_oldest_unsent_membership_events', 'select');
     expect(pages.length).toBeGreaterThanOrEqual(2);
-    expect(pages[0]?.payload).toMatchObject({ p_limit: 25, p_before_detected_at: null });
-    const second = pages[1]?.payload as { p_before_detected_at: string; p_before_id: string };
-    expect(second.p_before_detected_at).toBeDefined();
-    expect(second.p_before_id).toBeDefined();
+    expect(pages[0]?.payload).toMatchObject({ p_limit: 25, p_after_detected_at: null });
+    const second = pages[1]?.payload as { p_after_detected_at: string; p_after_id: string };
+    expect(second.p_after_detected_at).toBeDefined();
+    expect(second.p_after_id).toBeDefined();
     expect(callsFor('membership_events', 'select')).toHaveLength(0);
   });
 
   it('does not treat another run live lease as delivered but refuses to steal it', async () => {
     setupSuccessfulSync();
-    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([
+    fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent([
       unsentEvent('leased-event'),
     ]);
     // The real query filters on this run's owner, so another run's live lease is
@@ -936,9 +997,9 @@ describe('runSync', () => {
     expect(callsFor('rpc:claim_notification', 'select')).toHaveLength(1);
   });
 
-  it('keeps notifications retryable when the notifier fails or returns no message ID', async () => {
+  it('classifies uncertain timeouts and retries only definite rejections', async () => {
     setupSuccessfulSync();
-    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([
+    fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent([
       unsentEvent('event-retry'),
     ]);
     fake.state.handlers['notifications:select'] = () => ({ data: [] });
@@ -948,48 +1009,92 @@ describe('runSync', () => {
     fake.state.handlers['notifications:update'] = () => ({ data: [] });
 
     let sends = 0;
-    let sendMode: 'throw' | 'undefined' | 'sent' = 'throw';
+    let sendMode: 'timeout' | 'undefined' | 'failed' | 'sent' = 'timeout';
     const notifier = {
       channelId: 'channel-1',
       send: async () => {
         sends += 1;
-        if (sendMode === 'throw') throw new Error('Discord is down');
+        if (sendMode === 'timeout') throw new Error('request timed out');
         if (sendMode === 'undefined') return undefined;
+        if (sendMode === 'failed') return { kind: 'failed' as const };
         return 'message-retry';
       },
     };
 
-    const failed = await runSync({ now: T0, guildId: 'guild-test', notifier });
-    expect(failed.status).toBe('completed');
-    expect(failed.notificationsSent).toBe(0);
+    const timeout = await runSync({ now: T0, guildId: 'guild-test', notifier });
+    expect(timeout.status).toBe('completed');
+    expect(timeout.notificationsSent).toBe(0);
     expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
-      delivery_status: 'failed',
+      delivery_status: 'uncertain',
     });
 
     sendMode = 'undefined';
-    const skipped = await runSync({ now: T0, guildId: 'guild-test', notifier });
-    expect(skipped.notificationsSent).toBe(0);
+    const noId = await runSync({ now: T0, guildId: 'guild-test', notifier });
+    expect(noId.notificationsSent).toBe(0);
     expect(callsFor('notifications', 'update').some((call) =>
       call.payload.delivery_status === 'sent' &&
       call.payload.discord_message_id === null,
     )).toBe(false);
     expect(callsFor('notifications', 'update')[1]?.payload).toMatchObject({
+      delivery_status: 'uncertain',
+    });
+
+    sendMode = 'failed';
+    const rejected = await runSync({ now: T0, guildId: 'guild-test', notifier });
+    expect(rejected.notificationsSent).toBe(0);
+    expect(callsFor('notifications', 'update')[2]?.payload).toMatchObject({
       delivery_status: 'failed',
     });
 
     sendMode = 'sent';
     const delivered = await runSync({ now: T0, guildId: 'guild-test', notifier });
     expect(delivered.notificationsSent).toBe(1);
-    expect(sends).toBe(3);
+    expect(sends).toBe(4);
     expect(callsFor('notifications', 'update').at(-1)?.payload).toMatchObject({
       delivery_status: 'sent',
       discord_message_id: 'message-retry',
     });
   });
 
+  it('records a notification that reaches Discord after the send timeout', async () => {
+    setupSuccessfulSync();
+    fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent([
+      unsentEvent('event-late'),
+    ]);
+    fake.state.handlers['notifications:select'] = () => ({ data: [] });
+    fake.state.handlers['rpc:claim_notification'] = () => ({ data: 'claim-event-late' });
+    fake.state.handlers['notifications:update'] = () => ({ data: [] });
+    const originalTimeout = process.env.SYNC_NOTIFIER_TIMEOUT_MS;
+    process.env.SYNC_NOTIFIER_TIMEOUT_MS = '5';
+
+    try {
+      const notifier = {
+        channelId: 'channel-1',
+        send: () => new Promise<{ kind: 'sent'; messageId: string }>((resolve) => {
+          setTimeout(() => resolve({ kind: 'sent', messageId: 'late-message' }), 30);
+        }),
+      };
+
+      const result = await runSync({ now: T0, guildId: 'guild-test', notifier });
+      expect(result.notificationsSent).toBe(0);
+      expect(callsFor('notifications', 'update')[0]?.payload).toMatchObject({
+        delivery_status: 'uncertain',
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(callsFor('notifications', 'update').at(-1)?.payload).toMatchObject({
+        delivery_status: 'sent',
+        discord_message_id: 'late-message',
+      });
+    } finally {
+      if (originalTimeout === undefined) delete process.env.SYNC_NOTIFIER_TIMEOUT_MS;
+      else process.env.SYNC_NOTIFIER_TIMEOUT_MS = originalTimeout;
+    }
+  });
+
   it('delivers a paginated backlog oldest-first', async () => {
     setupSuccessfulSync();
-    fake.state.handlers['rpc:list_unsent_membership_events'] = respondUnsent([
+    fake.state.handlers['rpc:list_oldest_unsent_membership_events'] = respondUnsent([
       unsentEvent('event-new', { offsetMs: 0 }),
       unsentEvent('event-old', { offsetMs: 6_000 }),
       unsentEvent('event-mid', { offsetMs: 3_000 }),
